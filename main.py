@@ -1,0 +1,174 @@
+"""MyTools 入口。
+
+    python main.py
+    python main.py --debug     # 打开调试日志
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+
+
+def setup_logging(debug: bool) -> None:
+    """配日志。
+
+    打包成 GUI 程序（``console=False``）后**没有控制台**，``sys.stderr`` 是 None，
+    日志等于直接丢掉 —— 所以打包版改成写文件到用户数据目录
+    （``%LOCALAPPDATA%\\MyTools\\mytools.log``），出问题时让用户把这个文件发过来。
+
+    文件日志和屏幕日志的取舍不同，所以格式分开配：
+
+    * 屏幕（开发态）：只有时分秒就够，看的是刚刚发生的事；
+    * 文件（打包版）：**必须带日期**（隔天再看也认得出是哪天），
+      并且**轮转**（``maxBytes`` + 备份 1 份）—— 否则一个长期在用的程序会把日志写到无限大。
+    """
+    import logging.handlers
+
+    from src.core import paths
+
+    handlers: list[logging.Handler] | None = None
+    if paths.is_frozen():
+        log_path = paths.log_file()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=1_000_000, backupCount=1, encoding="utf-8"
+        )
+        file_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+        handlers = [file_handler]
+
+    logging.basicConfig(
+        level=logging.DEBUG if debug else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=handlers,
+    )
+    if handlers:
+        logging.getLogger(__name__).info("日志文件：%s", paths.log_file())
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    # 版本号只有一个真源（src/app_config.APP_VERSION），别在这儿再写死一遍。
+    # 这个导入是安全的：app_config 全是常量、不读任何数据文件，
+    # 而且它在 parse_args() 里，不在 main() 顶层 —— 不会插到 ensure_user_data 前面
+    # （tests/check_frozen_fixes.py 就扫 main() 顶层那一层）。
+    from src.app_config import APP_VERSION
+
+    parser = argparse.ArgumentParser(description="MyTools 桌面工具箱")
+    parser.add_argument("--debug", action="store_true", help="打开调试日志")
+    parser.add_argument("--version", action="version", version=f"MyTools {APP_VERSION}")
+    return parser.parse_args(argv)
+
+
+def _check_admin() -> None:
+    """启动时确认权限够不够。
+
+    打包版带了 ``requireAdministrator`` 清单（``packaging/mytools.spec`` 的
+    ``uac_admin=True``），正常情况下这里一定已经是管理员，这段只是兜底 ——
+    开发态 ``python main.py`` 直接跑、或清单没生效时提个醒，
+    免得用户跑到游戏前面才发现"点了游戏没反应"。
+    """
+    from src.core import elevation, paths
+
+    if not elevation.is_windows():
+        return
+
+    level = elevation.own_integrity_level()
+    if elevation.is_elevated():
+        logging.getLogger(__name__).info("已以管理员权限运行（%s）", elevation.level_name(level))
+        return
+
+    logging.getLogger(__name__).warning(
+        "当前不是管理员权限（%s）：游戏若以管理员身份运行，点击/按键会被系统拦掉",
+        elevation.level_name(level),
+    )
+    if not paths.is_frozen():
+        return                       # 开发态不弹窗，看日志就够
+
+    from PySide6.QtWidgets import QMessageBox
+
+    box = QMessageBox()
+    box.setWindowTitle("权限不足")
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setText("MyTools 目前不是管理员权限。")
+    box.setInformativeText(
+        "鸣潮带反外挂（ACE），游戏本身运行在管理员权限下 ——\n"
+        "这时 Windows 会拦掉本工具发出的点击和按键，表现是「点了游戏没反应」。\n\n"
+        "建议以管理员身份重新启动。"
+    )
+    restart = box.addButton("以管理员身份重启", QMessageBox.ButtonRole.AcceptRole)
+    box.addButton("仍然继续", QMessageBox.ButtonRole.RejectRole)
+    box.exec()
+    if box.clickedButton() is restart:
+        if elevation.relaunch_as_admin():
+            raise SystemExit(0)      # 新实例已经起来了，本进程退场
+        logging.getLogger(__name__).warning("提权重启被取消")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    from src.core import paths
+
+    # ⚠ 顺序是硬要求：**必须在任何 src.* 子模块被导入之前**把种子数据拷到位。
+    #
+    # 原因：src.core.game_data 是在 **import 的那一刻**就把 JSON 读进内存常量的。
+    # 首启动时用户数据目录还不存在 → 它把"空数据"快照进内存，之后就算把种子拷进去
+    # 也不会重读 → **这一轮资源库页面永远是空的**；而「鸣潮资源库更新」读的是盘上的
+    # 文件（那时已被拷好），内容与远端一致 → 它会说"数据已是最新"。
+    # 一个看内存快照、一个看磁盘文件，于是两边看着自相矛盾。
+    seeded = paths.ensure_user_data()
+
+    # 日志要写到用户数据目录，所以放在 ensure 之后
+    setup_logging(args.debug)
+    if seeded:
+        logging.getLogger(__name__).info(
+            "首次运行，已初始化用户数据 %d 个文件 → %s", len(seeded), paths.user_data_dir()
+        )
+
+    # Qt 必须在任何 Widget 之前起来；导入顺序不能省这一点。
+    from PySide6.QtWidgets import QApplication
+    from qfluentwidgets import Theme, setTheme
+
+    from src.core.registry import ToolRegistry
+    from src.gui.main_window import MainWindow
+    from src.tools import discover_tools
+
+    app = QApplication(sys.argv)
+    _check_admin()
+
+    imported = discover_tools()
+    metas = ToolRegistry.all_metas()
+    logging.getLogger(__name__).info(
+        "工具发现完成：%d 个模块，%d 个工具", len(imported), len(metas)
+    )
+
+    setTheme(Theme.AUTO)
+
+    window = MainWindow()
+    window.show()
+
+    # 退出前收尾 ok-ww 宿主（若本进程打开过 4C 自动战斗并 boot 过引擎）
+    app.aboutToQuit.connect(_shutdown_okww_host)
+
+    return app.exec()
+
+
+def _shutdown_okww_host() -> None:
+    """Qt 退出钩子：置 ok-ww 的 exit_event，避免后台线程/任务残留。"""
+    try:
+        from src.tools.game.auto_combat.okww_boot import shutdown_host_if_any
+
+        shutdown_host_if_any()
+    except Exception:  # noqa: BLE001 - 收尾失败不能挡住退出
+        logging.getLogger(__name__).debug("okww host shutdown 失败", exc_info=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

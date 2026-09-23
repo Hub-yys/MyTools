@@ -1,0 +1,30 @@
+# MyTools 运行时依赖
+#
+# 安装（--no-deps 是必须的）：PySide6-Fluent-Widgets 的元数据里声明依赖"完整版
+# PySide6"（245MB），而它运行时只用 QtWidgets/QtGui/QtCore/QtSvg/QtNetwork，
+# 全都在 Essentials 里（77MB）。下面把依赖全部显式列出，用 --no-deps 跳过解析：
+#
+#     pip install -r requirements.txt --no-deps
+#
+# 网络慢到装不动时，见 README「离线安装」一节（tools/fetch_wheels.py 多连接
+# 分段下载 + --no-index 离线安装，实测比 pip 单连接快 15 倍以上）。
+shiboken6>=6.11.1
+PySide6-Essentials>=6.11.1
+PySideSix-Frameless-Window>=0.8.0
+darkdetect>=0.8.0
+pywin32>=311
+PySide6-Fluent-Widgets>=1.11.3
+pypinyin>=0.55.0
+
+# ---- 声骸自动强化用到的（OCR 识别 + 截屏）----
+numpy>=2.0
+# ⚠ 别指望换 opencv-python-headless 来瘦身：**OpenCV 5.x 的 headless 和完整版几乎一样大**
+#   —— 实测两者 wheel 解压都是 112MB、cv2.pyd 都是 82MB（4.x 时代 headless 才明显更小）。
+#   2026-09-22 换过去试过一轮，体积一点没减，已还原成完整版。
+opencv-python>=4.10
+pillow>=10.0
+onnxruntime>=1.17
+onnxocr-ppocrv5>=0.0.20
+shapely>=2.0
+pyclipper>=1.3
+mss>=9.0

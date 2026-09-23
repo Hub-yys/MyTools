@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "f2ce18d65f98",
+      "name": "清霄声骇自动强化",
+      "type_key": "game",
+      "sub_key": "wuwa",
+      "steps": [
+        {
+          "type": "start",
+          "key": "start",
+          "name": "开始"
+        },
+        {
+          "type": "config",
+          "key": "74bb1f7a0e73",
+          "name": "清宵"
+        },
+        {
+          "type": "tool",
+          "key": "echo_enhance",
+          "name": "声骸自动强化"
+        },
+        {
+          "type": "end",
+          "key": "end",
+          "name": "结束"
+        }
+      ],
+      "updated_at": "2026-09-22 16:27:24"
+    }
+  ]
+}

@@ -1,0 +1,191 @@
+"""ok-ww 声骸强化任务（MyTools 子类）的适配测试。
+
+    python tests/test_echo_okww_task.py
+
+2026-09-23：声骸自动强化从"MyTools 自己写点击/OCR"改成"跑 ok-ww 的
+``EnhanceEchoTask`` + 只换判定条件"（见 ``src/tools/game/echo_enhance/okww_task.py``）。
+这个文件只测**我们加的那层适配**，不测 ok-ww 自己的流程：
+
+* OCR 的「属性名 + 数值」两列怎么配对成 :class:`EchoStat`（含噪声过滤）；
+* 判定三态怎么映射回 ok-ww 要的布尔（``True``=继续强化 / ``False``=弃置）；
+* 任务 key / 类名 / 注册路径三处不能各写一份（写岔了任务会静默不出现）。
+"""
+
+from __future__ import annotations
+
+import inspect
+import pathlib
+import re
+import unittest
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from src.tools.game.echo_enhance import okww_task  # noqa: E402
+from src.tools.game.echo_enhance.okww_task import (  # noqa: E402
+    MyToolsEnhanceEchoTask,
+    to_echo_stats,
+)
+from src.tools.game.echo_enhance.stats import (  # noqa: E402
+    CRIT,
+    CRIT_DMG,
+    JudgeConfig,
+)
+
+
+class FakeBox:
+    """够用的 ok-script Box 替身 —— 配对逻辑只用到 `.name` 与 `.y`。"""
+
+    def __init__(self, name: str, y: float):
+        self.name = name
+        self.y = y
+
+
+def make_task(config: JudgeConfig) -> MyToolsEnhanceEchoTask:
+    """不跑 ``__init__``（那需要 executor/app 两个真对象），只造个能调判定的壳。
+
+    判定这条路只用到 ``judge_config`` / ``fail_reason`` / ``info`` / 两个日志方法，
+    所以这么绕开是安全的 —— 也正是把这些依赖收得很窄的回报。
+    """
+    task = object.__new__(MyToolsEnhanceEchoTask)
+    task.judge_config = config
+    task.fail_reason = ""
+    task.info = {}
+    task.last_judgement = ""
+    task.log_info = lambda *a, **k: None
+    task.info_set = lambda key, value: task.info.__setitem__(key, value)
+    return task
+
+
+class TestPairing(unittest.TestCase):
+    """OCR 两列文本 → EchoStat。"""
+
+    def test_basic_pairing_by_nearest_y(self):
+        props = [FakeBox("暴击伤害", 0.35), FakeBox("攻击", 0.37)]
+        vals = [FakeBox("12.6%", 0.35), FakeBox("40", 0.37)]
+        stats = to_echo_stats(props, vals)
+        self.assertEqual([(s.name, s.value) for s in stats],
+                         [(CRIT_DMG, 12.6), ("攻击", 40.0)])
+
+    def test_percent_sign_decides_flat_or_percent(self):
+        """「攻击」既可能是固定值也可能是百分比，靠数值里有没有 % 区分。"""
+        stats = to_echo_stats([FakeBox("攻击", 0.3), FakeBox("攻击", 0.4)],
+                              [FakeBox("40", 0.3), FakeBox("10.5%", 0.4)])
+        self.assertEqual([s.name for s in stats], ["攻击", "攻击百分比"])
+
+    def test_full_width_percent(self):
+        """游戏里会出现全角 ％（OCR 也常这么读）。"""
+        stats = to_echo_stats([FakeBox("暴击", 0.3)], [FakeBox("8.1％", 0.3)])
+        self.assertEqual([(s.name, s.value) for s in stats], [(CRIT, 8.1)])
+
+    def test_unknown_names_do_not_consume_values(self):
+        """★ 认不出的属性名不能"吃掉"一个数值 —— 否则后面整体错位一格。"""
+        props = [FakeBox("暴击伤害", 0.35), FakeBox("攻击", 0.37),
+                 FakeBox("辅音", 0.40), FakeBox("共鸣效率", 0.41),
+                 FakeBox("暴击", 0.43)]
+        vals = [FakeBox("12.6%", 0.35), FakeBox("40", 0.37),
+                FakeBox("10.0%", 0.41), FakeBox("8.1%", 0.43)]
+        stats = to_echo_stats(props, vals)
+        self.assertEqual([s.name for s in stats],
+                         [CRIT_DMG, "攻击", "共鸣效率", CRIT])
+        self.assertEqual([s.value for s in stats], [12.6, 40.0, 10.0, 8.1])
+
+    def test_property_without_any_value_is_skipped(self):
+        """数值比属性名少时，多出来的属性名不该造出 0 值的假词条。"""
+        stats = to_echo_stats([FakeBox("暴击", 0.3), FakeBox("暴击伤害", 0.4)],
+                              [FakeBox("8.1%", 0.3)])
+        self.assertEqual([s.name for s in stats], [CRIT])
+
+    def test_empty_inputs(self):
+        self.assertEqual(to_echo_stats([], []), [])
+        self.assertEqual(to_echo_stats([FakeBox("暴击", 0.3)], []), [])
+
+
+class TestJudgementMapping(unittest.TestCase):
+    """判定三态 → ok-ww 要的布尔。"""
+
+    def test_discard_maps_to_false(self):
+        """双爆不达标 → False，交给 ok-ww 去弃置。"""
+        task = make_task(JudgeConfig())
+        keep = task.check_echo_stats([FakeBox("暴击", 0.3), FakeBox("暴击伤害", 0.4)],
+                                     [FakeBox("8.1%", 0.3), FakeBox("12.6%", 0.4)])
+        self.assertFalse(keep)
+
+    def test_keep_maps_to_true(self):
+        task = make_task(JudgeConfig())
+        keep = task.check_echo_stats([FakeBox("暴击", 0.3), FakeBox("暴击伤害", 0.4)],
+                                     [FakeBox("9.0%", 0.3), FakeBox("18.0%", 0.4)])
+        self.assertTrue(keep)
+
+    def test_max_roll_protection_stays_true(self):
+        """满暴击要走「强化到满级再上锁」，所以必须是 True（不能判弃置）。"""
+        task = make_task(JudgeConfig())
+        keep = task.check_echo_stats([FakeBox("暴击", 0.3)], [FakeBox("10.5%", 0.3)])
+        self.assertTrue(keep)
+        self.assertIn("满分", task.last_judgement)
+
+    def test_fail_reason_is_safe_for_screenshot_name(self):
+        """ok-ww 会把 fail_reason 拼进失败截图文件名，不能留空、不能带非法字符。"""
+        task = make_task(JudgeConfig())
+        task.check_echo_stats([FakeBox("暴击伤害", 0.3)], [FakeBox("9.9%", 0.3)])
+        self.assertTrue(task.fail_reason)
+        self.assertIsNone(re.search(r'[<>:"/\\|?*]', task.fail_reason),
+                          f"fail_reason 含非法字符：{task.fail_reason!r}")
+
+    def test_judge_config_is_per_instance(self):
+        """判定条件是按任务实例注入的，改一个不该影响另一个。"""
+        strict = make_task(JudgeConfig())
+        loose = make_task(JudgeConfig(crit_min=1.0, crit_dmg_min=1.0, min_valid_count=2))
+        props = [FakeBox("暴击", 0.3), FakeBox("暴击伤害", 0.4)]
+        vals = [FakeBox("5.0%", 0.3), FakeBox("10.0%", 0.4)]
+        self.assertFalse(strict.check_echo_stats(props, vals))
+        self.assertTrue(loose.check_echo_stats(props, vals))
+
+
+class TestWiring(unittest.TestCase):
+    """任务 key / 类名 / 注册路径三处必须一致 —— 写岔了任务会静默不出现。"""
+
+    def test_task_key_matches_tool_page(self):
+        from src.tools.game.echo_enhance import settings, tool
+
+        self.assertEqual(okww_task.TASK_KEY, settings.TASK_KEY)
+        self.assertEqual(tool.TASK_KEY, settings.TASK_KEY)
+
+    def test_host_registers_our_class(self):
+        from src.tools.game.auto_combat import okww_boot
+
+        self.assertEqual(okww_boot.TASKS[okww_task.TASK_KEY],
+                         okww_task.TASK_CLASS_NAME)
+        # 配置里声明的是"模块路径 + 类名"，ok 就是按这两项去 import 的
+        entries = [tuple(e) for e in okww_boot.build_config()["onetime_tasks"]]
+        self.assertIn(("src.tools.game.echo_enhance.okww_task",
+                       okww_task.TASK_CLASS_NAME), entries)
+        # ok-ww 原版不该再单独注册（两套筛选条件并存会让人分不清哪个在生效）
+        self.assertNotIn(("okww.task.EnhanceEchoTask", "EnhanceEchoTask"), entries)
+
+    def test_class_name_matches_constant(self):
+        self.assertEqual(MyToolsEnhanceEchoTask.__name__, okww_task.TASK_CLASS_NAME)
+
+    def test_is_okww_subclass(self):
+        from okww.task.EnhanceEchoTask import EnhanceEchoTask
+
+        self.assertTrue(issubclass(MyToolsEnhanceEchoTask, EnhanceEchoTask))
+
+
+class TestDefaults(unittest.TestCase):
+    """构造需要 executor/app，所以这两条改成对 __init__ 源码的断言 ——
+    它们要防的是"以后有人顺手把这两行删了"，源码断言正好能拦住。"""
+
+    def test_pause_after_success_is_turned_off(self):
+        """ok-ww 默认"成功即暂停"；批量工具必须关掉，否则看着像只跑一个就停。"""
+        src = inspect.getsource(MyToolsEnhanceEchoTask.__init__)
+        self.assertRegex(src, r'Pause after Success"\]\s*=\s*False')
+
+    def test_judge_config_is_reset_per_instance(self):
+        src = inspect.getsource(MyToolsEnhanceEchoTask.__init__)
+        self.assertRegex(src, r"self\.judge_config\s*=\s*JudgeConfig\(\)")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

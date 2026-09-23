@@ -1,0 +1,931 @@
+{
+  "_source": "声骸技能/冷却来自 bwiki 每个声骸页的『声骸技能』段落（bwiki 标注仅收录 5 星数据）；icon_urls 来自库街区官方 wiki（api.kurobbs.com getPage，catalogueId=1107）。",
+  "_fetched": "2026-09-22",
+  "echoes": {
+    "万囮牢·朽躯": {
+      "skill": "使用声骸技能，召唤万囮牢·朽躯，首次对敌人造成5.67%/6.80%/7.93%/9.07%/10.20%生命上限的热熔伤害，期间多次碾压路径上的敌人，至多19次，每次造成0.20%/0.24%/0.29%/0.33%/0.37%生命上限的热熔伤害。\n在首位装配该声骸技能时，自身热熔伤害加成提升12.00%，重击伤害加成提升12.00%。",
+      "cooldown": "20s"
+    },
+    "不熄猎手": {
+      "skill": "文件:声骸 不熄猎手 大图.png",
+      "cooldown": "15s"
+    },
+    "云海妖精": {
+      "skill": "使用声骸技能，召唤云海妖精，为队伍中登场角色回复2.70%生命上限的生命值，最多可治疗4次。",
+      "cooldown": "15s"
+    },
+    "云闪之鳞": {
+      "skill": "使用声骸技能，幻形为云闪之鳞，穿梭攻击，可连续使用最多6次，前5次每次造成132.61%导电伤害，终结一击造成189.44%导电伤害，落雷造成31.57%导电伤害。\n终结一击命中后，自身导电伤害加成提升12.00%，共鸣解放伤害加成提升12.00%，持续15秒。",
+      "cooldown": "20s"
+    },
+    "传道者的遗形": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "伪作的神王": {
+      "skill": "用声骸技能，幻形为伪作的神王，发动旋转突进对敌人造成四段30.75%/36.90%/43.05%/49.20%/55.35%的导电伤害。\n在首位装配该声骸技能时，自身导电伤害加成提升12.00%，重击伤害加成提升12.00%；使用变奏技能登场时可召唤伪作的神王，对敌人造成225.00%/270.00%/315.00%/360.00%/405.00%的导电伤害。\n初始拥有2次可使用次数，每8秒可使用次数增加1次，可使用次数上限2次。",
+      "cooldown": "8s"
+    },
+    "侏侏鸵": {
+      "skill": "使用声骸技能，召唤侏侏鸵追踪敌人进行攻击，造成3次38.40%物理伤害。",
+      "cooldown": "8s"
+    },
+    "先锋幼岩": {
+      "skill": "使用声骸技能，召唤先锋幼岩向前扑击，对路径上的敌人造成32.00%+64物理伤害。",
+      "cooldown": "8s"
+    },
+    "共鸣回响·冠顶苍隼": {
+      "skill": "使用声骸技能，幻形为冠顶苍隼，飞向高空对敌人造成至多八段4.47%/5.36%/6.25%/7.15%/8.04%和两段13.41%/16.09%/18.77%/21.45%/24.13%的气动伤害，随后跃下造成一段86.42%/103.70%/120.98%/138.27%/155.55%的气动伤害。",
+      "cooldown": "15s"
+    },
+    "共鸣回响·梦魇亚当·重锤": {
+      "skill": "使用声骸技能，对范围内敌人造成总共十六段5.70%/6.84%/7.98%/9.12%/10.26%的物理伤害。\n在首位装配该声骸技能时，若装配角色为露西或丽贝卡，则自身暴击提升15%，且声骸技能也将根据其装配角色替换为对应的特殊效果。\n若装配角色为露西，则声骸技能替换为：\n·短按声骸技能，对周围敌人造成152.00%/182.40%/212.80%/243.20%/273.60%的衍射伤害。\n·长按声骸技能，对周围敌人造成152.00%/182.40%/212.80%/243.20%/273.60%的衍射伤害，并进入特殊的移动状态，持续期间提高露西的移动速度并减缓周围敌人的时间流速。\n若装配角色为丽贝卡，则声骸技能替换为：\n·使用声骸技能，发射导弹，对敌人造成十六段9.50%/11.40%/13.30%/15.20%/17.10%的导电伤害。",
+      "cooldown": "20s"
+    },
+    "共鸣回响·芙露德莉斯": {
+      "skill": "使用声骸技能，召唤【破空幻刃】，攻击目标，造成八段27.36%和一段136.680%的气动伤害。\n在首位装配该声骸技能时，自身气动伤害加成提升10.00%，当装配角色为漂泊者·气动和卡提希娅时，自身气动伤害加成额外提升10.00%。",
+      "cooldown": "20s"
+    },
+    "共鸣回响·芬莱克": {
+      "skill": "用声骸技能，召唤【教律龙爪】，对周围敌人造成273.60%的气动伤害。\n在首位装配该声骸技能时，自身气动伤害加成提升12.00%，重击伤害加成提升12.00%。",
+      "cooldown": "20s"
+    },
+    "共鸣回响·达妮娅": {
+      "skill": "使用声骸技能，召唤【骗术师】，对敌人造成273.60%的热熔伤害。\n在此后15秒内，若自身施放延奏技能，使下一个变奏技能登场的角色热熔伤害加成提升12.00%，持续15秒。",
+      "cooldown": "20s"
+    },
+    "共鸣回响·鸣式·利维亚坦": {
+      "skill": "使用声骸技能，召唤【坍缩视界】，对周围敌人造成两段131.04%的湮灭伤害，并获得坍缩核心，持续15秒。\n坍缩核心存在期间，队伍中登场角色造成伤害时将额外附加一段24.57%的湮灭伤害，该效果可触发8次，每0.5秒至多触发一次。若敌人处于受「虚湮效应」影响状态时，该效果造成的伤害提升100%。\n在首位装配该声骸技能时；自身湮灭伤害加成提升12.00%，共鸣解放伤害加成提升12.00%。",
+      "cooldown": "25s"
+    },
+    "共鸣回响·鸣式·虚造神型": {
+      "skill": "使用声骸技能，召唤阿列夫一造物，对敌人造成五段21.88%和一段164.16%的冷凝伤害。\n在首位装配该声骸技能时，自身冷凝伤害加成提升12.00%，共鸣解放伤害加成提升12.00%。",
+      "cooldown": "20s"
+    },
+    "冠顶械隼": {
+      "skill": "使用声骸技能，幻形为冠顶械隼，飞向高空并跃下对敌人造成149.00%/178.80%/208.60%/238.40%/268.20%的导电伤害。",
+      "cooldown": "15s"
+    },
+    "冥渊守卫": {
+      "skill": "使用声骸技能，幻形为冥渊守卫施放跃击。命中时造成273.60%湮灭伤害，命中敌人后扣除自身10.00%的生命值，5秒后周期性回复自身生命值，共回复生命上限10.00%的生命值。",
+      "cooldown": "15s"
+    },
+    "冰盈舞者": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "冷凝棱镜": {
+      "skill": "使用声骸技能，召唤冷凝棱镜连续发射三枚晶片，每一枚造成38.40%冷凝伤害。",
+      "cooldown": "8s"
+    },
+    "凝水贵族": {
+      "skill": "使用声骸技能，幻形为凝水贵族，召唤3个冰棱刺攻击敌人，每个造成89.39%的冷凝伤害。",
+      "cooldown": "15s"
+    },
+    "刺玫菇": {
+      "skill": "使用声骸技能，召唤刺玫菇，发射一道激光，最多造成3次57.07%的湮灭伤害。",
+      "cooldown": "15s"
+    },
+    "刺玫菇（稚形）": {
+      "skill": "使用声骸技能，召唤刺玫菇（稚形），发射一道激光，造成32.00%+64湮灭伤害。",
+      "cooldown": "8s"
+    },
+    "千傀重楼": {
+      "skill": "使用声骸技能，对周围敌人造成109.44%的湮灭伤害，并召唤四把【千忆剑声】，持续15秒。【千忆剑声】存在期间，自身为目标附加「虚湮效应」时，将消耗一把【千忆剑声】对目标造成一次41.04%的湮灭伤害，每1秒可触发一次。在首位装配该声骸技能时，自身湮灭伤害加成提升12.00%，重击伤害加成提升12.00%。",
+      "cooldown": "20s"
+    },
+    "卫冕节使": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "双极·星升辉铳": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "双极·渊陨重锋": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "叮咚咚": {
+      "skill": "使用声骸技能，召唤叮咚咚追踪敌人自爆，爆炸造成32.00%+64冷凝伤害。",
+      "cooldown": "8s"
+    },
+    "叹息古龙": {
+      "skill": "使用声骸技能，幻形为叹息古龙，召唤「悲恸领域」，持续5秒，对「悲恸领域」内的敌人周期性造成36.81%的热熔伤害。\n在首位装配该声骸技能时，自身获得12.00%热熔伤害加成提升，12.00%普攻伤害加成提升。",
+      "cooldown": "25s"
+    },
+    "呜咔咔": {
+      "skill": "使用声骸技能，召唤呜咔咔向敌人冲撞撕咬，冲撞时命中的敌人将受到68.48%湮灭伤害，被撕咬命中的敌人将受到102.72%湮灭伤害，并持续削减共振度，在5秒内共削减5.00%。",
+      "cooldown": "15s"
+    },
+    "呼咻咻": {
+      "skill": "使用声骸技能，召唤呼咻咻引爆风压，造成51.36%气动伤害并形成低气压区域。低压区域不断将敌人向中心聚拢，持续2秒，期间造成6次19.97%的气动伤害伤害。",
+      "cooldown": "15s"
+    },
+    "咔嚓嚓": {
+      "skill": "使用声骸技能，召唤咔嚓嚓对敌人投掷火球，命中时造成32.00%+64热熔伤害。",
+      "cooldown": "8s"
+    },
+    "咕咕河豚": {
+      "skill": "使用声骸技能，召唤咕咕河豚，向面前吹吐泡泡5次，每次造成23.04%冷凝伤害。",
+      "cooldown": "8s"
+    },
+    "哀声鸷": {
+      "skill": "使用声骸技能，幻形为哀声鸷发动二连爪击，分别造成157.44%、236.16%衍射伤害。\n幻形后，自身衍射伤害加成提升12.00%，共鸣解放伤害加成提升12.00%，持续15秒。",
+      "cooldown": "20s"
+    },
+    "啾啾河豚": {
+      "skill": "使用声骸技能，召唤啾啾河豚，鼓气并向前喷气3次，每次造成38.40%气动伤害并提供击退效果。",
+      "cooldown": "8s"
+    },
+    "噼啪啪": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "坚岩斗士": {
+      "skill": "使用声骸技能，幻形为坚岩斗士向前冲锋，命中时造成112.64%物理伤害并下砸造成168.96%物理伤害，获得生命值上限10.00%的护盾，持续7秒。幻形过程中再次使用声骸技能可退出幻形状态。",
+      "cooldown": "15s"
+    },
+    "天傀劫煞": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "奏谕乐师": {
+      "skill": "长按声骸技能，持续幻形为奏谕乐师，持续发射导电激光，造成10次53.28%导电伤害，每次造成伤害时可以获得1点协奏能量。",
+      "cooldown": "15s"
+    },
+    "审判战士": {
+      "skill": "使用声骸技能，幻形为审判战士进行攻击，可连续使用最多3次，每段造成171.73%湮灭伤害。",
+      "cooldown": "15s"
+    },
+    "寂寞小姐": {
+      "skill": "使用声骸技能，召唤寂寞小姐攻击，造成129.60%的衍射伤害。",
+      "cooldown": "8s"
+    },
+    "寒霜陆龟": {
+      "skill": "使用声骸技能，幻形为寒霜陆龟，同时缓慢回复生命值。幻形过程中再次使用声骸技能可退出幻形状态。",
+      "cooldown": "8s"
+    },
+    "封庭械囿": {
+      "skill": "使用声骸技能，召唤封庭械囿，猛击敌人造成132.00%/158.40%/184.80%/211.20%/237.60%的冷凝伤害。\n在首位装配该声骸技能时，自身治疗效果加成提升10.00%。",
+      "cooldown": "20s"
+    },
+    "小翼龙·冷凝": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "小翼龙·导电": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "小翼龙·气动": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "小翼龙·湮灭": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "小翼龙·热熔": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "小翼龙·衍射": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "岩蛛S4型": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "巡哨机傀": {
+      "skill": "使用声骸技能，幻形为巡哨机傀，对周围造成272.00%冷凝伤害，并生成最多3块冰墙阻拦敌人。",
+      "cooldown": "15s"
+    },
+    "巡徊猎手": {
+      "skill": "使用声骸技能，召唤巡徊猎手向前方投掷一把飞镖，飞镖在命中敌人的时候会进行一次弹射，最多弹射3次，每次命中造成28.80%气动伤害。",
+      "cooldown": "8s"
+    },
+    "巡游骑士": {
+      "skill": "使用声骸技能，幻形为巡游骑士，下砸攻击周围敌人，造成313.20%的导电伤害。",
+      "cooldown": "20s"
+    },
+    "工头布偶": {
+      "skill": "使用声骸技能，幻形为工头布偶，旋转起跳并下砸，造成268.20%的物理伤害。",
+      "cooldown": "15s"
+    },
+    "巨布偶": {
+      "skill": "使用声骸技能，幻形为巨布偶连续攻击，造成4段46.98%和一段125.28%的物理伤害。",
+      "cooldown": "20s"
+    },
+    "幻昼骑士": {
+      "skill": "使用声骸技能，幻形为幻昼骑士，挥剑前冲攻击敌人，造成268.20%的衍射伤害。对受「光噪效应」影响的敌人造成的伤害提升100.00%。",
+      "cooldown": "15s"
+    },
+    "幼猿": {
+      "skill": "使用声骸技能，幻形为幼猿发动前扑，造成48.00%+96气动伤害。",
+      "cooldown": "8s"
+    },
+    "幽翎火": {
+      "skill": "使用声骸技能，召唤幽翎火攻击，造成129.60%的湮灭伤害。",
+      "cooldown": "8s"
+    },
+    "异构武装": {
+      "skill": "使用声骸技能，幻形为异构武装，攻击前方目标，造成405.00%的冷凝伤害。装配角色施放共鸣解放时，可持续提升「强袭功率」。\n「强袭功率」升满时，重置声骸技能的冷却时间，可使用声骸技能幻形为异构武装，起飞后向目标俯冲，造成405.00%的冷凝伤害，并冻结目标。\n在首位装配该声骸技能时，自身获得12.00%冷凝伤害加成提升，12.00%共鸣技能伤害加成提升。",
+      "cooldown": "25s"
+    },
+    "影烁者": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "心傀·喜": {
+      "skill": "使用声骸技能，召唤心傀·喜，对敌人造成72.00%/86.40%/100.80%/115.20%/129.60%的物理伤害。",
+      "cooldown": "8s"
+    },
+    "心傀·忧": {
+      "skill": "使用声骸技能，召唤心傀·忧，对敌人造成两段36.00%/43.20%/50.40%/57.60%/64.80%的冷凝伤害。",
+      "cooldown": "8s"
+    },
+    "心傀·怒": {
+      "skill": "使用声骸技能，召唤心傀·怒，对敌人造成72.00%/86.40%/100.80%/115.20%/129.60%的热熔伤害。",
+      "cooldown": "8s"
+    },
+    "心傀·思": {
+      "skill": "使用声骸技能，召唤心傀·思，对敌人造成两段36.00%/43.20%/50.40%/57.60%/64.80%的导电伤害。",
+      "cooldown": "8s"
+    },
+    "心傀·恐": {
+      "skill": "使用声骸技能，召唤心傀·恐，对敌人造成一段28.80%/34.56%/40.32%/46.08%/51.84%和一段43.20%/51.84%/60.48%/69.12%/77.76%的湮灭伤害。",
+      "cooldown": "8s"
+    },
+    "心傀·悲": {
+      "skill": "使用声骸技能，召唤心傀·悲，对敌人造成72.00%/86.40%/100.80%/115.20%/129.60%的衍射伤害",
+      "cooldown": "8s"
+    },
+    "惊蛰猎手": {
+      "skill": "使用声骸技能，召唤惊蛰猎手向敌人射击5次，前四次造成17.28%导电伤害，最后一次造成46.08%导电伤害。",
+      "cooldown": "8s"
+    },
+    "愚金幼岩": {
+      "skill": "使用声骸技能，召唤愚金幼岩向前扑击，对路径上的敌人造成129.60%衍射伤害。",
+      "cooldown": "8s"
+    },
+    "慈悲节使": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "戏猿": {
+      "skill": "使用声骸技能，幻形为戏猿挥掌攻击，造成268.20%气动伤害。",
+      "cooldown": "15s"
+    },
+    "持刃贵族": {
+      "skill": "使用声骸技能，幻形为持刃贵族，挥剑攻击前方敌人，造成268.20%的冷凝伤害。\n长按声骸技能，持续幻形，一定时间后挥剑并向前施放一道远程斩击，对前方敌人分别造成268.20%和670.50%的冷凝伤害。",
+      "cooldown": "15s"
+    },
+    "振铎乐师": {
+      "skill": "使用声骸技能，召唤振铎乐师。队伍中的角色拾取湮灭回响时获得持续10秒的强化效果：攻击命中目标时，振铎乐师造成14.40%湮灭伤害，最多10次。",
+      "cooldown": "15s"
+    },
+    "探隧重机": {
+      "skill": "使用声骸技能，召唤探隧重机，使附近队伍中登场角色获得召唤者生命上限10%的护盾，持续4秒。",
+      "cooldown": "20s"
+    },
+    "无冠者": {
+      "skill": "使用声骸技能，幻形为无冠者，可连续使用最多4次，前2次均造成一段134.08%的湮灭伤害，第3次造成两段100.56%的湮灭伤害，第4次造成三段67.04%的湮灭伤害\n幻形后，自身湮灭伤害加成提升12.00%，共鸣技能伤害加成提升12.00%，持续15秒。",
+      "cooldown": "20s"
+    },
+    "无妄者": {
+      "skill": "使用声骸技能，幻形为无妄者，连续攻击前方目标6次，前5次每次造成54.08%的湮灭伤害，最后一段造成270.40%的湮灭伤害。\n漂泊者·湮灭在施放共鸣解放·临渊死寂后5秒内，施放该声骸技能造成的伤害提升50.00%。",
+      "cooldown": "20s"
+    },
+    "无常凶鹭": {
+      "skill": "使用声骸技能，幻形为无常凶鹭，起飞后下砸，造成310.56%的湮灭伤害；\n长按声骸技能，持续幻形，起飞后向下倾泻湮灭火炎，每段攻击造成55.73%的湮灭伤害。\n幻形后首次命中敌人，回复自身10点共鸣能量；在此后15秒内，若自身施放延奏技能，则可使下一个变奏登场的角色伤害提升12%，持续15秒。",
+      "cooldown": "20s"
+    },
+    "无归的谬误": {
+      "skill": "使用声骸技能，召唤无归的谬误一部分的权能，对周围的敌人造成1次基于自身生命上限15.86%的衍射伤害，使自身共鸣效率提升10%，全队角色攻击提升10%，持续20秒。\n长按声骸技能，可在震击结束后，消耗耐力持续进行攻击，每次造成基于生命上限1.58%的衍射伤害；结束长按时，触发最后一击，造成基于生命上限19.82%的衍射伤害。",
+      "cooldown": "20s"
+    },
+    "无铭探索者": {
+      "skill": "使用声骸技能，召唤无铭探索者，攻击贯穿路径上的敌人造成152.00%/182.40%/212.80%/243.20%/273.60%的气动伤害。\n在首位装配该声骸技能时，自身气动伤害加成提升12.00%，声骸技能伤害加成提升20.00%。",
+      "cooldown": "20s"
+    },
+    "晶螯蝎": {
+      "skill": "使用声骸技能，幻形为晶螯蝎进入防御状态，解除防御时可进行反击，造成48.00%+96物理伤害。",
+      "cooldown": "8s"
+    },
+    "暗夜骑士": {
+      "skill": "使用声骸技能，幻形为暗夜骑士，跃起后前刺攻击敌人，造成268.20%的湮灭伤害。",
+      "cooldown": "15s"
+    },
+    "暗鬃狼": {
+      "skill": "使用声骸技能，幻形为暗鬃狼进行尾部打击，可连续使用最多2次。每次攻击造成116.64%湮灭伤害，命中敌人时会额外生成一次湮灭打击，造成77.76%湮灭伤害。",
+      "cooldown": "15s"
+    },
+    "朔雷之鳞": {
+      "skill": "使用声骸技能，幻形为朔雷之鳞，可连续使用最多2次，甩尾召唤出来的雷击每段造成102.48%的导电伤害，爪击造成175.68%的导电伤害。\n爪击命中后，自身导电伤害加成提升12.00%，重击伤害加成提升12.00%，持续15秒。",
+      "cooldown": "20s"
+    },
+    "格洛犸图": {
+      "skill": "使用声骸技能，召唤格洛犸图，践踏敌人造成152.00%/182.40%/212.80%/243.20%/273.60%的冷凝伤害。\n在此后15秒内，若自身施放延奏技能，使下一个变奏技能登场的角色冷凝伤害加成提升12.00%，持续15秒。",
+      "cooldown": "20s"
+    },
+    "梦魇·云闪之鳞": {
+      "skill": "使用声骸技能，幻形为梦魇·云闪之鳞，对前方敌人造成405.00%的导电伤害。\n在首位装配该声骸技能时，自身导电伤害加成提升12.00%，共鸣解放伤害加成提升12.00%。",
+      "cooldown": "25s"
+    },
+    "梦魇·侏侏鸵": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·凯尔匹": {
+      "skill": "使用声骸技能，幻形为梦魇·凯尔匹，对周围敌人造成225.00%/270.00%/315.00%/360.00%/405.00%的冷凝伤害。\n在首位装配该声骸技能时，自身冷凝伤害加成提升12.00%，气动伤害加成提升12.00%；使用延奏技能离场时可召唤梦魇·凯尔匹，对敌人造成225.00%/270.00%/315.00%/360.00%/405.00%的气动伤害。",
+      "cooldown": "25s"
+    },
+    "梦魇·刺玫菇": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·刺玫菇（稚形）": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·呜咔咔": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·咕咕河豚": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·哀声鸷": {
+      "skill": "用声骸技能，召唤梦魇·哀声鸷，对周围敌人造成273.60%的衍射伤害。若敌人处于受「光噪效应」影响状态时，哀声鸷造成的伤害提升100.00%。\n在首位装配该声骸技能时，自身衍射伤害加成提升12.00%。",
+      "cooldown": "20s"
+    },
+    "梦魇·啾啾河豚": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·审判战士": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·巡徊猎手": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·惊蛰猎手": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·振铎乐师": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·无冠者": {
+      "skill": "使用声骸技能，幻形为梦魇·无冠者，对前方敌人造成264.60%的湮灭伤害。\n在首位装配该声骸技能时，自身湮灭伤害加成提升12.00%，普攻伤害加成提升12.00%。\n初始拥有3次可使用次数，每12秒可使用次数增加1次，可使用次数上限3次。梦魇·无冠者命中目标后，该声骸技能造成的伤害提升20.00%，持续2秒，不可叠加。",
+      "cooldown": "12s"
+    },
+    "梦魇·无常凶鹭": {
+      "skill": "使用声骸技能，幻形为梦魇·无常凶鹭，对周围敌人造成最多10段，每段40.50%的湮灭伤害。\n在首位装配该声骸技能时，自身湮灭伤害加成提升12.00%，重击伤害加成提升12.00%。",
+      "cooldown": "25s"
+    },
+    "梦魇·朔雷之鳞": {
+      "skill": "使用声骸技能，幻形为梦魇·朔雷之鳞，对周围敌人造成405.00%的导电伤害。\n在首位装配该声骸技能时，自身导电伤害加成提升12.00%，共鸣技能伤害加成提升12.00%。",
+      "cooldown": "25s"
+    },
+    "梦魇·燎照之骑": {
+      "skill": "使用声骸技能，幻形为梦魇·燎照之骑，跃起对前方敌人造成405.00%的热熔伤害。\n在首位装配该声骸技能时，自身热熔伤害加成提升12.00%，共鸣技能伤害加成提升12.00%。\n长按声骸技能，持续幻形为燎照之骑并进入骑行状态，结束时对前方的目标造成一次283.50%的热熔伤害。",
+      "cooldown": "25s"
+    },
+    "梦魇·破霜猎手": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·紫羽鹭": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·绿熔蜥": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·绿熔蜥（稚形）": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·赫卡忒": {
+      "skill": "使用声骸技能，幻形为梦魇·赫卡忒，向上跃起后下砸造成三段每段84.66%/101.59%/118.52%/135.46%/152.39%的湮灭伤害。\n在首位装配该声骸技能时，自身湮灭伤害加成提升12.00%，声骸技能伤害加成提升20.00%。",
+      "cooldown": "25s"
+    },
+    "梦魇·辉萤军势": {
+      "skill": "使用声骸技能，召唤梦魇·辉萤军势，对周围敌人造成152.00%/182.40%/212.80%/243.20%/273.60%的冷凝伤害。\n在首位装配该声骸技能时，自身冷凝伤害加成提升12.00%，协同攻击造成的伤害提升30.00%。",
+      "cooldown": "20s"
+    },
+    "梦魇·青羽鹭": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "梦魇·飞廉之猩": {
+      "skill": "使用声骸技能，召唤梦魇·飞廉之猩攻击敌人，造成164.16%的气动伤害；留存的「风旋榕木」将持续攻击周围敌人，造成最多5段，每段21.89%的气动伤害。\n在首位装配该声骸技能时，自身气动伤害加成提升12.00%，重击伤害加成提升12.00%。",
+      "cooldown": "20s"
+    },
+    "欺诈奇藏": {
+      "skill": "使用声骸技能，召唤欺诈奇藏连续攻击，造成3段64.19%的衍射伤害。",
+      "cooldown": "15s"
+    },
+    "毒冠贵族": {
+      "skill": "使用声骸技能，幻形为毒冠贵族，前冲攻击敌人，造成268.20%的冷凝伤害。\n在首位装备该声骸技能时，自身冷凝伤害加成提升12.00%。",
+      "cooldown": "15s"
+    },
+    "气动棱镜": {
+      "skill": "使用声骸技能，召唤气动棱镜持续攻击，造成19.26%的气动伤害。",
+      "cooldown": "15s"
+    },
+    "浮灵偶": {
+      "skill": "使用声骸技能，召唤浮灵偶连续攻击，造成6段19.26%和1段77.04%的热熔伤害。",
+      "cooldown": "15s"
+    },
+    "浮灵偶·海德": {
+      "skill": "使用声骸技能，召唤浮灵偶·海德攻击，造成129.60%的热熔伤害。",
+      "cooldown": "8s"
+    },
+    "浮灵偶·莱特": {
+      "skill": "使用声骸技能，召唤浮灵偶·莱特攻击，造成129.60%的湮灭伤害。",
+      "cooldown": "8s"
+    },
+    "浮灵偶·蕾弗": {
+      "skill": "使用声骸技能，召唤浮灵偶·蕾弗攻击，造成129.60%的衍射伤害。",
+      "cooldown": "8s"
+    },
+    "海之女": {
+      "skill": "使用声骸技能，召唤【潮涌之漩】，对敌人造成至多十段7.60%/9.12%/10.64%/12.16%/13.68%的气动伤害和一段91.20%/109.44%/127.68%/145.92%/164.16%的气动伤害。\n在首位装配该声骸技能时，自身气动伤害加成提升12.00%，共鸣解放伤害加成提升12.00%。",
+      "cooldown": "20s"
+    },
+    "海维夏": {
+      "skill": "使用声骸技能，召唤海维夏，在空中发射激光对敌人造成十段15.20%/18.24%/21.28%/24.32%/27.36%的衍射伤害。\n在此后15秒内，若自身施放延奏技能，使下一个变奏技能登场的角色全属性伤害加成提升10.00%，持续15秒。",
+      "cooldown": "20s"
+    },
+    "游弋蝶": {
+      "skill": "使用声骸技能，召唤游弋蝶，为当前队伍角色回复1.80%生命上限和额外80点的生命值，最多可治疗4次。",
+      "cooldown": "8s"
+    },
+    "游鳞机枢": {
+      "skill": "使用声骸技能，幻形为游鳞机枢并进入格挡状态，格挡状态正常结束时挥砍造成553.60%冷凝伤害。若在格挡状态下被攻击，则立刻反击，造成553.60%冷凝伤害；若受到的为特殊技攻击，则会击破敌人的特殊技并进行反击，造成553.60%+276.80%冷凝伤害。",
+      "cooldown": "15s"
+    },
+    "湮灭棱镜": {
+      "skill": "使用声骸技能，召唤湮灭棱镜发射五枚湮灭晶片，每段造成23.04%湮灭伤害。",
+      "cooldown": "8s"
+    },
+    "火鬃狼": {
+      "skill": "使用声骸技能，召唤火鬃狼撕咬敌人，造成32.00%+64热熔伤害。",
+      "cooldown": "8s"
+    },
+    "炉芯机骸": {
+      "skill": "使用声骸技能，幻形为炉芯机骸，跃向空中施放重斩对敌人造成195.00%/234.00%/273.00%/312.00%/351.00%的热熔伤害。\n在首位装配该声骸技能时，自身共鸣效率提升10.00%。",
+      "cooldown": "20s"
+    },
+    "热熔棱镜": {
+      "skill": "使用声骸技能，召唤热熔棱镜发射一枚晶片，造成32.00%+64热熔伤害。",
+      "cooldown": "8s"
+    },
+    "燎照之骑": {
+      "skill": "短按声骸技能，幻形为燎照之骑发动斩击，可连续使用最多3次。分别造成242.40%、282.80%、282.80%的热熔伤害。\n最后一段命中敌人后，自身热熔伤害加成提升12.00%，普攻伤害加成提升12.00%，持续15秒。\n长按声骸技能，持续幻形为燎照之骑并进入骑行状态，结束时对前方的目标造成一次282.80%的热熔伤害。",
+      "cooldown": "20s"
+    },
+    "琉璃刀伶": {
+      "skill": "使用声骸技能，幻形为琉璃刀伶，攻击周围敌人，造成313.20%的导电伤害。\n在首位装备该声骸技能时，自身导电伤害加成提升12.00%。",
+      "cooldown": "20s"
+    },
+    "瓷庭候": {
+      "skill": "使用声骸技能，召唤瓷庭候，斩击前方敌人造成两段10.80%/12.96%/15.12%/17.28%/19.44%的气动伤害，随后旋转突进对路径上的敌人造成七段7.20%/8.64%/10.08%/11.52%/12.96%的气动伤害。",
+      "cooldown": "8s"
+    },
+    "石庭候": {
+      "skill": "使用声骸技能，召唤石庭候，对敌人造成72.00%/86.40%/100.80%/115.20%/129.60%的气动伤害。",
+      "cooldown": "8s"
+    },
+    "矿岩机麋": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "矿岩熊蜂": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "破霜猎手": {
+      "skill": "使用声骸技能，召唤破霜猎手投掷冰矛，直接命中时造成46.08%冷凝伤害，聚能过程造成10次4.61%冷凝伤害，爆炸造成23.04%冷凝伤害。",
+      "cooldown": "8s"
+    },
+    "碎獠猪": {
+      "skill": "使用声骸技能，召唤碎獠猪，进行一段击飞效果卓越的上撩攻击，造成32.00%+64物理伤害。",
+      "cooldown": "8s"
+    },
+    "磐石守卫": {
+      "skill": "使用声骸技能，幻形为磐石守卫。可在一段时间内进行防御，受到攻击后会对敌人直接造成一次基于自身生命上限8.29%的衍射伤害，并进行一次追击造成生命上限8.29%的衍射伤害。\n幻形期间可以再次使用声骸技能退出幻形。\n若受到的为特殊技攻击，则会击破敌人的特殊技，获得自身生命上限30%的护盾，并进行两段追击，每段造成基于自身生命上限5.52%的衍射伤害，同时发射三道地裂波，每道造成生命上限4.59%衍射伤害。",
+      "cooldown": "15s"
+    },
+    "箭簇熊": {
+      "skill": "使用声骸技能，召唤箭簇熊使用连续五段爪击，前四段每段造成29.96%的物理伤害，最后一段造成51.36%的物理伤害。",
+      "cooldown": "15s"
+    },
+    "紫羽鹭": {
+      "skill": "使用声骸技能，幻形为紫羽鹭，在原地格挡，持续一段时间后进行反击，造成288.00%导电伤害，在格挡过程中受到攻击则能提前反击，额外回复5点协奏能量。",
+      "cooldown": "15s"
+    },
+    "绿熔蜥": {
+      "skill": "使用声骸技能，召唤绿熔蜥持续喷火，造成10次17.12%热熔伤害。",
+      "cooldown": "15s"
+    },
+    "绿熔蜥（稚形）": {
+      "skill": "使用声骸技能，幻形为绿熔蜥（稚形），在原地休息，能够缓慢回复生命值。",
+      "cooldown": "8s"
+    },
+    "罗蕾莱": {
+      "skill": "使用声骸技能，幻形为罗蕾莱，对周围敌人造成405.00%的湮灭属性伤害。\n在首位装配该声骸技能时，自身湮灭伤害加成提升12.00%，普攻伤害加成提升12.00%。",
+      "cooldown": "25s"
+    },
+    "聚械机偶": {
+      "skill": "使用声骸技能，对周围的敌人造成一次48.64%的导电伤害，并召唤聚械废料攻击敌人。废料命中目标时会造成320.00%的导电伤害，并在一段时间后爆炸，造成160.00%的导电伤害。\n施放声骸技能后，自身攻击提升12.00%，持续15秒。废料造成的伤害为角色的延奏技能伤害。",
+      "cooldown": "20s"
+    },
+    "苦信者的作俑": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "荣光节使": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "荣耀狮像": {
+      "skill": "使用声骸技能，召唤【荣光之戟】，对周围敌人造成82.08%的热熔伤害，一定时间后再造成191.52%的热熔伤害。\n在首位装配该声骸技能时，自身热熔伤害加成提升12.00%，共鸣解放伤害加成提升12.00%。",
+      "cooldown": "20s"
+    },
+    "莳植机麋": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "莳植熊蜂": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "蚀脊龙": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "融火虫": {
+      "skill": "使用声骸技能，召唤融火虫持续攻击，每次造成38.40%热熔伤害。融火虫会在召唤者离场或远离融火虫一定距离时消失。",
+      "cooldown": "8s"
+    },
+    "融躯战士": {
+      "skill": "使用声骸技能，召唤融躯战士，快速连续拳击敌人造成七段10.70%/12.84%/14.98%/17.12%/19.26%的衍射伤害，随后使出一记上勾拳造成32.10%/38.52%/44.94%/51.36%/57.78%的衍射伤害。",
+      "cooldown": "15s"
+    },
+    "衍射棱镜": {
+      "skill": "使用声骸技能，召唤衍射棱镜发射一道激光，最多造成8次伤害，每次造成14.40%衍射伤害。",
+      "cooldown": "8s"
+    },
+    "裂变幼岩": {
+      "skill": "用声骸技能，召唤裂变幼岩。产生共鸣，每次回复友方角色2%生命值。\n可以在非战斗情况下，拾取附近的矿物、植物。",
+      "cooldown": "15s"
+    },
+    "角": {
+      "skill": "使用声骸技能，召唤「角」腾跃而起，对目标造成48.64%的衍射伤害并降下光雷，光雷对周围目标造成最多五段，每段19.46%的衍射伤害。随后「角」向下盘旋攻击周围敌人，连续两次造成48.64%的衍射伤害。\n施放声骸技能时，获得「光阴之祝」，持续15秒。\n「光阴之祝」持续期间：\n·自身的共鸣技能伤害加成提升16.00%；\n·自身的共鸣技能命中目标后，目标每秒受到1次16.00%衍射伤害，此次伤害为角色的共鸣技能伤害，持续15秒。",
+      "cooldown": "20s"
+    },
+    "角鳄": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "赦罪节使": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "赫卡忒": {
+      "skill": "使用声骸技能，在周身召唤3个持续旋舞的「冥月侍女」。「冥月侍女」的旋刃将对敌人造成45.59%的湮灭伤害。旋刃成功触发逆势回击时，重置「冥月侍女」存在的时间。\n在首位装配该声骸技能时，自身协同攻击造成的伤害提升40.00%。",
+      "cooldown": "20s"
+    },
+    "踏光兽": {
+      "skill": "使用声骸技能，幻形为踏光兽，向前进行一段扑击，造成135.36%的衍射伤害。命中目标时生成6个「遗光」，「遗光」爆炸时造成15.04%的衍射伤害。\n长按声骸技能，持续幻形，向前飞跃后空中漫步一段距离。",
+      "cooldown": "15s"
+    },
+    "车刃镰": {
+      "skill": "使用声骸技能，幻形为车刃镰，发动旋转冲击造成112.00%气动伤害，旋转冲击结束后发动挥砍造成168.00%气动伤害。",
+      "cooldown": "15s"
+    },
+    "辉萤军势": {
+      "skill": "使用声骸技能，幻形为辉萤军势进行攻击，可连续使用最多3次。\n向前方下砸并引发大范围的冰冻冲击，前两段下砸分别造成200.16%和200.16%冷凝伤害，最后一段造成266.88%冷凝伤害，被冲击命中的敌人会被冰冻。\n每次冲击使自身冷凝伤害加成提升4.00%，共鸣技能伤害加成提升4.00%，最多3层，持续15秒。",
+      "cooldown": "20s"
+    },
+    "辛吉勒姆": {
+      "skill": "使用声骸技能，召唤辛吉勒姆，对敌人造成一段68.40%和一段205.20%的热熔伤害。\n在首位装配该声骸技能时，若装配角色为爱弥斯，则自身共鸣解放伤害加成提升25.00%。",
+      "cooldown": "20s"
+    },
+    "迷胧幻蛾": {
+      "skill": "短按声骸技能，幻形为迷胧幻蛾，对周围敌人造成225.00%/270.00%/315.00%/360.00%/405.00%的衍射伤害。\n长按声骸技能，持续攻击敌人造成至多十二段27.41%/32.89%/38.37%/43.85%/49.33%的衍射伤害。\n使用该声骸技能后15秒内，若自身施放延奏技能，使下一个变奏技能登场的角色攻击提升12.00%，持续15秒。",
+      "cooldown": "25s"
+    },
+    "通行灯偶": {
+      "skill": "使用声骸技能，召唤通行灯偶，定身最多1秒，敌人受击后会解除定身状态。",
+      "cooldown": "15s"
+    },
+    "遁地鼠": {
+      "skill": "使用声骸技能，幻形为遁地鼠向前移动，期间可调整方向，且不会受到伤害。",
+      "cooldown": "8s"
+    },
+    "釉变幼岩": {
+      "skill": "使用声骸技能，召唤釉变幼岩。产生共鸣，为附近队伍的角色回复2.52%生命上限的生命值，最多可治疗5次。",
+      "cooldown": "15s"
+    },
+    "重塑雕像的拳砾": {
+      "skill": "使用声骸技能，可幻形为飓力熊向前冲锋，命中时造成156.60%的气动伤害，结束时挥击造成156.60%的气动伤害。长按可持续冲锋，冲锋过程中再次使用声骸技能可施放挥击。",
+      "cooldown": "20s"
+    },
+    "重工铁蹄": {
+      "skill": "使用声骸技能，幻形为重工铁蹄，冲向敌人造成29.80%/35.76%/41.72%/47.68%/53.64%的热熔伤害，并在终点处进行一次强力的上撩攻击造成三段7.45%/8.94%/10.43%/11.92%/13.41%和一段96.85%/116.22%/135.59%/154.96%/174.33%的热熔伤害。",
+      "cooldown": "15s"
+    },
+    "金庭候": {
+      "skill": "使用声骸技能，幻形为金庭候，原地回复十三次0.31%/0.37%/0.43%/0.49%/0.55%生命上限和额外24点的生命值，随后猛击敌人造成85.50%/102.60%/119.70%/136.80%/153.90%的气动伤害。",
+      "cooldown": "8s"
+    },
+    "锯袭铁影": {
+      "skill": "使用声骸技能，召唤锯袭铁影，发动攻击对敌人造成107.00%/128.40%/149.80%/171.20%/192.60%的热熔伤害。",
+      "cooldown": "15s"
+    },
+    "阿嗞嗞": {
+      "skill": "使用声骸技能，召唤阿嗞嗞引爆光能，造成48.00%+96衍射伤害并制造持续1.8秒的停滞区域。",
+      "cooldown": "15s"
+    },
+    "隐迹铁影": {
+      "skill": "使用声骸技能，召唤隐迹铁影，发射光束对敌人造成107.00%/128.40%/149.80%/171.20%/192.60%的湮灭伤害。",
+      "cooldown": "15s"
+    },
+    "雪鬃狼": {
+      "skill": "使用声骸技能，幻形为雪鬃狼，可连续使用最多2次，每次造成214.40%的冷凝伤害。在空中施放该声骸技能时，造成的伤害提升20.00%，落地时额外生成6颗「冰锥」，每颗造成32.00%冷凝伤害。",
+      "cooldown": "20s"
+    },
+    "雷鬃狼": {
+      "skill": "使用声骸技能，召唤雷鬃狼攻击，造成3段43.20%的导电伤害。",
+      "cooldown": "8s"
+    },
+    "霁息兽尊": {
+      "skill": "使用声骸技能，召唤霁息兽尊，喷吐热焰对敌人造成七段18.85%/22.62%/26.39%/30.16%/33.93%的热熔伤害。",
+      "cooldown": "20s"
+    },
+    "霁息兽尊·身": {
+      "skill": "使用声骸技能，召唤霁息兽尊·身，砸向敌人造成107.00%/128.40%/149.80%/171.20%/192.60%的热熔伤害。",
+      "cooldown": "15s"
+    },
+    "霁息兽尊·首": {
+      "skill": "使用声骸技能，召唤霁息兽尊·首，飞向敌人造成72.00%/86.40%/100.80%/115.20%/129.60%的热熔伤害。",
+      "cooldown": "8s"
+    },
+    "霜鬃狼": {
+      "skill": "使用声骸技能，召唤霜鬃狼攻击，造成129.60%的冷凝伤害。",
+      "cooldown": "8s"
+    },
+    "霜鳞蜃甲": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "青羽鹭": {
+      "skill": "使用声骸技能，幻形为青羽鹭，携卷旋风进行冲锋，造成236.80%气动伤害；对施放特殊技的敌人造成伤害时能够击破对方的特殊技。",
+      "cooldown": "15s"
+    },
+    "颤栗战士": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "风鬃狼": {
+      "skill": "使用声骸技能，召唤风鬃狼，为附近队伍的角色回复2.70%生命上限的生命值，最多可治疗3次。",
+      "cooldown": "8s"
+    },
+    "风鳞蜃甲": {
+      "skill": "",
+      "cooldown": ""
+    },
+    "飓力熊": {
+      "skill": "使用声骸技能，幻形为重塑雕像的拳砾攻击目标，造成313.20%的衍射伤害。长按声骸技能，持续幻形，前冲并攻击目标造成469.80%的衍射伤害。",
+      "cooldown": "20s"
+    },
+    "飞廉之猩": {
+      "skill": "使用声骸技能，幻形为飞廉之猩进行踢击。如果踢击命中则会接续一记追击，踢击造成231.84%气动伤害，追击造成283.36%气动伤害。\n追击命中后，自身气动伤害加成提升12.00%，重击伤害加成提升12.00%，持续15秒。",
+      "cooldown": "20s"
+    },
+    "魔术先生": {
+      "skill": "使用声骸技能，召唤魔术先生攻击，造成3段43.20%的湮灭伤害。",
+      "cooldown": "8s"
+    },
+    "鸣泣战士": {
+      "skill": "使用声骸技能，幻形为鸣泣战士发动格挡反击，若格挡成功则立刻减少此技能70.00%冷却时间，并造成288.00%热熔伤害。",
+      "cooldown": "15s"
+    },
+    "鸣钟之龟": {
+      "skill": "使用声骸技能，发动鸣钟之龟的加护，对附近敌人造成基于自身防御力145.92%的冷凝伤害，并获得鸣钟之盾，持续15秒。\n鸣钟之盾能为队伍中登场角色提供50.00%的减伤和10.00%的伤害提升，受到3次攻击后消失。",
+      "cooldown": "20s"
+    }
+  },
+  "icon_urls": {
+    "万囮牢·朽躯": "https://prod-alicdn-community.kurobbs.com/forum/4a1da1b834d045528751fdfe8784678d20260709.png",
+    "不熄猎手": "https://prod-alicdn-community.kurobbs.com/forum/8fbd0c2fb88a45be8e0423d6c9e1eb9c20260709.png",
+    "云海列车": "https://prod-alicdn-community.kurobbs.com/forum/ea7dffbe2f7641b2ba35859e92647ec920241231.png",
+    "云海妖精": "https://prod-alicdn-community.kurobbs.com/forum/6e994dd300574cecb35eba6f0f46f58420241226.png",
+    "云闪之鳞": "https://prod-alicdn-community.kurobbs.com/forum/e21bf8535ec846309a8677e098da1e1620240427.png",
+    "传道者的遗形": "https://prod-alicdn-community.kurobbs.com/forum/bfaf2609c0654bb4bde519fc7cd02b1a20250609.png",
+    "伪作的神王": "https://prod-alicdn-community.kurobbs.com/forum/f37c0f443100404da580ee1d51a7930520250826.png",
+    "侏侏鸵": "https://prod-alicdn-community.kurobbs.com/forum/2a235883b369493293057db1b11dbdc920240627.png",
+    "先锋幼岩": "https://prod-alicdn-community.kurobbs.com/forum/775f00cce78d4ec18ec0d0626e17875c20240515.png",
+    "共鸣回响·冠顶苍隼": "https://prod-alicdn-community.kurobbs.com/forum/08b1433a3e274a5f9f822c8d18b02a4220260203.png",
+    "共鸣回响·梦魇亚当·重锤": "https://prod-alicdn-community.kurobbs.com/forum/8bf28568620d4ceea655f3e5fd29199720260607.png",
+    "共鸣回响·芙露德莉斯": "https://prod-alicdn-community.kurobbs.com/forum/2282368f0789433aa9a8fdfc543b383720250325.png",
+    "共鸣回响·芬莱克": "https://prod-alicdn-community.kurobbs.com/forum/144ce261af1c420c8162ab22a3a49f7420250719.png",
+    "共鸣回响·达妮娅": "https://prod-alicdn-community.kurobbs.com/forum/629e4426991f4fae94c0ee5122ffed3220260428.png",
+    "共鸣回响·鸣式·利维亚坦": "https://prod-alicdn-community.kurobbs.com/forum/ab2d8ee3a3cb44f696c88b229e91df2a20251119.png",
+    "共鸣回响·鸣式·虚造神型": "https://prod-alicdn-community.kurobbs.com/forum/ce28b6b3a2484cdab6aff389302856aa20260428.png",
+    "冠顶械隼": "https://prod-alicdn-community.kurobbs.com/forum/1b3dea0e7435429f9816a6d590d0c9d920260203.png",
+    "冥渊守卫": "https://prod-alicdn-community.kurobbs.com/forum/2f3a653b034d4940b3d36c6a64b0e17a20240426.png",
+    "冰盈舞者": "https://prod-alicdn-community.kurobbs.com/forum/42ad4340530b4d79bcb6b80c3bff4a8a20260203.png",
+    "冷凝棱镜": "https://prod-alicdn-community.kurobbs.com/forum/27f965424e7e451aaeab967d99ea286120240426.png",
+    "凝水贵族": "https://prod-alicdn-community.kurobbs.com/forum/2139f6b5b72c444d849bfbd966a4689820241229.png",
+    "刺玫菇": "https://prod-alicdn-community.kurobbs.com/forum/89be7e6fa54a45a185a9a8e49503110d20240426.png",
+    "刺玫菇（稚形）": "https://prod-alicdn-community.kurobbs.com/forum/9c79c765494045778356140847c9919920240426.png",
+    "千傀重楼": "https://prod-alicdn-community.kurobbs.com/forum/5c41214b186a416b881ee4b4f4634ed820260709.png",
+    "卫冕节使": "https://prod-alicdn-community.kurobbs.com/forum/6a23c6a9f8e2495b8ff904ce428aa52d20250325.png",
+    "卫冕节使（公）": "https://prod-alicdn-community.kurobbs.com/forum/5ecf75d177104108b551817ecc8c9a7720241231.png",
+    "双极·星升辉铳": "https://prod-alicdn-community.kurobbs.com/forum/0c00bb3113a4417eb66f6c189185d19a20251225.png",
+    "双极·渊陨重锋": "https://prod-alicdn-community.kurobbs.com/forum/3e1ade5d856e4ef9bd3a9fce0ddde3e320251225.png",
+    "叮咚咚": "https://prod-alicdn-community.kurobbs.com/forum/4fde338841bb4dc6b9a4d102deac8d8a20240627.png",
+    "叹息古龙": "https://prod-alicdn-community.kurobbs.com/forum/e1624919c8d3447080e0737c196c009220241229.png",
+    "呜咔咔": "https://prod-alicdn-community.kurobbs.com/forum/2bbdf5b238b244d7ab38e21c9d60da0320240426.png",
+    "呼咻咻": "https://prod-alicdn-community.kurobbs.com/forum/0169f205ae224a5790207540f65fe08d20240426.png",
+    "咔嚓嚓": "https://prod-alicdn-community.kurobbs.com/forum/593b08fd33df403c97744343f5117ae620240426.png",
+    "咕咕河豚": "https://prod-alicdn-community.kurobbs.com/forum/ecd7eb4a70604810b4e912e6c4f5586020240426.png",
+    "哀声鸷": "https://prod-alicdn-community.kurobbs.com/forum/6b0eae92354149809d27038163476a2f20240426.png",
+    "哈德良角斗士的肖像": "https://prod-alicdn-community.kurobbs.com/forum/d308650aab394836afb56e05fd919b2420241231.png",
+    "啾啾河豚": "https://prod-alicdn-community.kurobbs.com/forum/793e4a9865b94c1b8ca49a3f0faaaed920240426.png",
+    "噼啪啪": "https://prod-alicdn-community.kurobbs.com/forum/1551339ffefa450bb25097cebf504ed920251225.png",
+    "坚岩斗士": "https://prod-alicdn-community.kurobbs.com/forum/65d31043ee3f4e96b42239e109d3151a20240426.png",
+    "墨丘利机": "https://prod-alicdn-community.kurobbs.com/forum/b0d9a2b1a093466f97c58d5b3c9bdc6e20241231.png",
+    "天傀劫煞": "https://prod-alicdn-community.kurobbs.com/forum/02d8c8e3c621440588e3506b88961f5620260819.png",
+    "奏谕乐师": "https://prod-alicdn-community.kurobbs.com/forum/2f98d4f95a0d42329c225913527fe80f20240427.png",
+    "孪面": "https://prod-alicdn-community.kurobbs.com/forum/2300e9899e40419c8d310bc3b8f6602720241231.png",
+    "审判战士": "https://prod-alicdn-community.kurobbs.com/forum/1c1da210b52645ad8d6ef8d522fae7ef20240426.png",
+    "寂寞小姐": "https://prod-alicdn-community.kurobbs.com/forum/a719ec7ab91f4e5abebb658b4c4c8b6720241229.png",
+    "寒霜陆龟": "https://prod-alicdn-community.kurobbs.com/forum/9ce8a0ef4f174d0a8e547abc22a353c320240426.png",
+    "封庭械囿": "https://prod-alicdn-community.kurobbs.com/forum/b980fa951c54488786243cef94eb34d820260709.png",
+    "小翼龙·冷凝": "https://prod-alicdn-community.kurobbs.com/forum/9ffd1df43e3b49e7a8781c50aa76aa2020250325.png",
+    "小翼龙·导电": "https://prod-alicdn-community.kurobbs.com/forum/390facfde87f4e78956a4b4e9bf429fa20250325.png",
+    "小翼龙·气动": "https://prod-alicdn-community.kurobbs.com/forum/c90f225b487c4ee088ed14badb666dd420250325.png",
+    "小翼龙·湮灭": "https://prod-alicdn-community.kurobbs.com/forum/34d9bc856f6b42e69c1360f5f30736e220250609.png",
+    "小翼龙·热熔": "https://prod-alicdn-community.kurobbs.com/forum/31cae90d8c77499f95dc9b722cb850b820250609.png",
+    "小翼龙·衍射": "https://prod-alicdn-community.kurobbs.com/forum/cadc22ccdb674d8c8ba91b265725eb4720250609.png",
+    "岩蛛S4型": "https://prod-alicdn-community.kurobbs.com/forum/5b4c99510c404bb6b9cffb5289db402c20251225.png",
+    "巡哨机傀": "https://prod-alicdn-community.kurobbs.com/forum/82df33ec8ee143318e64c5d06df8b18620240427.png",
+    "巡徊猎手": "https://prod-alicdn-community.kurobbs.com/forum/e0e5bf0f5ee04fbdb9ac7bc56bab806420240426.png",
+    "巡游骑士": "https://prod-alicdn-community.kurobbs.com/forum/7b75578db92c4709926e81e4e2a941c520241229.png",
+    "工头布偶": "https://prod-alicdn-community.kurobbs.com/forum/28c93652d6c44a4fbb66c013ab14a9d120241229.png",
+    "巨布偶": "https://prod-alicdn-community.kurobbs.com/forum/5ed383ba0bda4dcd908a8097d9aaa1a020241229.png",
+    "幻昼骑士": "https://prod-alicdn-community.kurobbs.com/forum/e850351994ce4bce9dbf2bafb4fa43b420241229.png",
+    "幼猿": "https://prod-alicdn-community.kurobbs.com/forum/739a60644aaf4c9392bc746bc1e0d42a20240426.png",
+    "幽翎火": "https://prod-alicdn-community.kurobbs.com/forum/a05bc3f30c3e46ee9ba045940a28eb9920241226.png",
+    "异构武装": "https://prod-alicdn-community.kurobbs.com/forum/e3db966705e04c60aa45ccc9d896020e20241229.png",
+    "弄臣": "https://prod-alicdn-community.kurobbs.com/forum/98e9eee3eeb14f0ca0fcb38cde916a1b20241231.png",
+    "影烁者": "https://prod-alicdn-community.kurobbs.com/forum/a8740b0f6f044043a638ded45d61c6bb20260203.png",
+    "心傀·喜": "https://prod-alicdn-community.kurobbs.com/forum/b5bd9d5d591b4430881a851b95175c9520260709.png",
+    "心傀·忧": "https://prod-alicdn-community.kurobbs.com/forum/67f13dcd10294f58a235ed4566703e2420260709.png",
+    "心傀·怒": "https://prod-alicdn-community.kurobbs.com/forum/0a6272c18a6d4eb4b1dfeaefb5b4235520260709.png",
+    "心傀·思": "https://prod-alicdn-community.kurobbs.com/forum/703c16d5d4124da292ab9439f729031d20260709.png",
+    "心傀·恐": "https://prod-alicdn-community.kurobbs.com/forum/2ba85732d95344cc9e402a4e94ae34ed20260709.png",
+    "心傀·悲": "https://prod-alicdn-community.kurobbs.com/forum/99a1dfa752ea49dfab81de8749f86dfc20260709.png",
+    "惊蛰猎手": "https://prod-alicdn-community.kurobbs.com/forum/c3e21f5fa27542dab5e10918fa25db4720240426.png",
+    "愚金幼岩": "https://prod-alicdn-community.kurobbs.com/forum/29eb52ba61ed4fbea66e26c3989c5af020250211.png",
+    "慈悲节使": "https://prod-alicdn-community.kurobbs.com/forum/c0ae8335e1c04793abc773295a6675ed20250325.png",
+    "戏猿": "https://prod-alicdn-community.kurobbs.com/forum/fbf019b1e67c4806afabce7abea7215520240426.png",
+    "拉里奥": "https://prod-alicdn-community.kurobbs.com/forum/f069b21d162741a9af1da74c3b2188e120241231.png",
+    "持刃贵族": "https://prod-alicdn-community.kurobbs.com/forum/70fdc81b348b43a698c44694cb672b4a20241229.png",
+    "振铎乐师": "https://prod-alicdn-community.kurobbs.com/forum/118cd65a53274b0d8606e10bc438f32620240427.png",
+    "探隧重机": "https://prod-alicdn-community.kurobbs.com/forum/9feafa395c834f6cbc9083f7950c1cd520251225.png",
+    "无冠者": "https://prod-alicdn-community.kurobbs.com/forum/04e42a1684004c4eadecfbccc36dc1b420240427.png",
+    "无妄者": "https://prod-alicdn-community.kurobbs.com/forum/1933c161c05d48e5b58d1c9750ac067f20250301.jpg",
+    "无常凶鹭": "https://prod-alicdn-community.kurobbs.com/forum/8b71b922b9e047089252fc809b3c1a0520240426.png",
+    "无归的谬误": "https://prod-alicdn-community.kurobbs.com/forum/4c292e5cd46f4d17ba2d3e00682eacaf20240924.png",
+    "无铭探索者": "https://prod-alicdn-community.kurobbs.com/forum/1579ab1003b442faaabf56a1ddd7bc8420260203.png",
+    "晶螯蝎": "https://prod-alicdn-community.kurobbs.com/forum/289698a6d68c4cb1b8b43310d3dba99420240426.png",
+    "暗夜骑士": "https://prod-alicdn-community.kurobbs.com/forum/67c7f66535b5423099d8e0757ef0afd920241229.png",
+    "暗鬃狼": "https://prod-alicdn-community.kurobbs.com/forum/9c7c0b57f7c54db6a0d659cc93ba973620240426.png",
+    "朔雷之鳞": "https://prod-alicdn-community.kurobbs.com/forum/8c108c3f9a084929b64d1c5c7bb6b42620240427.png",
+    "格洛犸图": "https://prod-alicdn-community.kurobbs.com/forum/2689d9a464b24c4e9296174017d7a57e20260203.png",
+    "梦魇·云闪之鳞": "https://prod-alicdn-community.kurobbs.com/forum/0a71ce525dd94262aed595e375ebc37620241229.png",
+    "梦魇·侏侏鸵": "https://prod-alicdn-community.kurobbs.com/forum/65469080f05442c5ba72bb5cb1399c4020251114.png",
+    "梦魇·凯尔匹": "https://prod-alicdn-community.kurobbs.com/forum/d2cc1c10359c41cea9bd0b51dfce8f5f20250609.png",
+    "梦魇·刺玫菇": "https://prod-alicdn-community.kurobbs.com/forum/07870ba6ae1c48aea18e91864dfa29a220251114.png",
+    "梦魇·刺玫菇（稚形）": "https://prod-alicdn-community.kurobbs.com/forum/ffe1e1ecde324e978866641042dfaaa220250930.png",
+    "梦魇·呜咔咔": "https://prod-alicdn-community.kurobbs.com/forum/11457d754cc748a4bb3dfc890c7c05c820251114.png",
+    "梦魇·咕咕河豚": "https://prod-alicdn-community.kurobbs.com/forum/a71e0873d3ac4cbfb513c562ff9ecec120250826.png",
+    "梦魇·哀声鸷": "https://prod-alicdn-community.kurobbs.com/forum/af2c919bfbb345939f290a8042a8994420241229.png",
+    "梦魇·啾啾河豚": "https://prod-alicdn-community.kurobbs.com/forum/46e438150bc84aa48ae2800211f7089020250826.png",
+    "梦魇·审判战士": "https://prod-alicdn-community.kurobbs.com/forum/ae628d73ba9f4dac97b3f3e75f02352620250719.png",
+    "梦魇·巡徊猎手": "https://prod-alicdn-community.kurobbs.com/forum/00e427d7aa7f414194a44a308023707e20250826.png",
+    "梦魇·惊蛰猎手": "https://prod-alicdn-community.kurobbs.com/forum/2b1cb391359a45f2bf304770194e02d720250826.png",
+    "梦魇·振铎乐师": "https://prod-alicdn-community.kurobbs.com/forum/3ac5b03abee848ccb856a38d8108bdf220250719.png",
+    "梦魇·无冠者": "https://prod-alicdn-community.kurobbs.com/forum/c84bbf27e98d4895bdecfdb296eee18d20241229.png",
+    "梦魇·无常凶鹭": "https://prod-alicdn-community.kurobbs.com/forum/335e89eb9cbf4535af5f52102e87b7cb20241229.png",
+    "梦魇·朔雷之鳞": "https://prod-alicdn-community.kurobbs.com/forum/f69d0dac328042c0b4445a86d38d848e20241229.png",
+    "梦魇·燎照之骑": "https://prod-alicdn-community.kurobbs.com/forum/d75fc3a157334d4988b9ab2402fea49620241229.png",
+    "梦魇·破霜猎手": "https://prod-alicdn-community.kurobbs.com/forum/6164921eca0145818c82fd7cd5a655a420250719.png",
+    "梦魇·紫羽鹭": "https://prod-alicdn-community.kurobbs.com/forum/8b3c38cafabf45299bff60d1871809e420250826.png",
+    "梦魇·绿熔蜥": "https://prod-alicdn-community.kurobbs.com/forum/528df4b8b188400ea044fec240e3227c20250930.png",
+    "梦魇·绿熔蜥（稚形）": "https://prod-alicdn-community.kurobbs.com/forum/528df4b8b188400ea044fec240e3227c20250930.png",
+    "梦魇·赫卡忒": "https://prod-alicdn-community.kurobbs.com/forum/02d80c7af1f8416ea99f32b16d4134ea20250719.png",
+    "梦魇·辉萤军势": "https://prod-alicdn-community.kurobbs.com/forum/09de0d46655244fda365aeb6def12dc220250325.png",
+    "梦魇·青羽鹭": "https://prod-alicdn-community.kurobbs.com/forum/e80b452661cf4cff910ae561e6d9249b20250826.png",
+    "梦魇·飞廉之猩": "https://prod-alicdn-community.kurobbs.com/forum/db11e1bcd7ac4bc2a3bb08b9cb6157dc20241229.png",
+    "欺诈奇藏": "https://prod-alicdn-community.kurobbs.com/forum/d836773f1df04aa48f2f8a57249d228720241229.png",
+    "毒冠贵族": "https://prod-alicdn-community.kurobbs.com/forum/8782a0b7e82840988c1195199da8bad920241229.png",
+    "气动棱镜": "https://prod-alicdn-community.kurobbs.com/forum/21368d11fbdc44d1be179ce2e93b50b220250211.png",
+    "流明灯使": "https://prod-alicdn-community.kurobbs.com/forum/a53cecc20c594045a3fcbd5493e0aeef20241231.png",
+    "浮灵偶": "https://prod-alicdn-community.kurobbs.com/forum/3fcee736d69d44579431fe9eff20f9b020241229.png",
+    "浮灵偶·海德": "https://prod-alicdn-community.kurobbs.com/forum/24b89888a14d417d8cf7bb8edb5ce2f720241226.png",
+    "浮灵偶·莱特": "https://prod-alicdn-community.kurobbs.com/forum/bcb7b2fa2d1b4f10a3ed917493adf01320241226.png",
+    "浮灵偶·蕾弗": "https://prod-alicdn-community.kurobbs.com/forum/7ca147d6b2824618991cd5d3afd8650f20241226.png",
+    "浴缸犬": "https://prod-alicdn-community.kurobbs.com/forum/7c050f84fc5c41ff8d9d8942ddbe8ec420241231.png",
+    "海之女": "https://prod-alicdn-community.kurobbs.com/forum/e4785c7f87b04a34bc7ed6498054172020250826.png",
+    "海维夏": "https://prod-alicdn-community.kurobbs.com/forum/0909b97a0cc647eebd4709f1716bb57e20251225.png",
+    "游弋蝶": "https://prod-alicdn-community.kurobbs.com/forum/6ca2cbcef1484e81bf2330c698ed27ca20240427.png",
+    "游鳞机枢": "https://prod-alicdn-community.kurobbs.com/forum/c7483c1a06fd48e08f3fc2c4f78a8c9920240627.png",
+    "湮灭棱镜": "https://prod-alicdn-community.kurobbs.com/forum/b08de64745534b4c8a49e17bdbca924020240426.png",
+    "火鬃狼": "https://prod-alicdn-community.kurobbs.com/forum/e428ba1cfa504a1eb1ba3704ce8a642c20240426.png",
+    "炉芯机骸": "https://prod-alicdn-community.kurobbs.com/forum/c2f48b94135c403a933d202f5014f80620251225.png",
+    "热熔棱镜": "https://prod-alicdn-community.kurobbs.com/forum/2bc4dc14bfb54af490df01140331345220240426.png",
+    "焙焙": "https://prod-alicdn-community.kurobbs.com/forum/b3600455ce014049b1d643edadd44f1b20241231.png",
+    "燎照之骑": "https://prod-alicdn-community.kurobbs.com/forum/d4223bda276e4417bc24af1283bdd0f420240426.png",
+    "琉璃刀伶": "https://prod-alicdn-community.kurobbs.com/forum/fe33ca9dc9404bd1a94b6831b20a803e20250724.png",
+    "瓷庭候": "https://prod-alicdn-community.kurobbs.com/forum/05d09a8d9c924ce2bf85262f136f5c4c20260709.png",
+    "留声奏者": "https://prod-alicdn-community.kurobbs.com/forum/fb1eb9e8195044b887a6edb77dd98fbc20241231.png",
+    "石庭候": "https://prod-alicdn-community.kurobbs.com/forum/7c8d55921df44747823a0170474ea04220260709.png",
+    "矿岩机麋": "https://prod-alicdn-community.kurobbs.com/forum/14aa949b0e2c4414b8e1ce082472674220251225.png",
+    "矿岩熊蜂": "https://prod-alicdn-community.kurobbs.com/forum/7da2506ceb444a50b8b8b851cdcc8def20251225.png",
+    "破霜猎手": "https://prod-alicdn-community.kurobbs.com/forum/2bdef5792db44fa3a42748373d2d798a20240426.png",
+    "碎獠猪": "https://prod-alicdn-community.kurobbs.com/forum/2b539da411d34331be4570036ddc023e20240427.png",
+    "磐石守卫": "https://prod-alicdn-community.kurobbs.com/forum/10741880c9044363bc9bd9ec027edaaf20240426.png",
+    "祖渊海触": "https://prod-alicdn-community.kurobbs.com/forum/ebd1080219744c16aae853186c2f228d20241231.png",
+    "章鱼先生": "https://prod-alicdn-community.kurobbs.com/forum/e85bd43d41f84925b00ec7afd53b5fdf20241231.png",
+    "箭簇熊": "https://prod-alicdn-community.kurobbs.com/forum/f41ba7c7a298425db6096e6398413c0f20240426.png",
+    "紫羽鹭": "https://prod-alicdn-community.kurobbs.com/forum/36a883d4c3994e648d0f70997c349f7120240426.png",
+    "绿熔蜥": "https://prod-alicdn-community.kurobbs.com/forum/f8f633034f3f4e9c92879e17abb1072e20240426.png",
+    "绿熔蜥（稚形）": "https://prod-alicdn-community.kurobbs.com/forum/932037c0c114454c82a27d35a8c0c16b20240426.png",
+    "罗蕾莱": "https://prod-alicdn-community.kurobbs.com/forum/d3eb93a6749c4d54a097e540b910c8c520241229.png",
+    "聚械机偶": "https://prod-alicdn-community.kurobbs.com/forum/b262f4102cc141b4bf729231030f363d20240426.png",
+    "苦信者的作俑": "https://prod-alicdn-community.kurobbs.com/forum/24a3a5d5955a4a708098d4b18dd9c59020250609.png",
+    "荣光节使": "https://prod-alicdn-community.kurobbs.com/forum/11a0972401344faf9cfc79acdb577d3b20250325.png",
+    "荣耀狮像": "https://prod-alicdn-community.kurobbs.com/forum/21f49813c2c340458b7d70118245dddf20250609.png",
+    "莳植机麋": "https://prod-alicdn-community.kurobbs.com/forum/b4f1ef1b97aa40cf931b4e0b114309e420251225.png",
+    "莳植熊蜂": "https://prod-alicdn-community.kurobbs.com/forum/33aa36f4dd5f47cd83cc303ff06447f720251225.png",
+    "蚀脊龙": "https://prod-alicdn-community.kurobbs.com/forum/79a5ff12d6a540798710ee1c57a164f820250826.png",
+    "融火虫": "https://prod-alicdn-community.kurobbs.com/forum/4d5613ec6a97400499ccb050ea61f6ab20240627.png",
+    "融躯战士": "https://prod-alicdn-community.kurobbs.com/forum/3a1b55ea9fc4476185ac47a6f0ce524220260709.png",
+    "衍射棱镜": "https://prod-alicdn-community.kurobbs.com/forum/94a69cd7077f49cb885b2f6e2e5575fc20240426.png",
+    "裂变幼岩": "https://prod-alicdn-community.kurobbs.com/forum/a4606e65227a4c85a0d7de4aa1a2fcc620240426.png",
+    "西莫斯先生": "https://prod-alicdn-community.kurobbs.com/forum/b59c56c966ce48d595dab85807e08ed420241231.png",
+    "角": "https://prod-alicdn-community.kurobbs.com/forum/33ae27a34f2443228d0c890d8f29890320240627.png",
+    "角鳄": "https://prod-alicdn-community.kurobbs.com/forum/8ef3b860f8294bedb5ec2a2856c30f6420250609.png",
+    "贡多拉": "https://prod-alicdn-community.kurobbs.com/forum/15f28ea7ae47453086d7e84b15cc546720241231.png",
+    "赦罪节使": "https://prod-alicdn-community.kurobbs.com/forum/019a54eebf3b477b980ddfd1a34ac27f20250325.png",
+    "赫卡忒": "https://prod-alicdn-community.kurobbs.com/forum/1343d9a542f7465d95b770becbe2e8ed20241229.png",
+    "踏光兽": "https://prod-alicdn-community.kurobbs.com/forum/3f3a0c7e24fb4a5195581b68cc9765c720240627.png",
+    "车刃镰": "https://prod-alicdn-community.kurobbs.com/forum/b7327ba4b7d04b51bbba45e79faa2db720240426.png",
+    "辉萤军势": "https://prod-alicdn-community.kurobbs.com/forum/474a951580dc4230b0af1f514e7ec06b20240426.png",
+    "辛吉勒姆": "https://prod-alicdn-community.kurobbs.com/forum/ed9986f6f1554368931c7c9abcc0040820260203.png",
+    "迷胧幻蛾": "https://prod-alicdn-community.kurobbs.com/forum/a084daec65d24ae4acbd969ac021a07320260428.png",
+    "通行灯偶": "https://prod-alicdn-community.kurobbs.com/forum/6c9b3aeea9f2452fb5ace0137f370b0020240427.png",
+    "遁地鼠": "https://prod-alicdn-community.kurobbs.com/forum/e2da3c6f17ec44bab82f9a02697050a120240426.png",
+    "釉变幼岩": "https://prod-alicdn-community.kurobbs.com/forum/8335fe25c4444cc28d526aad2ffd15eb20250211.png",
+    "重塑雕像的拳砾": "https://prod-alicdn-community.kurobbs.com/forum/a8c2f72af15d457f9a6fd8a334d460e620250211.png",
+    "重工铁蹄": "https://prod-alicdn-community.kurobbs.com/forum/16f94a8288a14714abfc0c151819fe3720251225.png",
+    "金庭候": "https://prod-alicdn-community.kurobbs.com/forum/a17c9b80d29a49da8e8d0b00bb29368220260709.png",
+    "锯袭铁影": "https://prod-alicdn-community.kurobbs.com/forum/6169be96c1574982ab95ae56274bd98820251225.png",
+    "阿嗞嗞": "https://prod-alicdn-community.kurobbs.com/forum/88f3ddaacaa24db8b22497f354562e4420240426.png",
+    "隐迹铁影": "https://prod-alicdn-community.kurobbs.com/forum/c2a29cbf64d14868b1953b14998c088220251225.png",
+    "雪鬃狼": "https://prod-alicdn-community.kurobbs.com/forum/53a78eb6a444483cb68263dbc470bce820240627.png",
+    "雷鬃狼": "https://prod-alicdn-community.kurobbs.com/forum/036c8baf003b40d48dc77ebdc426099020241229.png",
+    "霁息兽尊": "https://prod-alicdn-community.kurobbs.com/forum/1723c5b5f4d64d758e4a0533a0e6c44a20260709.png",
+    "霁息兽尊·身": "https://prod-alicdn-community.kurobbs.com/forum/a24be406928a48f08718f2a58bd8aad220260709.png",
+    "霁息兽尊·首": "https://prod-alicdn-community.kurobbs.com/forum/7009e27c4f9d4c7aaab24b8d2a73207b20260709.png",
+    "霜鬃狼": "https://prod-alicdn-community.kurobbs.com/forum/3dad2a453528499894e31d92ffa632df20241229.png",
+    "霜鳞蜃甲": "https://prod-alicdn-community.kurobbs.com/forum/8aa396442a4a486ca414c017cefe1a8e20251225.png",
+    "青羽鹭": "https://prod-alicdn-community.kurobbs.com/forum/11510b2a239a4c9ebc3c8f3d9ea1a90020240426.png",
+    "颂诏节使": "https://prod-alicdn-community.kurobbs.com/forum/a7af4c4818644ee4b15f104dc69583b320241231.png",
+    "颤栗战士": "https://prod-alicdn-community.kurobbs.com/forum/4cce6a381f514e2fb0787789b8feed7220251225.png",
+    "风鬃狼": "https://prod-alicdn-community.kurobbs.com/forum/11f4d3db7cda495ea73da812eaab19f320241229.png",
+    "风鳞蜃甲": "https://prod-alicdn-community.kurobbs.com/forum/30f382b2ca5a4bd9a7a3012fb9363baa20251225.png",
+    "飓力熊": "https://prod-alicdn-community.kurobbs.com/forum/7dab018b8e584624b1b4335887b2541620250211.png",
+    "飞廉之猩": "https://prod-alicdn-community.kurobbs.com/forum/28e034b5491b4ff5b1f666c01fb599e520240426.png",
+    "饰音歌姬": "https://prod-alicdn-community.kurobbs.com/forum/7fd1ed6f78ce4d2bb749095a98387d2420241231.png",
+    "高天讯使": "https://prod-alicdn-community.kurobbs.com/forum/47ec7c26e4094fcf87d41e8679f7ea5920241231.png",
+    "魔术先生": "https://prod-alicdn-community.kurobbs.com/forum/5890dde2e2fa4dff94c3de2b9fe5d2a920241229.png",
+    "鸣泣战士": "https://prod-alicdn-community.kurobbs.com/forum/3a7d10fd860f45808e6ee4fa3fcde6a920240426.png",
+    "鸣钟之龟": "https://prod-alicdn-community.kurobbs.com/forum/abe3743f93fc4fe5bd4dbdfd7affa15420240426.png"
+  }
+}

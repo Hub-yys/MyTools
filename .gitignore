@@ -1,0 +1,55 @@
+# MyTools 开发环境产物
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 用户数据：根目录 data/ 是开发态的可写用户数据目录。
+# 里面只有**打包要用的种子 json** 进库（安装包首次运行会把它们拷到用户目录）。
+# ⚠ 必须写成 /data/ 而不是 data/ —— 裸 data/ 会忽略**任意层级**的 data 目录，
+#   会把 src/core/data/（角色/套装/声骸技能等游戏数据）和
+#   src/tools/data/（鸣潮资源库更新工具源码）一起排除掉。
+#   2026-09-23 踩过：磁盘上 src/ 有 51 个文件，git 只看见 44 个。
+/data/*
+!/data/loadouts.json
+!/data/tasks.json
+!/data/tool_settings.json
+!/data/ui_state.json
+
+# ok-ww 运行时写出来的配置（热键 / 角色开关 / 分辨率探测缓存）—— 本机生成，不进库
+configs/
+
+# 抓库街区时留下的页面快照（调试产物）
+.playwright-cli/
+
+# vendored ok-ww 里的**游戏素材**：48 张逐帧模板图 + 38MB 的 YOLO 声骸模型。
+# 都是库洛画面衍生物，与 assets/game/ 同理，不进仓库。
+# ⚠ 排除后克隆下来的仓库**跑不了 4C / 声骸工具** —— 需要自行从 ok-ww 上游取回
+#   vendor/okww/assets/images/ 与 vendor/okww/assets/echo_model/echo.onnx
+#   （来源见 licenses/NOTICES.md 第 1 节）。
+vendor/okww/assets/images/
+vendor/okww/assets/echo_model/
+
+# 日志
+*.log
+
+# 游戏素材：从 wiki 拉的官方美术素材，版权归库洛，不进仓库。
+# 占位图可以用 tools/make_placeholders.py 重新生成。
+assets/game/
+
+# 离线依赖缓存与测试截图（本地有用，不进仓库）
+wheels/
+tests/_shots/
+
+# OCR 模型优化缓存（首次运行会生成，删掉只是下次慢一点）
+cache/
+
+# IDE
+.idea/
+.vscode/
+
+# 系统
+Thumbs.db
