@@ -26,7 +26,7 @@ from .game_data import (
 from . import paths
 
 #: 默认存放位置：用户数据目录下的 loadouts.json
-#: （开发态 = <项目根>/data；打包后 = %LOCALAPPDATA%/MyTools，见 core/paths.py）
+#: （开发态 = <项目根>/data；打包后 = %LOCALAPPDATA%/WutheringWavesTools，见 core/paths.py）
 DEFAULT_STORE_PATH = paths.user_data_dir() / "loadouts.json"
 
 

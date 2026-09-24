@@ -70,6 +70,14 @@ MAX_ROLL_EPSILON = 0.3
 
 _ACTION = Literal["continue", "lock", "discard"]
 
+#: 弃置原因分类码 → 人话。**给统计用** —— 一次运行结束要能一眼看出"到底为什么
+#: 全被弃置"，否则用户只看到"全丢掉了"却无从下手（2026-09-24 的教训）。
+DISCARD_CODES: dict[str, str] = {
+    "core": "凑不齐核心属性",
+    "crit": "双爆不达标",
+    "valid": "有效词条不足",
+}
+
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
 
@@ -183,6 +191,36 @@ class JudgeConfig:
         """算作"有效词条"的属性 = 核心属性 ∪ 可选属性。"""
         return frozenset(self.core_stats | self.optional_stats)
 
+    @property
+    def effective_min_valid_count(self) -> int:
+        """**真正生效**的「有效词条数」下限。
+
+        为什么需要它：``valid_stats`` 最多 13 条，而声骸的 5 个孔位里
+        **每种词条只会出现一次** —— 所以「有效词条数」的实际上限就是
+        ``len(valid_stats)``。默认配置（核心只有双爆、可选一条没勾）下这个集合
+        只有 2 条，而界面默认要 ``>= 3``：**永远达不到 → 每个声骸都在满级那一刻
+        被判弃置**（2026-09-24 用户实测"完全没用"就是这个）。
+        这里把下限夹到可达范围 —— 宁可放宽，也不能让它无声地把所有声骸丢掉。
+        """
+        return min(self.min_valid_count, len(self.valid_stats))
+
+    @property
+    def min_valid_count_unreachable(self) -> bool:
+        """用户填的「有效词条数」是不是根本达不到。"""
+        return self.min_valid_count > len(self.valid_stats)
+
+    def criterion_warning(self) -> str:
+        """配置自相矛盾时给一句人话；没问题时返回空串。"""
+        if not self.min_valid_count_unreachable:
+            return ""
+        names = "、".join(sorted(self.valid_stats))
+        return (
+            f"「有效词条 ≥{self.min_valid_count}」达不到：有效词条集合只有 "
+            f"{len(self.valid_stats)} 条（{names}），声骸每种词条最多出现一次 —— "
+            f"已按 ≥{self.effective_min_valid_count} 执行。"
+            f"想提高要求，请在「可选属性」里多勾几条。"
+        )
+
 
 @dataclass
 class JudgeResult:
@@ -190,6 +228,8 @@ class JudgeResult:
 
     action: _ACTION
     reason: str = ""
+    #: 弃置原因分类码（见 :data:`DISCARD_CODES`）；保留时为空串
+    code: str = ""
     crit: float | None = None
     crit_dmg: float | None = None
     valid_count: int = 0
@@ -224,11 +264,13 @@ def judge(stats: list[EchoStat], config: JudgeConfig) -> JudgeResult:
     used = len(present)
     remaining = max(0, config.max_sub_stats - used)
 
-    def result(action: _ACTION, reason: str = "", crit: float | None = None,
-               crit_dmg: float | None = None, valid: int = 0) -> JudgeResult:
+    def result(action: _ACTION, reason: str = "", code: str = "",
+               crit: float | None = None, crit_dmg: float | None = None,
+               valid: int = 0) -> JudgeResult:
         return JudgeResult(
             action=action,
             reason=reason,
+            code=code,
             crit=crit,
             crit_dmg=crit_dmg,
             valid_count=valid,
@@ -253,13 +295,15 @@ def judge(stats: list[EchoStat], config: JudgeConfig) -> JudgeResult:
                 if CRIT_DMG in names else None
             )
             valid = sum(1 for s in present if s.name in config.valid_stats)
+            # code="max_roll" 给统计用：出了满分词条 → 这个声骸要算进「满属性」。
+            # 注意它不是弃置原因（不进 DISCARD_CODES）。
             if used >= config.max_sub_stats:
                 return result(
-                    "lock", f"满{text}（满分词条，直接上锁）",
+                    "lock", f"满{text}（满分词条，直接上锁）", code="max_roll",
                     crit=got_crit, crit_dmg=got_dmg, valid=valid,
                 )
             return result(
-                "continue", f"满{text}（满分词条，强化到满级后上锁）",
+                "continue", f"满{text}（满分词条，强化到满级后上锁）", code="max_roll",
                 crit=got_crit, crit_dmg=got_dmg, valid=valid,
             )
 
@@ -270,6 +314,7 @@ def judge(stats: list[EchoStat], config: JudgeConfig) -> JudgeResult:
         return result(
             "discard",
             f"凑不齐核心属性（缺 {missing_text}，只剩 {remaining} 孔）",
+            code="core",
         )
 
     # ---- 2. 双爆各自下限
@@ -289,6 +334,7 @@ def judge(stats: list[EchoStat], config: JudgeConfig) -> JudgeResult:
                 return result(
                     "discard",
                     "双爆不达标（" + "，".join(below) + "）",
+                    code="crit",
                     crit=crit,
                     crit_dmg=crit_dmg,
                 )
@@ -296,11 +342,15 @@ def judge(stats: list[EchoStat], config: JudgeConfig) -> JudgeResult:
     # ---- 3. 有效词条数上限
     valid_set = config.valid_stats
     valid_count = sum(1 for s in present if s.name in valid_set)
-    if valid_count + remaining < config.min_valid_count:
+    # ⚠ 用 effective_min_valid_count 而不是用户填的原值：集合只有 N 条时 "≥N+1"
+    #   永远达不到，照原值判会把**每个**声骸都弃置（2026-09-24 事故）。
+    if valid_count + remaining < config.effective_min_valid_count:
         return result(
             "discard",
             f"有效词条最多只能到 {valid_count + remaining} 条"
-            f"（当前 {valid_count} + 剩余 {remaining} 孔），达不到 {config.min_valid_count} 条",
+            f"（当前 {valid_count} + 剩余 {remaining} 孔），"
+            f"达不到 {config.effective_min_valid_count} 条",
+            code="valid",
             crit=crit,
             crit_dmg=crit_dmg,
             valid=valid_count,
@@ -318,3 +368,36 @@ def judge(stats: list[EchoStat], config: JudgeConfig) -> JudgeResult:
 
     return result("continue", f"继续强化（已出 {used} 条，有效 {valid_count} 条）",
                   crit=crit, crit_dmg=crit_dmg, valid=valid_count)
+
+
+
+# ------------------------------------------------------------------ 结果报告
+
+
+def format_result_report(*, checked: int, kept: int, dropped: int,
+                         perfect: int | None = None,
+                         tally: dict[str, int] | None = None) -> str:
+    """把一次强化运行的统计排成给人看的报告。
+
+    页面卡片、结束弹窗、任务流程的 ``summary()`` 共用这一份排版。
+
+    * ``perfect`` 传 ``None`` = 没启用「满暴击/满爆伤自动锁定」——
+      这项不统计也不显示（用户要求：启用时才统计）；
+    * ``tally`` 的键是 :data:`DISCARD_CODES` 里的弃置原因码，有内容才出第二行。
+    """
+    checked = int(checked or 0)
+    kept = int(kept or 0)
+    dropped = int(dropped or 0)
+    if checked <= 0 and kept <= 0 and dropped <= 0:
+        return ("本次没有判定任何声骸 —— 请确认停在 背包 → 声骸 界面，"
+                "且过滤器后有可强化的声骸")
+    parts = [f"判定 {checked} 个", f"符合条件 {kept}", f"弃置 {dropped}"]
+    if perfect is not None:
+        parts.append(f"满属性 {int(perfect)}")
+    text = " · ".join(parts)
+    if tally:
+        reasons = "、".join(
+            f"{DISCARD_CODES.get(code, code)} {count}"
+            for code, count in tally.items())
+        text += f"\n弃置原因：{reasons}"
+    return text

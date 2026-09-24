@@ -1,6 +1,8 @@
-"""主页：按分类罗列所有已注册的工具。
+"""主页：**平铺所有已注册的工具**（2026-09-24 起不再按分类分组）。
 
-数据来源只有 ToolRegistry，所以工具的增改删在这里天然生效，不需要改这行Notice。
+数据来源只有 ToolRegistry，所以工具的增改删在这里天然生效，不需要改这个文件。
+分类信息仍留在 ToolMeta 里（工具页下拉框、占位页的"分类"一行还在用），
+只是主页不再拿它分组 —— 工具不多时分组只会白占几行标题。
 """
 
 from __future__ import annotations
@@ -9,11 +11,10 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 from qfluentwidgets import ScrollArea
 
-from ..app_config import APP_NAME, APP_VERSION
-from ..core.categories import ALL_CATEGORIES
+from ..app_config import APP_DISPLAY_NAME, APP_VERSION
 from ..core.registry import ToolRegistry
 from .compat import CaptionLabel, TitleLabel, resolve_icon
-from .widgets import CategorySection
+from .widgets import ToolGrid
 
 
 class HomeInterface(ScrollArea):
@@ -45,7 +46,7 @@ class HomeInterface(ScrollArea):
 
     # ------------------------------------------------------------------ 构建
     def build(self) -> None:
-        self.root_layout.addWidget(TitleLabel(f"{APP_NAME} 工具箱", self.view))
+        self.root_layout.addWidget(TitleLabel(APP_DISPLAY_NAME, self.view))
 
         total = len(ToolRegistry.all_metas())
         subtitle = CaptionLabel(
@@ -56,14 +57,10 @@ class HomeInterface(ScrollArea):
 
         self.root_layout.addSpacing(8)
 
-        # 空分类不占位：目前只有游戏分类下有东西
-        for category in ALL_CATEGORIES:
-            metas = ToolRegistry.by_category(category)
-            if not metas:
-                continue
-            section = CategorySection(category, metas, self.view)
-            section.toolClicked.connect(self.requestOpenTool)
-            self.root_layout.addWidget(section)
+        # 所有工具平铺成一张网格，不分类
+        self.grid = ToolGrid(ToolRegistry.all_metas(), self.view)
+        self.grid.toolClicked.connect(self.requestOpenTool)
+        self.root_layout.addWidget(self.grid)
 
         self.root_layout.addStretch(1)
 

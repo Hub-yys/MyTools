@@ -21,7 +21,7 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget
 from qfluentwidgets import FluentWindow, NavigationItemPosition, setThemeColor
 
 from ..app_config import (
-    APP_NAME,
+    APP_DISPLAY_NAME,
     MIN_NAV_WIDTH,
     NAV_EXPAND_WIDTH,
     WINDOW_DEFAULT_HEIGHT,
@@ -126,7 +126,7 @@ class NavResizer(QWidget):
 class MainWindow(FluentWindow):
     def __init__(self, parent: QWidget | None = None, ui_state: UiState | None = None):
         super().__init__(parent)
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(APP_DISPLAY_NAME)
         self.resize(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
 

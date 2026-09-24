@@ -1,4 +1,4 @@
-"""鸣潮资源库自动更新 —— 面板 + 后台线程。
+"""资源库更新 —— 面板 + 后台线程。
 
 流程对应需求：
     ① 工具启动（面板第一次显示）→ 后台线程自动拉远端、对比本地
@@ -92,7 +92,7 @@ class WuwaLibraryUpdatePanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(12)
 
-        root.addWidget(TitleLabel("鸣潮资源库自动更新", self))
+        root.addWidget(TitleLabel("资源库更新", self))
         note = CaptionLabel(
             "数据来源：bwiki（套装效果 / 声骸掉落池 / 技能说明）+ 库街区官方 wiki"
             "（声骸掉落池 / 图标）。检查只发 3~4 个轻量请求，不会写任何本地文件。",
@@ -219,13 +219,13 @@ class WuwaLibraryUpdatePanel(QWidget):
 
 @registry.register(
     category=ToolCategory.DATA,
-    name="鸣潮资源库更新",
+    name="资源库更新",
     icon_name="UPDATE",
     coming_soon=False,
 )
 class WuwaLibraryUpdateTool(BaseTool):
     key = "wuwa_library_update"
-    name = "鸣潮资源库更新"
+    name = "资源库更新"
     description = "自动检查鸣潮资源库数据更新，一键获取最新数据"
 
     def create_widget(self, parent=None):

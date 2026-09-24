@@ -398,7 +398,7 @@ def _load_into_memory(version: int) -> None:
 def reload_data() -> None:
     """重新读盘、**就地刷新**上面那些公用容器（版本号 +1）。
 
-    用途：①「鸣潮资源库更新」写完盘之后立刻生效；
+    用途：①「资源库更新」写完盘之后立刻生效；
          ② ``main.py`` 万一顺序又错了，界面还能自己救回来（见 :func:`ensure_loaded`）。
     """
     _load_into_memory(DATA_VERSION + 1)

@@ -1,6 +1,6 @@
 """鸣潮资源库数据更新：后台拉取远端 → 对比本地 → 应用更新。
 
-给「鸣潮资源库更新」工具用，也可以命令行单跑：
+给「资源库更新」工具用，也可以命令行单跑：
 
     .venv\\Scripts\\python -m src.core.wuwa_update          # 只检查（打印差异）
     .venv\\Scripts\\python -m src.core.wuwa_update --apply  # 检查 + 应用

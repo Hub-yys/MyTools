@@ -1,7 +1,12 @@
-# MyTools
+# 鸣潮工具箱（WutheringWavesTools）
 
-一个 Python + Qt 的桌面工具箱骨架。左边侧栏「主页 / 工具」，主页按分类平铺所有工具，
+一个 Python + Qt 的桌面工具箱。左边侧栏「主页 / 工具」，**主页平铺所有工具（不分类）**，
 点一下卡片直接跳到那个工具。
+
+> ⚠ **改名说明（2026-09-24）**：产品名从 `MyTools` 改为 **WutheringWavesTools / 鸣潮工具箱**，
+> exe、安装包、安装目录、用户数据目录都换了名字。**旧的 `%LOCALAPPDATA%\MyTools` 会在首次
+> 启动时整树继承到 `%LOCALAPPDATA%\WutheringWavesTools`**（复制而非移动，老目录留着兜底；
+> 见 `src/core/paths.py::migrate_legacy_user_data`）。源码目录与仓库名仍是 `MyTools`。
 
 界面用 PySide6 + [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets)，
 工具组织方式参考了 [ok-ww](https://github.com/ok-oldking/ok-wuthering-waves) 的「注册表 + 自动发现」思路：
@@ -211,6 +216,33 @@ MyTools 只提供两样东西：界面上的筛选条件，以及"把条件注�
 > 同一件事有两套实现，那就只留跑得通的那套：流程搬 ok-ww 的，判定条件用界面上的。
 > 旧的四个模块保留着（还有测试覆盖），但已不是主路径，文件顶部有 LEGACY 标记。
 
+### 两个曾经让它「完全没用」的坑（2026-09-24 已修）
+
+两个都是**静默失败** —— 页面一切正常、点「运行」却什么都不发生，值得单独记一笔：
+
+1. **任务被 ok-script 静默跳过。** ok-ww 的 `EnhanceEchoTask` 声明了
+   `supported_languages = ["zh_CN", "zh_TW"]`，而 ok-script 的 `init_tasks()` **不满足
+   就直接不注册**；宿主没有 GUI，`app.locale` 实测是 `en_US` —— 于是任务根本没进引擎，
+   点「运行」只会得到「找不到任务」。子类里清空 `supported_languages` 即可。
+   现在 `tests/check_okww_registration.py` 会真起一次引擎把 `TASKS` 数一遍，
+   这类"静默消失"不会再无声发生。
+2. **判定规则自相矛盾。** 有效词条集合只有双爆（2 条）而界面要求 ≥3，而声骸每种
+   词条最多出现一次 → 永远达不到 → **每个声骸都在满级那一刻被弃置**。
+
+现在「有效词条数」与核心/可选属性**联动**（`settings.valid_count_range()`）：
+
+* **不可小于核心属性条数** —— 核心属性是"必须有"，全都到齐就天然有那么多条有效词条；
+* **不可大于有效词条集合的总条数** —— 每种词条只会出现一次，集合里没有的种类凑不出来。
+
+加减框直接停在合法范围里，卡片下方有一行实时提示。所以默认只勾双爆时它只能是 **2** 条；
+想要求 3 条以上，先在「可选属性」里多勾几条。
+
+**改核心属性时这个数会跟着回到核心属性条数**（减少核心也会跟着降），之后仍可往上调 ——
+不然"核心从 3 条改成 2 条、有效词条却还停在 3"会让人以为联动没生效。
+
+运行结束时信息栏会给出**弃置原因分布**（「双爆不达标 N、有效词条不足 M」）——
+规则太严、还是词条读错了，一眼就能分清。
+
 ### 前置条件（很关键）
 
 1. 游戏用**窗口模式**（无边框窗口最稳）。独占全屏时截图不可靠。
@@ -233,7 +265,7 @@ MyTools 只提供两样东西：界面上的筛选条件，以及"把条件注�
 | 可选属性 | 列表是去掉双爆之后的属性，勾中的也算有效词条，**勾选数量不限**。同样**默认收起** |
 | 有效词条 | 至少要有多少条有效词条（加减按钮就在标题行右侧，2~5） |
 
-> 这些配置**会存盘**（`%LOCALAPPDATA%\MyTools\tool_settings.json`，开发态在 `data/tool_settings.json`），
+> 这些配置**会存盘**（`%LOCALAPPDATA%\WutheringWavesTools\tool_settings.json`，开发态在 `data/tool_settings.json`），
 > 关掉程序再打开还是上次那套。
 > **任务流程运行时用的也是这一份** —— 在工具页配好规则，从「任务」页跑流程会按同一套规则判定
 > （早先任务流程用的是代码里的默认值，等于"没按你配的筛选"，2026-09-23 已修）。
@@ -247,7 +279,7 @@ MyTools 只提供两样东西：界面上的筛选条件，以及"把条件注�
 就绪后自动开跑；再点就是直接开始。页面标题旁实时显示状态
 （引擎加载中 / 运行中 / 结束，结束时给出「符合条件 N 个、弃置 M 个」）。
 
-> 运行日志按日期落盘：`%LOCALAPPDATA%\MyTools\okww\logs\`
+> 运行日志按日期落盘：`%LOCALAPPDATA%\WutheringWavesTools\okww\logs\`
 > （每天一个文件，超过 31 天自动清理）。出问题把这个目录里当天的文件发过来即可。
 
 判定逻辑在 `stats.py`（纯逻辑，不依赖 Qt / OCR，`tests/test_echo_stats.py` 覆盖）；
@@ -277,24 +309,52 @@ MyTools 只提供两样东西：界面上的筛选条件，以及"把条件注�
 
 「4C」= **4-Cost（Boss）声骸**。本工具的战斗本体**整体来自开源项目
 [ok-ww](https://github.com/ok-oldking/ok-wuthering-waves)**（AGPL-3.0）：
-把它的运行时（ok-script）以无 GUI 方式嵌进 MyTools。页面**只保留「启动 / 停止」**；
-**打开本页不加载引擎**，点「启动」才在后台 boot，就绪后自动开
-`FarmEchoTask`。**MyTools 不实现任何战斗逻辑**，模板匹配、OCR、
+把它的运行时（ok-script）以无 GUI 方式嵌进 MyTools。页面**只保留「启动 / 停止」两个按钮**（另加一张战斗报告卡，见下）；
+**引擎随程序启动就在后台加载**，点「启动」直接开跑 `FarmEchoTask`
+（引擎没起来时会兜底再 boot）。**MyTools 不实现任何战斗逻辑**，模板匹配、OCR、
 后台按键（PostMessage）全部走 ok-ww 自己的体系，53 份角色脚本原生可用。
 
 | 点「启动」跑的任务 | ok-ww 侧实现 | 说明 |
 |---|---|---|
 | 4C 刷声骸 | `FarmEchoTask`（🌀 Farm 4C Echo in Dungeon/World） | 打 Boss → 拾取 4C 声骸 → 重开，循环 |
 
+### 战斗报告（2026-09-24 新增）
+
+运行卡下面是一张**战斗报告**卡，跟着 300ms 轮询边跑边刷新，显示五项：
+
+| 项 | 内容 | 数据来源 |
+|---|---|---|
+| 使用队伍 | 圆形头像 + 角色名 | `task.chars`（ok-ww 的屏幕模板匹配）；英文类名经它的 `i18n/zh_CN` 转中文，再对上 MyTools 的角色数据与头像 |
+| 战斗声骸 | 图标 + 名字 | `task.aim_boss` —— **ok-ww 只认 4 个 Boss**（伪作的神王 / 异构武装 / 荣耀狮像 / 罗蕾莱）；认不出就显示配置档位名并标「未识别」 |
+| 战斗次数 | 本次运行累计 | ok-ww 的 `info['Combat Count']`（`combat_once()` 里 +1） |
+| 声骸数量 | 本次运行累计 | ok-ww 的 `info['Echo Count']`（`incr_drop()` 里 +1） |
+| 锁定声骸 | 本次运行拾取到的声骸里**被游戏自动锁定**的数量 | 我们自己读的：在 ok-ww 的 `incr_drop()` 上挂钩子，识别屏幕**左下角**那个自动锁定/自动弃置角标 |
+| 时长 | 点「启动」→「停止」 | 宿主自己掐表；**停止那一刻冻结**，不再走字 |
+
+> ★ > ★ **「锁定声骸」为什么要挂钩子**：ok-ww 完全不区分拾取到的声骸是锁了还是弃了
+> （`incr_drop()` 只把 `info['Echo Count']` 加一）。所以 4C 刷声骸改用一个小**子类**
+> （`auto_combat/okww_farm.py`，刷取流程照旧），在拾取动作后读一次左下角的角标 ——
+> 用的是 ok-ww 自带的特征 `echo_locked` / `echo_not_locked` / `echo_dropped` /
+> `echo_not_dropped`（跟它强化界面判锁/弃置是同一套图标）。
+> 报告底部还会列出 **锁定 / 弃置 / 都没** 三个数：万一判定区域对不上，
+> 会表现为「锁定、弃置恒为 0、都没 = 全部」，一眼就能看出来，不会被默默吞掉。
+
+> **其余四项不是 MyTools 做的** —— ok-ww 自己一直在算，只是塞在任务的 `self.info` 里当
+> "实时信息"显示（它**没有**报告界面）。本报告只是把这些数字"翻译"出来，所以不碰
+> ok-ww 的执行逻辑。
+> ⚠ 因为 `info` 在同一个进程里**跨次运行累加**，报告显示的是「当前 − 开跑前快照」的差值 ——
+> 也就是你要的"本次 4C 自动战斗"。
+
+
 ok-ww 配置里还注册了触发式的 `AutoCombatTask`（进战斗自动输出），
 当前页面未暴露入口。
 
 ### 使用前提
 
-1. **以管理员运行 MyTools**（本程序清单已要求；ok-ww 对 PC 游戏同样要求管理员）；
+1. **以管理员运行本程序**（本程序清单已要求；ok-ww 对 PC 游戏同样要求管理员）；
 2. 鸣潮**窗口模式**（不支持独占全屏），推荐 16:9；
 3. 首次启动引擎要加载 OCR 模型，慢一些属正常；
-4. 运行日志按日期写在 `%LOCALAPPDATA%\MyTools\okww\logs\`（每天一个文件，
+4. 运行日志按日期写在 `%LOCALAPPDATA%\WutheringWavesTools\okww\logs\`（每天一个文件，
    超 31 天自动清理）；出问题把当天的文件发过来即可；
 5. 运行期间不要同时运行 ok-ww 官方程序本体（两套自动化会互相打架）。
 
@@ -308,7 +368,7 @@ ok-ww 配置里还注册了触发式的 `AutoCombatTask`（进战斗自动输出
 ## 开源许可
 
 「4C 自动战斗」内置了 [ok-ww](https://github.com/ok-oldking/ok-wuthering-waves)
-的源码与素材（`vendor/okww/`，AGPL-3.0）。**把 MyTools 安装包分发给他人时，
+的源码与素材（`vendor/okww/`，AGPL-3.0）。**把本工具的安装包分发给他人时，
 必须按 AGPL-3.0 一并提供对应源码** —— 最简单的做法：发安装包时把整个源码目录
 （或对应 commit 的 zip）一起发。详见 `licenses/NOTICES.md`；ok-ww 与 ok-script
 的许可全文在 `licenses/` 下。
@@ -329,21 +389,31 @@ package.bat               # 双击即可。版本号自动取 src/app_config.py 
 
 它做两件事：PyInstaller 出绿色目录 → Inno Setup 出安装包。
 
+**只改了 `installer\*.iss`（应用名、快捷方式、安装目录）时不必重跑 PyInstaller**：
+双击 `dist\一键打包安装包.bat` 选 **2「只重出安装包」**，复用现有
+`dist\WutheringWavesTools`，约 1~2 分钟（实测 1 分 53 秒，大头是 Inno 压 lzma2）。
+它带**陈旧检查**：`src/` 比绿色版新就会把那些文件列出来拦下（要 `-Force` 才放行）——
+因为那样打出来的包**不含最新代码**，而肉眼完全看不出来。
+
+> 所以 `dist\WutheringWavesTools\`（绿色版）**别删**：删了就只能走完整打包，
+> 而 `packaging\check_build.py` / `tests\check_frozen_fixes.py` 默认也是查它。
+
 **产物**
 
-- `dist\MyTools\` —— 绿色版，整个目录拷到别的机器就能跑；
-- `dist\MyToolsSetup-<版本>.exe` —— 安装包，装到 `%LOCALAPPDATA%\Programs\MyTools`
+- `dist\WutheringWavesTools\` —— 绿色版，整个目录拷到别的机器就能跑；
+- `dist\WutheringWavesToolsSetup-<版本>.exe` —— 安装包，装到
+  `%LOCALAPPDATA%\Programs\WutheringWavesTools`
   （安装本身免 UAC），带开始菜单 / 桌面快捷方式和卸载项。
 
 **主程序要求管理员权限**（`packaging/mytools.spec` 里的 `uac_admin=True`）——
 这是必须的，不是图省事：鸣潮带 ACE 反外挂，游戏自身以管理员运行，
-低权限的 MyTools 连一次点击都发不出去（见上面「前置条件」第 5 条）。
+低权限的本程序连一次点击都发不出去（见上面「前置条件」第 5 条）。
 代价是**每次启动都会弹一次 UAC 确认**；如果账号不是管理员，程序会起不来
 （那就得用管理员账号，或改回"普通启动 + 界面里一键提权重启"）。
 安装包自身仍是按用户安装、不弹 UAC，只有启动程序时才会提权。
 
 **用户数据不在安装目录里**：配置、任务流程、界面状态、探测产物都在
-`%LOCALAPPDATA%\MyTools\`（落点由 `src/core/paths.py` 决定），所以装到 `Program Files`
+`%LOCALAPPDATA%\WutheringWavesTools\`（落点由 `src/core/paths.py` 决定），所以装到 `Program Files`
 也能正常保存，卸载不会删用户配置，重装 / 升级也不会覆盖。开发态这些路径没变
 （仍是项目根下的 `data/`）。
 
@@ -355,7 +425,7 @@ package.bat               # 双击即可。版本号自动取 src/app_config.py 
    `src/tools/**/*.py` 既收进归档（`collect_submodules`）**又当数据放一份**到 `_internal/`。
    （`registry.discover()` 里留了一条 warning 当报警器。）
 2. **无控制台**（`console=False`）时 `sys.stderr` 是 `None`，日志等于直接丢掉。
-   所以打包版会把日志写到 `%LOCALAPPDATA%\MyTools\mytools.log` —— 装机版出问题先看它。
+   所以打包版会把日志写到 `%LOCALAPPDATA%\WutheringWavesTools\wutheringwavestools.log` —— 装机版出问题先看它。
 
 **体积上的两个实测结论**（改依赖前先看这条，省得白折腾）：
 
@@ -383,7 +453,7 @@ MyTools/
 ├── src/
 │   ├── app_config.py           常量集中在这里
 │   ├── core/                   ★ 不依赖 Qt，可单独测试
-│   │   ├── categories.py       工具分类（改这里加分类）
+│   │   ├── categories.py       工具分类（注册元数据用；主页已不分类）
 │   │   ├── tool_base.py        BaseTool + ToolMeta
 │   │   ├── registry.py         注册表 + pkgutil 自动发现
 │   │   ├── game_data.py        数据集加载 + 查询（角色 / 套装 / 声骸）
@@ -397,7 +467,7 @@ MyTools/
 │   ├── gui/                    ★ 只依赖 Qt
 │   │   ├── compat.py           图标名/控件名的降级兼容层
 │   │   ├── nav_reorder.py      侧栏顶级项的自由排序（主页固定）
-│   │   ├── widgets.py          工具卡片、分类分组、可折叠卡片
+│   │   ├── widgets.py          工具卡片网格、配置卡片、可折叠卡片
 │   │   ├── pickers.py          可输入过滤的下拉 / 带图标的下拉 / 属性单选 / 声骸选择行
 │   │   ├── home_interface.py   主页
 │   │   ├── config_interface.py 配置页（列表 + 查看/修改/删除）
@@ -415,7 +485,8 @@ MyTools/
 │       │   └── auto_combat/    ★ 4C 自动战斗（ok-ww 宿主）
 │       │       ├── okww_boot.py     无 GUI 启动 ok-script + 启停任务 + 日志
 │       │       └── tool.py          注册入口 + 启动/停止面板
-│       └── office/             办公分类（暂时是空的）
+│       ├── data/               ★ 资源库更新（bwiki + 库街区数据同步）
+│       └── office/             办公类工具（暂时是空的）
 ├── tests/
 │   ├── smoke_core.py           核心层冒烟（不需要 Qt）
 │   ├── smoke_gui.py            GUI 冒烟 + 可选截图
@@ -445,7 +516,7 @@ MyTools/
   顺序存在 `data/ui_state.json`，下次启动照旧。
   左上角的菜单(☰)按钮已隐藏、折叠功能关闭；鼠标移到侧栏**右边缘**按住左右拖动即可调宽度
   （框架自带导航栏不支持拖拽，那条分隔条是自己加的）。
-- **主页**：按分类铺**块状卡片**——上面图标、下面名称。说明文字**不常驻卡片**，
+- **主页**：**不分分类**，所有工具平铺成一张**块状卡片**网格——上面图标、下面名称。说明文字**不常驻卡片**，
   鼠标悬浮时以小字提示弹出（走 `ToolTipFilter` 把延迟压到 120ms，Qt 默认 700ms 太慢）。
   点卡片会跳到对应工具，并**自动展开侧栏分组、把那一项选中高亮**。
 - **工具面板**：懒加载。侧栏项挂的是 `ToolInterfaceHost` 空壳，第一次真正显示时才
@@ -481,10 +552,13 @@ class DiceTool(BaseTool):
 
 保存后重启程序，主页和侧栏「工具」分组里都会自动出现这个工具。
 
-## 加一个新分类
+## 工具分类
 
-改 `src/core/categories.py`，加一个 `ToolCategory` 枚举成员即可（含显示名、图标名、排序），
-主页自动多出一组卡片。
+改 `src/core/categories.py`，加一个 `ToolCategory` 枚举成员即可（含显示名、图标名、排序）。
+分类只影响**注册元数据**（工具页下拉框、占位页的「分类」一行）。
+
+> ⚠ **主页不再按分类分组**（2026-09-24 按要求改成平铺所有工具）：新加分类**不会**让主页
+> 多出一组卡片，新工具直接出现在那张平铺网格里。
 
 ## 测试
 
@@ -496,10 +570,14 @@ class DiceTool(BaseTool):
 .venv\Scripts\python tests\smoke_echo_runner.py     # 强化流程状态机（假窗口）
 .venv\Scripts\python tests\check_settings_gui.py    # 工具页配置存盘/回填 + 资源库页重建（带截图）
 .venv\Scripts\python tests\check_frozen_fixes.py    # 打包版：提权清单 + 首启动播种顺序
-.venv\Scripts\python tests\check_okww_boot.py       # 4C 自动战斗（点启动才 boot 引擎）
+.venv\Scripts\python tests\check_okww_boot.py       # 4C 自动战斗页的宿主状态机接线
+.venv\Scripts\python tests\check_okww_registration.py  # ★ 真起引擎，确认每个任务都注册了
+.venv\Scripts\python tests\check_echo_page_gui.py   # 声骸强化页的配置告警（带截图）
+.venv\Scripts\python tests\check_battle_report_gui.py  # 战斗报告卡片外观（带截图）
 .venv\Scripts\python tests\test_okww_vendor.py      # vendored ok-ww 完整性 + 宿主配置
+.venv\Scripts\python tests\test_paths_migration.py  # 改名后老用户数据目录的继承
 
-# 全量单测（252 个）
+# 全量单测（325 个）
 .venv\Scripts\python -m unittest discover -s tests -p "test_*.py"
 
 # 想要界面截图：
@@ -517,11 +595,12 @@ $env:QT_QPA_PLATFORM="windows"; .venv\Scripts\python tests\smoke_gui.py --shot
 
 ## 已知情况
 
-- **声骸强化里"真实游戏"这一段没有实机验证过**：判定规则、OCR 解析、流程状态机都有测试兜底，
-  但「截图坐标对不对、游戏认不认这些点击」只有接上真游戏才知道。
-  先勾上**演练模式**联调（只识别判定、不点游戏），确认没问题再正式跑。
-- 相对坐标沿用 ok-ww 的 16:9 基准（`runner.py` 顶部的 `REGION_*` 常量），
-  如果你的分辨率/UI 缩放导致对不上，改这几个常量即可。
+- **声骸强化里"真实游戏"这一段没有实机验证过**：判定规则、OCR 配对、任务注册都有测试兜底，
+  但「OCR 认不认游戏里那些字、点击坐标对不对」只有接上真游戏才知道。
+  出问题先看 `%LOCALAPPDATA%\WutheringWavesTools\okww\logs\` 当天日志里的
+  `info_set 判定统计`（弃置原因分布）和 `info_set 鸣潮工具箱判定`（每次判定的原文）。
+- 坐标 / 模板 / OCR 全在 ok-ww 那边（它按 16:9 自动缩放），MyTools 不再自己维护
+  `REGION_*`（旧常量留在 LEGACY 的 `runner.py` 里，已不是主路径）。
 - 图标名走 `compat.resolve_icon()` 多级降级：Fluent 新版改名了也不会崩，只是形状可能不同。
 - 主题走 `Theme.AUTO`（跟随系统）。`main.py` 里改一行就能固定成浅色/深色。
 

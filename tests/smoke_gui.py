@@ -71,6 +71,21 @@ def main() -> int:
 
     print("=== MyTools GUI 冒烟测试 ===")
 
+    # ★ 隔离持久化路径（**必须早于构造任何页面**）：
+    #   页面构造/回填会读写 tool_settings.json；曾经有检查脚本没隔离，
+    #   把测试用的勾选写进了用户真实配置（2026-09-24 事故）。
+    #   跑前先记真实文件哈希，跑完断言没变 —— 把"不知不觉改配置"钉死在测试里。
+    import hashlib
+    import tempfile
+
+    from src.core import tool_settings
+
+    real_settings = pathlib.Path(tool_settings.settings_file())
+    real_hash = hashlib.md5(real_settings.read_bytes()).hexdigest() if real_settings.is_file() else None
+
+    tmp_dir = pathlib.Path(tempfile.mkdtemp(prefix="smoke-gui-"))
+    tool_settings.settings_file = lambda: tmp_dir / "tool_settings.json"
+
     discover_tools()
     app = QApplication(sys.argv)
 
@@ -108,15 +123,16 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             check(False, f"{meta.name}: 面板创建异常 {exc}")
 
-    # 主页每个"有工具的"分类各渲染一组（空分类按设计不显示）
-    from src.core.categories import ALL_CATEGORIES
-    from src.gui.widgets import CategorySection
+    # 主页现在是**一张平铺的网格**（2026-09-24 取消分类分组）：
+    # 断言网格只有一个、卡片数 == 工具数，顺带确认不再有分类分组控件。
+    from src.gui.widgets import ToolCard, ToolGrid
 
-    sections = window.home_interface.findChildren(CategorySection)
-    expected = len([c for c in ALL_CATEGORIES if ToolRegistry.by_category(c)])
+    grids = window.home_interface.findChildren(ToolGrid)
+    check(len(grids) == 1, f"主页工具网格 {len(grids)} 个 / 应有 1 个")
+    cards = window.home_interface.findChildren(ToolCard)
     check(
-        len(sections) == expected,
-        f"主页分类分组 {len(sections)} 组 / 应有 {expected} 组",
+        len(cards) == len(metas),
+        f"主页卡片 {len(cards)} 张 / 工具 {len(metas)} 个",
     )
 
     if args.shot:
@@ -176,6 +192,11 @@ def main() -> int:
         settle()
         save_shot(window, "tools.png")
         window.close()
+
+    # 真实配置必须原封不动（隔离没漏）
+    if real_hash is not None:
+        now_hash = hashlib.md5(real_settings.read_bytes()).hexdigest()
+        check(now_hash == real_hash, "真实 tool_settings.json 未被改动（隔离有效）")
 
     print(f"\n=== 结果：{'全部通过' if not _failures else f'{len(_failures)} 项失败'} ===")
     for item in _failures:

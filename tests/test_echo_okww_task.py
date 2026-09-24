@@ -53,6 +53,9 @@ def make_task(config: JudgeConfig) -> MyToolsEnhanceEchoTask:
     task.fail_reason = ""
     task.info = {}
     task.last_judgement = ""
+    # 统计用的两个计数（正常由 __init__ 初始化，这里绕过了 __init__）
+    task.discard_tally = {}
+    task.checked_echoes = 0
     task.log_info = lambda *a, **k: None
     task.info_set = lambda key, value: task.info.__setitem__(key, value)
     return task
@@ -185,6 +188,65 @@ class TestDefaults(unittest.TestCase):
     def test_judge_config_is_reset_per_instance(self):
         src = inspect.getsource(MyToolsEnhanceEchoTask.__init__)
         self.assertRegex(src, r"self\.judge_config\s*=\s*JudgeConfig\(\)")
+
+
+class TestLanguageGate(unittest.TestCase):
+    """ok-script 会按语言**静默跳过**任务注册 —— 2026-09-24 的致命事故根源。
+
+    ``task_manager.init_tasks()``::
+
+        if len(task.supported_languages) == 0 or locale_name in task.supported_languages:
+            tasks.append(task)
+
+    宿主是无 GUI 的，``app.locale`` 实测是 qfluentwidgets 的默认值 **en_US**，
+    而 ok-ww 的 ``EnhanceEchoTask`` 声明了 ``["zh_CN", "zh_TW"]`` ——
+    子类推承了门禁 → 任务根本没进引擎 → 点「运行」只得到「找不到任务」。
+    """
+
+    def test_base_class_really_declares_the_gate(self):
+        """反证：不覆盖的话确实会被跳过 —— 免得以后有人以为那行多余。"""
+        from okww.task.EnhanceEchoTask import EnhanceEchoTask
+
+        src = inspect.getsource(EnhanceEchoTask.__init__)
+        self.assertRegex(src, r'supported_languages\s*=\s*\["zh_CN"')
+
+    def test_language_gate_is_cleared(self):
+        src = inspect.getsource(MyToolsEnhanceEchoTask.__init__)
+        self.assertRegex(src, r"self\.supported_languages\s*=\s*\[\]")
+
+
+class TestDiscardTally(unittest.TestCase):
+    """弃置原因统计：一次运行结束要能看出"为什么都被弃置"。"""
+
+    def test_format_tally(self):
+        text = okww_task.format_tally(9, {"crit": 5, "valid": 3, "core": 1})
+        self.assertIn("已判 9 次", text)
+        self.assertIn("弃置 9 个", text)
+        # 按数量降序：最多的原因排最前
+        self.assertLess(text.index("双爆不达标"), text.index("有效词条不足"))
+        self.assertIn("凑不齐核心属性", text)
+
+    def test_format_tally_without_discards(self):
+        self.assertIn("暂无弃置", okww_task.format_tally(3, {}))
+
+    def test_check_echo_stats_records_reason(self):
+        task = make_task(JudgeConfig(enable_max_roll_lock=False))
+        keep = task.check_echo_stats(
+            [FakeBox(CRIT, 0.4), FakeBox(CRIT_DMG, 0.4)],
+            [FakeBox("6.3%", 0.4), FakeBox("12.6%", 0.4)],
+        )
+        self.assertFalse(keep)                       # 双爆都低于下限 → 弃置
+        self.assertEqual(task.checked_echoes, 1)
+        self.assertEqual(task.discard_tally, {"crit": 1})
+        self.assertIn("判定统计", task.info)          # 页面靠它把原因显示出来
+
+    def test_keep_does_not_touch_tally(self):
+        task = make_task(JudgeConfig(min_valid_count=2, crit_min=0.0,
+                                     crit_dmg_min=0.0, enable_max_roll_lock=False))
+        keep = task.check_echo_stats([FakeBox(CRIT, 0.3)], [FakeBox("9.3%", 0.3)])
+        self.assertTrue(keep)
+        self.assertEqual(task.checked_echoes, 1)
+        self.assertEqual(task.discard_tally, {})
 
 
 if __name__ == "__main__":

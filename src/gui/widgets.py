@@ -1,4 +1,4 @@
-"""可复用的界面组件：工具卡片、分类分组、占位面板。
+"""可复用的界面组件：工具卡片网格、配置卡片、占位面板。
 
 这些组件只认数据是 ToolMeta，不认具体工具实现——这样工具坏了也不会波及主页。
 卡片是"块状"的：上面图标、下面名称，鼠标悬浮时补一行小字说明。
@@ -112,66 +112,20 @@ class ComingSoonBadge(QLabel):
         )
 
 
-class SectionHeader(QWidget):
-    """分类标题行：图标 + 名称 + 数量 + 说明。"""
+class ToolGrid(QWidget):
+    """一组工具卡片（块状网格），**不带分类标题**。
 
-    def __init__(self, title: str, icon_name: str, count: int, note: str = "", parent=None):
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 0, 4, 0)
-        layout.setSpacing(10)
-
-        icon = IconWidget(resolve_icon(icon_name, "TILES"), self)
-        icon.setFixedSize(18, 18)
-        layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignVCenter)
-
-        layout.addWidget(SubtitleLabel(title, self))
-        count_label = CaptionLabel(f"{count} 个", self)
-        count_label.setTextColor("#8A8F98", "#7C7C7C")
-        layout.addWidget(count_label)
-
-        if note:
-            note_label = CaptionLabel(note, self)
-            note_label.setTextColor("#8A8F98", "#7C7C7C")
-            note_label.setWordWrap(True)
-            layout.addWidget(note_label, 1)
-
-        layout.addStretch(1)
-
-
-class CategorySection(QWidget):
-    """一个分类：标题 + 块状卡片网格。"""
+    主页直接用它平铺所有工具（2026-09-24 起取消分类分组）。
+    原来的 ``CategorySection`` / ``SectionHeader`` 一并删除 —— 留着容易被下一个
+    人重新拿去按分类铺主页。
+    """
 
     toolClicked = Signal(str)
 
-    def __init__(self, category, metas: list[ToolMeta], parent=None):
+    def __init__(self, metas: list[ToolMeta], parent=None):
         super().__init__(parent)
-        self.category = category
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(12)
-
-        root.addWidget(
-            SectionHeader(
-                category.display_name,
-                category.spec.icon_name,
-                len(metas),
-                category.spec.note,
-                self,
-            )
-        )
-
-        if not metas:
-            empty = CardWidget(self)
-            empty_layout = QHBoxLayout(empty)
-            tip = BodyLabel("这个分类还没有工具，去 src/tools/ 下加一个就行", self)
-            tip.setTextColor("#8A8F98", "#7C7C7C")
-            empty_layout.addWidget(tip)
-            root.addWidget(empty)
-            return
-
-        grid = QGridLayout()
+        grid = QGridLayout(self)
         grid.setSpacing(CARD_GRID_SPACING)
         grid.setContentsMargins(0, 0, 0, 0)
 
@@ -183,10 +137,6 @@ class CategorySection(QWidget):
 
         # 卡片按左上角对齐，右侧多余空间留白，不做拉伸（否则卡片会变形）
         grid.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-
-        grid_widget = QWidget(self)
-        grid_widget.setLayout(grid)
-        root.addWidget(grid_widget)
 
 
 class ComingSoonWidget(QWidget):
@@ -291,13 +241,34 @@ class NumberStepper(QWidget):
     def value(self) -> int:
         return self._value
 
-    def set_value(self, value: int) -> None:
+    def set_value(self, value: int, *, emit: bool = True) -> None:
+        """设值（越界夹回）。``emit=False`` 用于"外面正在同步、不想再触发一次存盘"。
+
+        （``_save_settings`` 里是**先**同步**再**收集设置，所以静默设值同样会被存下来。）
+        """
         before = self._value
         self._value = max(self.minimum, min(self.maximum, value))
         self.label.setText(str(self._value))
         self._sync_buttons()
-        if self._value != before:
+        if emit and self._value != before:
             self.changed.emit()
+
+    def set_range(self, minimum: int, maximum: int, *, emit: bool = True) -> None:
+        """改可取值范围；当前值越界会被夹回范围里。
+
+        ``emit=False`` 给"外面正在同步范围"的场合用 —— 否则
+        ``set_range → changed → 存盘 → 再同步`` 会绕回来
+        （见声骸强化页 ``_sync_valid_count``）。
+        """
+        self.minimum = minimum
+        self.maximum = maximum
+        clamped = max(minimum, min(maximum, self._value))
+        if clamped != self._value:
+            self._value = clamped
+            self.label.setText(str(clamped))
+            if emit:
+                self.changed.emit()
+        self._sync_buttons()
 
     def _sync_buttons(self) -> None:
         self.minus.setEnabled(self._value > self.minimum)

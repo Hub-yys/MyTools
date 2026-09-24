@@ -38,6 +38,24 @@ ok-ww 的判断点只有一个方法：
 「满值保护」那条规则（出了满分词条要留到最后）返回的是 ``continue``，
 ok-ww 会继续强化到满级再上锁，语义也正好对得上。
 **所以不需要改动 ok-ww 的主循环**，只改这一个方法就够。
+
+## ⚠ 2026-09-24：两个会让本功能"完全没用"的坑（都已修）
+
+**① 任务被静默跳过（头号原因）。** ok-ww 的 ``EnhanceEchoTask`` 声明了
+``supported_languages = ["zh_CN", "zh_TW"]``，而 ok-script 的
+``task_manager.init_tasks()`` 是这么写的::
+
+    if len(task.supported_languages) == 0 or locale_name in task.supported_languages:
+        tasks.append(task)
+
+**不满足就静默不注册**。宿主是无 GUI 的，``init_app_config()`` 拿不到 ok-ww GUI
+里那个「语言」设置，``app.locale`` 就是 qfluentwidgets 的默认值 **en_US**（实测）
+→ 子类推承的门禁把它挡掉了 → ``find_task`` 返回 None → 点「运行」什么都不会发生。
+子类里清了 ``supported_languages`` 即可（见 :meth:`__init__`）。
+
+**② 判定规则自相矛盾。** 有效词条集合只有双爆（2 条）而界面默认要求 ≥3，
+声骸每种词条只出现一次 → 永远达不到 → 每个声骸都在满级那一刻被弃置。
+修法在 :mod:`stats`（``effective_min_valid_count``）。
 """
 
 from __future__ import annotations
@@ -66,6 +84,7 @@ _ensure_vendor_on_path()
 from okww.task.EnhanceEchoTask import EnhanceEchoTask  # noqa: E402
 
 from .stats import (  # noqa: E402
+    DISCARD_CODES,
     EchoStat,
     JudgeConfig,
     judge,
@@ -95,6 +114,22 @@ def _no_startfile():
         yield
     finally:
         os.startfile = original               # type: ignore[assignment]
+
+
+def format_tally(checked: int, tally: dict[str, int]) -> str:
+    """把弃置原因统计拼成一行（纯函数，方便单测）。
+
+    为什么要有这行：判定的结果只有"弃置/保留"两种，用户看到"刷了 40 个全丢掉了"
+    时完全无法判断是**规则太严**还是**读错了词条**。把原因分布摆出来就一目了然。
+    """
+    dropped = sum(tally.values())
+    if not dropped:
+        return f"已判 {checked} 次，暂无弃置"
+    parts = [
+        "%s %d" % (DISCARD_CODES.get(code, code), count)
+        for code, count in sorted(tally.items(), key=lambda kv: -kv[1])
+    ]
+    return "已判 %d 次，弃置 %d 个（原因：%s）" % (checked, dropped, "、".join(parts))
 
 
 def to_echo_stats(properties, values) -> list[EchoStat]:
@@ -137,10 +172,10 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.name = "⬆️ 声骸自动强化（MyTools 筛选条件）"
+        self.name = "⬆️ 声骸自动强化（鸣潮工具箱筛选条件）"
         self.description = (
             "点 B 进背包 → 声骸 → 用过滤器筛出要强化的 → 按等级升序排序后开始。"
-            "流程与 ok-ww 一致，判定用 MyTools 里配的那套条件。"
+            "流程与 ok-ww 一致，判定用鸣潮工具箱里配的那套条件。"
         )
 
         # ok-ww 默认「成功即暂停」，那是给"边看边强化"准备的；
@@ -149,12 +184,30 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
         #   所以在这里改默认值是生效的。见 ok/task/task.py: load_config）
         self.default_config["Pause after Success"] = False
 
+        # ★★ 语言门禁：**必须清空**，否则这个任务会凭空消失。
+        #   ok-ww 的 EnhanceEchoTask 声明了 supported_languages = ["zh_CN", "zh_TW"]，
+        #   而 ok-script 的 task_manager.init_tasks() 不满足就**静默不注册**。
+        #   宿主无 GUI → app.locale 是 qfluentwidgets 的默认值 en_US（实测）→
+        #   任务根本进不了引擎，点「运行」只得到「找不到任务」。
+        #   宿主场景里"引擎语言"这个代理量毫无意义：本工具就是给中文游戏用的，
+        #   ok-ww 的 OCR 匹配串（'培养' / '阶段放入' …）本来就是中文字面量。
+        #   清空 = 永远注册；run() 里另有一道语言检查，不匹配会明确告警。
+        self.supported_languages = []
+
         #: 判定配置。由宿主在启动任务前注入（见 ``okww_boot.OkwwHost.start_task``）
         #: —— 也就是工具页上用户配的那套筛选条件。
         self.judge_config = JudgeConfig()
 
         #: 最近一次的判定结果（日志/排查用）
         self.last_judgement = ""
+        #: 弃置原因统计（键是 :data:`DISCARD_CODES` 的分类码）
+        self.discard_tally: dict[str, int] = {}
+        #: 一共判过多少次
+        self.checked_echoes = 0
+        #: 「满属性」声骸数（出现过满暴击/满爆伤词条并被上锁的声骸）
+        self.perfect_echoes = 0
+        #: 当前这个声骸有没有出现过满分词条（逐声骸结算用，见 ``_finalize_echo``）
+        self._perfect_seen = False
 
     # ------------------------------------------------------------------ 判定
     def check_echo_stats(self, properties, values) -> bool:
@@ -163,17 +216,94 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
         result = judge(stats, self.judge_config)
 
         self.last_judgement = str(result)
+        # 统计"为什么弃置"——不然用户只看到"全都丢掉了"，无从下手
+        self.checked_echoes += 1
+        if result.action == "discard":
+            code = result.code or "other"
+            self.discard_tally[code] = self.discard_tally.get(code, 0) + 1
+            self.info_set("判定统计", self.tally_text())
+        elif result.code == "max_roll":
+            # 出了满分词条 → 先记在"当前这个声骸"头上；**真正计数**等它处理完再做
+            # （见 _finalize_echo）—— 同一个声骸会被判 5 次，按次数算会重复计数
+            self._perfect_seen = True
         # ok-ww 会把 fail_reason 拼进失败截图的文件名，所以给个安全的短串
         self.fail_reason = result.reason or result.action
-        self.info_set("MyTools 判定", str(result))
+        self.info_set("鸣潮工具箱判定", str(result))
         self.log_info(
-            "MyTools 判定：%s（读到词条 %s）"
+            "鸣潮工具箱判定：%s（读到词条 %s）"
             % (result, "、".join(str(s) for s in stats) or "无")
         )
         return result.action != "discard"
 
+    def tally_text(self) -> str:
+        """一行统计（给 InfoBar / 日志用）。"""
+        return format_tally(self.checked_echoes, self.discard_tally)
+
+    def _finalize_echo(self, *, kept: bool) -> None:
+        """一个声骸处理完了（上锁 / 弃置）—— 结算它的「满属性」身份。
+
+        为什么要按**声骸**结算而不是按判定次数：``check_echo_stats`` 每揭开一条词条
+        就被调一次（一个声骸最多 5 次），满分词条一旦出现，之后每轮都会再命中那条规则。
+        按次数算会把一个声骸数成好几个。
+
+        只在**启用满值保护**时统计（用户要求）—— 关掉保护时满分词条不会被特殊对待，
+        那个数就失去意义了。
+        """
+        if kept and self._perfect_seen and self.judge_config.enable_max_roll_lock:
+            self.perfect_echoes += 1
+            self.info_set("满属性声骸数量", self.perfect_echoes)
+        self._perfect_seen = False
+
+    # ok-ww 的两个收尾动作各对应"一个声骸处理完" → 在这两处结算
+    def lock_and_esc(self):
+        super().lock_and_esc()
+        self._finalize_echo(kept=True)
+
+    def trash_and_esc(self):
+        super().trash_and_esc()
+        self._finalize_echo(kept=False)
+
     # ------------------------------------------------------------------ 运行
     def run(self) -> None:
         """ok-ww 的 ``run()`` 原样跑，只是屏蔽它结尾弹截图文件夹那一下。"""
+        # 不指望 default_config 单点生效：configs/<类名>.json 里可能留着旧值，
+        # 开着"成功即暂停"会让批量强化表现得像"只跑一个就停"。
+        try:
+            self.config["Pause after Success"] = False
+        except Exception:                     # noqa: BLE001 - 配置只读也不该挡住主流程
+            pass
+        # 本轮统计清零 —— info 在同一进程内跨次累加，这几个键必须自己重置
+        self.checked_echoes = 0
+        self.discard_tally = {}
+        self.perfect_echoes = 0
+        self._perfect_seen = False
+        if self.judge_config.enable_max_roll_lock:
+            # 先播一个 0：报告卡靠"这个键在不在"判断要不要统计满属性
+            self.info_set("满属性声骸数量", 0)
+        self._check_environment()
         with _no_startfile():
-            return super().run()
+            try:
+                return super().run()
+            finally:
+                self.log_info(
+                    "本轮报告：判定 %d 次，符合条件 %s 个，弃置 %s 个，满属性 %s 个"
+                    % (self.checked_echoes, self.info_get("成功声骸数量", 0),
+                       self.info_get("失败声骸数量", 0),
+                       self.info_get("满属性声骸数量", "未统计")),
+                    notify=True,
+                )
+
+    def _check_environment(self) -> None:
+        """开跑前把"会让结果看起来完全不对"的环境/配置问题喊出来。"""
+        warning = self.judge_config.criterion_warning()
+        if warning:
+            self.log_info("⚠ 判定规则自相矛盾，已自动收窄：" + warning, notify=True)
+        locale = getattr(self.executor, "locale", None)
+        name = locale.name() if hasattr(locale, "name") else str(locale or "")
+        if name and not name.startswith("zh"):
+            self.log_info(
+                "⚠ 引擎语言是 %s，本任务按**中文游戏界面**做 OCR 匹配"
+                "（'培养'「阶段放入」「强化并调谐」…）；"
+                "游戏界面不是简体/繁体中文就会识别失败。" % name,
+                notify=True,
+            )

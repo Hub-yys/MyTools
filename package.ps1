@@ -1,14 +1,14 @@
 ﻿<#
-    MyTools 一键打包：PyInstaller 出绿色目录 → Inno Setup 出安装包
+    WutheringWavesTools（鸣潮工具箱）一键打包：PyInstaller 绿色目录 → Inno Setup 安装包
 
         .\package.ps1                  # 版本号自动取 src\app_config.py 的 APP_VERSION
         .\package.ps1 -Version 0.4.0    # 也可以显式指定
 
     产物：
-        dist\MyTools\                    绿色版（整个目录拷走就能跑）
-        dist\MyToolsSetup-<版本>.exe     安装包
+        dist\WutheringWavesTools\        绿色版（整个目录拷走就能跑）
+        dist\WutheringWavesToolsSetup-<版本>.exe   安装包
 
-    用户数据说明：配置文件不在安装目录里，而在 %LOCALAPPDATA%\MyTools
+    用户数据说明：配置文件不在安装目录里，而在 %LOCALAPPDATA%\WutheringWavesTools
     （见 src/core/paths.py），所以卸载 / 重装都不会动用户的配置与任务流程。
 #>
 param([string]$Version = '')
@@ -23,14 +23,14 @@ $ErrorActionPreference = 'Continue'
 $Root     = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Python   = Join-Path $Root '.venv\Scripts\python.exe'
 $DistDir  = Join-Path $Root 'dist'
-$Stage    = Join-Path $DistDir 'MyTools'
+$Stage    = Join-Path $DistDir 'WutheringWavesTools'
 $WorkPath = Join-Path $Root 'build\pyinstaller'
 $Spec     = Join-Path $Root 'packaging\mytools.spec'
 $Icon     = Join-Path $Root 'assets\app.ico'
 $Iss      = Join-Path $Root 'installer\mytools.iss'
 # ⚠ $Setup 要到下面**版本号确定之后**才算 —— 文件名里有版本号，而这里 $Version
 #   可能还是空串（不传 -Version 时是从 src\app_config.py 读的）。
-#   曾经在这儿先算过一次，结果最后去检查 "MyToolsSetup-.exe"，
+#   曾经在这儿先算过一次，结果最后去检查 "WutheringWavesToolsSetup-.exe"，
 #   明明安装包已经产出却报「没生成安装包」并退出 1（2026-09-23）。
 
 function Step($text) { Write-Host "`n==> $text" -ForegroundColor Cyan }
@@ -49,9 +49,9 @@ if (-not $Version) {
 }
 
 # 版本号定了，产物名才算得出来（见上面 $Setup 那段注释）
-$Setup = Join-Path $DistDir "MyToolsSetup-$Version.exe"
+$Setup = Join-Path $DistDir "WutheringWavesToolsSetup-$Version.exe"
 
-Write-Host "`nMyTools 打包   版本 $Version" -ForegroundColor Green
+Write-Host "`nWutheringWavesTools 打包   版本 $Version" -ForegroundColor Green
 
 # ---------------------------------------------------------------- 0. 前置
 Step '检查环境'
@@ -80,7 +80,7 @@ if (-not (Test-Path $Icon)) {
 Step 'PyInstaller 打包（onedir，约 1 分钟）'
 & $Python -m PyInstaller $Spec --noconfirm --distpath $DistDir --workpath $WorkPath
 if ($LASTEXITCODE -ne 0) { Fail 'PyInstaller 打包失败' }
-if (-not (Test-Path (Join-Path $Stage 'MyTools.exe'))) { Fail "没生成 $Stage\MyTools.exe" }
+if (-not (Test-Path (Join-Path $Stage 'WutheringWavesTools.exe'))) { Fail "没生成 $Stage\WutheringWavesTools.exe" }
 Write-Host ('   绿色版：{0}（{1:N1} MB）' -f $Stage,
     ((Get-ChildItem $Stage -Recurse -File | Measure-Object Length -Sum).Sum / 1MB))
 
@@ -120,4 +120,4 @@ if (-not (Test-Path $Setup)) { Fail "没生成 $Setup" }
 Write-Host "`n完成！" -ForegroundColor Green
 Write-Host ('   安装包：{0}（{1:N1} MB）' -f $Setup, ((Get-Item $Setup).Length / 1MB))
 Write-Host ('   绿色版：{0}' -f $Stage)
-Write-Host ('   用户数据在：{0}\MyTools（卸载不会删）' -f $env:LOCALAPPDATA)
+Write-Host ('   用户数据在：{0}\WutheringWavesTools（卸载不会删）' -f $env:LOCALAPPDATA)

@@ -1,4 +1,4 @@
-"""MyTools 入口。
+"""鸣潮工具箱（WutheringWavesTools）入口。
 
     python main.py
     python main.py --debug     # 打开调试日志
@@ -16,7 +16,7 @@ def setup_logging(debug: bool) -> None:
 
     打包成 GUI 程序（``console=False``）后**没有控制台**，``sys.stderr`` 是 None，
     日志等于直接丢掉 —— 所以打包版改成写文件到用户数据目录
-    （``%LOCALAPPDATA%\\MyTools\\mytools.log``），出问题时让用户把这个文件发过来。
+    （用户数据目录下的 ``<APP_NAME>.log``，见 ``src/core/paths.py``），出问题时让用户把这个文件发过来。
 
     文件日志和屏幕日志的取舍不同，所以格式分开配：
 
@@ -58,11 +58,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     # 这个导入是安全的：app_config 全是常量、不读任何数据文件，
     # 而且它在 parse_args() 里，不在 main() 顶层 —— 不会插到 ensure_user_data 前面
     # （tests/check_frozen_fixes.py 就扫 main() 顶层那一层）。
-    from src.app_config import APP_VERSION
+    from src.app_config import APP_DISPLAY_NAME, APP_NAME, APP_VERSION
 
-    parser = argparse.ArgumentParser(description="MyTools 桌面工具箱")
+    parser = argparse.ArgumentParser(description=f"{APP_DISPLAY_NAME}（{APP_NAME}）")
     parser.add_argument("--debug", action="store_true", help="打开调试日志")
-    parser.add_argument("--version", action="version", version=f"MyTools {APP_VERSION}")
+    parser.add_argument("--version", action="version", version=f"{APP_NAME} {APP_VERSION}")
     return parser.parse_args(argv)
 
 
@@ -93,10 +93,12 @@ def _check_admin() -> None:
 
     from PySide6.QtWidgets import QMessageBox
 
+    from src.app_config import APP_DISPLAY_NAME
+
     box = QMessageBox()
     box.setWindowTitle("权限不足")
     box.setIcon(QMessageBox.Icon.Warning)
-    box.setText("MyTools 目前不是管理员权限。")
+    box.setText(f"{APP_DISPLAY_NAME} 目前不是管理员权限。")
     box.setInformativeText(
         "鸣潮带反外挂（ACE），游戏本身运行在管理员权限下 ——\n"
         "这时 Windows 会拦掉本工具发出的点击和按键，表现是「点了游戏没反应」。\n\n"
@@ -120,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     #
     # 原因：src.core.game_data 是在 **import 的那一刻**就把 JSON 读进内存常量的。
     # 首启动时用户数据目录还不存在 → 它把"空数据"快照进内存，之后就算把种子拷进去
-    # 也不会重读 → **这一轮资源库页面永远是空的**；而「鸣潮资源库更新」读的是盘上的
+    # 也不会重读 → **这一轮资源库页面永远是空的**；而「资源库更新」读的是盘上的
     # 文件（那时已被拷好），内容与远端一致 → 它会说"数据已是最新"。
     # 一个看内存快照、一个看磁盘文件，于是两边看着自相矛盾。
     seeded = paths.ensure_user_data()
@@ -154,10 +156,34 @@ def main(argv: list[str] | None = None) -> int:
     window = MainWindow()
     window.show()
 
-    # 退出前收尾 ok-ww 宿主（若本进程打开过 4C 自动战斗并 boot 过引擎）
+    # ★ 启动即默认拉起 ok-ww 引擎（2026-09-24 用户要求）。
+    #   延迟一点再调：boot 会 os.chdir 到 vendor 目录，
+    #   别和「主窗口首帧 / 启动阶段的相对路径解析」抢。
+    from PySide6.QtCore import QTimer
+
+    from src.tools.game.auto_combat.okww_boot import AUTOSTART_DELAY_MS
+
+    QTimer.singleShot(AUTOSTART_DELAY_MS, _autostart_okww_engine)
+
+    # 退出前收尾 ok-ww 宿主（引擎启动过就要收）
     app.aboutToQuit.connect(_shutdown_okww_host)
 
     return app.exec()
+
+
+def _autostart_okww_engine() -> None:
+    """启动后自动拉起 ok-ww 引擎（用户要求：启动应用就默认启动）。
+
+    由 ``QTimer.singleShot`` 在**主窗口显示之后**调用 —— ``boot()`` 会
+    ``os.chdir`` 到 vendor 目录，启动阶段还有相对路径要解析。
+    boot 本身在后台守护线程里跑；失败只记日志，不挡程序启动。
+    """
+    try:
+        from src.tools.game.auto_combat.okww_boot import autostart_engine
+
+        autostart_engine()
+    except Exception:  # noqa: BLE001 - 自启失败不能挡住程序启动
+        logging.getLogger(__name__).warning("ok-ww 引擎自启失败", exc_info=True)
 
 
 def _shutdown_okww_host() -> None:

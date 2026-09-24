@@ -199,7 +199,7 @@ def _relaunch_target(argv: list[str] | None) -> tuple[str, str]:
     """算出"重新拉起自己"该用什么可执行文件 + 参数。"""
     args = list(sys.argv[1:] if argv is None else argv)
     if getattr(sys, "frozen", False):
-        # 打包后：sys.executable 就是 MyTools.exe，参数直接跟上
+        # 打包后：sys.executable 就是 WutheringWavesTools.exe，参数直接跟上
         return sys.executable, subprocess.list2cmdline(args)
     # 开发态：python + main.py + 参数
     return sys.executable, subprocess.list2cmdline([sys.argv[0], *args])

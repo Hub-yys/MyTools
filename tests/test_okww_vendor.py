@@ -12,11 +12,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / "vendor" / "okww"
 
+#: 让本文件能像兄弟测试那样直接跑（``python tests/test_okww_vendor.py``）。
+#: 少了这行只有 ``unittest discover`` 能跑通，直接跑会 ModuleNotFoundError: No module named 'src'
+#: （直接运行脚本时 sys.path 里只有 tests/，没有项目根）。
+sys.path.insert(0, str(ROOT))
+
 #: 宿主配置里**属于 MyTools 自己**的任务模块（不是 vendored ok-ww 的东西）。
 #: 它本该是 `src.*` —— 上面那条"必须改成 okww.*"的规则针对的是从 vendor 搬进来的
 #: 代码（原包名 src，改成 okww 才不会和 MyTools 的 src 撞名）。
 #: 见 src/tools/game/echo_enhance/okww_task.py（ok-ww 流程 + MyTools 判定条件）。
-OWN_TASKS = {"src.tools.game.echo_enhance.okww_task"}
+OWN_TASKS = {
+    "src.tools.game.echo_enhance.okww_task",   # 声骸强化（ok-ww 流程 + 本工具判定）
+    "src.tools.game.auto_combat.okww_farm",    # 4C 刷声骸（ok-ww 流程 + 拾取角标计数）
+}
 
 sys.path.insert(0, str(VENDOR))
 

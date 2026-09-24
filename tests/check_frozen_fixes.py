@@ -1,6 +1,6 @@
 """打包版修复验证。
 
-① **提权清单**：MyTools.exe 里必须嵌着 requireAdministrator（否则改了 spec 也没生效）
+① **提权清单**：WutheringWavesTools.exe 里必须嵌着 requireAdministrator（否则改了 spec 也没生效）
 ② **首启动播种顺序**：main.py 必须"先播种、再导入依赖数据的模块"，并且按这个顺序
    真的能把数据读进内存（模拟打包后第一次运行：用户数据目录是空的）
 
@@ -18,7 +18,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(r"D:/AI WorkSpace/workbuddy/MyTools")
-EXE = ROOT / "dist" / "MyTools" / "MyTools.exe"
+EXE = ROOT / "dist" / "WutheringWavesTools" / "WutheringWavesTools.exe"
 
 failures: list[str] = []
 
