@@ -15,13 +15,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 from qfluentwidgets import FluentWindow, NavigationItemPosition, setThemeColor
 
 from ..app_config import (
-    APP_NAME,
+    APP_DISPLAY_NAME,
     MIN_NAV_WIDTH,
     NAV_EXPAND_WIDTH,
     WINDOW_DEFAULT_HEIGHT,
@@ -32,7 +32,8 @@ from ..app_config import (
 from ..core.registry import ToolRegistry, logger
 from ..core.tool_base import ToolMeta
 from ..core.ui_state import UiState
-from .compat import resolve_icon
+from . import tray as tray_mod
+from .compat import app_icon, resolve_icon
 from .config_interface import ConfigInterface
 from .home_interface import HomeInterface
 from .library_interface import WuwaLibraryInterface
@@ -124,9 +125,29 @@ class NavResizer(QWidget):
 
 
 class MainWindow(FluentWindow):
+    #: 「任务已启动」用的**跨线程通知**信号。
+    #:
+    #: ★ 为什么非得转这一手（2026-09-27 卡死的根因）：
+    #: ok-ww 宿主喊这一声时，调用链是
+    #: ``FlowRunThread.run()``（**工作线程**）→ ``OkwwHost.start_task()``
+    #: → ``_notify_task_started()`` → 这个回调。而回调做的事
+    #: （``hide()`` / ``processEvents()`` / ``QTimer.singleShot``）**只能在主线程做**。
+    #:
+    #: 表现是：日志停在 ``[宿主] ▶ 已启动任务`` 之后**再也没有输出** ——
+    #: 因为 ``start_task`` 卡在这句通知里没返回，``OkwwTaskRunner.run()`` 的第一条
+    #: 日志根本没机会打出来；界面上流程永远「运行中」，停止也没反应。
+    #:
+    #: ``emit()`` 跨线程是**安全**的：Qt 自动把槽排到接收者所属线程（主线程）执行，
+    #: 不阻塞调用方。
+    task_started = Signal()
+
     def __init__(self, parent: QWidget | None = None, ui_state: UiState | None = None):
         super().__init__(parent)
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(APP_DISPLAY_NAME)
+        # 任务栏 / 托盘都用这个图标。**不设的话任务栏会显示 python.exe 的图标**
+        # （2026-09-25 用户反馈"你来设计个图标"就是这事 —— app.ico 早就有，
+        #  只是没人调用它）。
+        self.setWindowIcon(app_icon())
         self.resize(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
 
@@ -157,6 +178,152 @@ class MainWindow(FluentWindow):
         self._install_nav_resizer()
         self._tweak_navigation()
         self.center_on_screen()
+
+        #: 真正退出时置真 —— ``closeEvent`` 靠它区分「用户要关」和「我们已经决定退了」，
+        #: 否则点「停止并退出」会再弹一次确认框（死循环）。
+        self._force_quit = False
+        #: 托盘图标。拿不到系统托盘时为 None，这时「隐藏」退化成最小化。
+        self._tray = None
+        self._setup_tray()
+        # ★ 信号→槽：宿主在任何线程 emit，槽都在**主线程**执行（见 task_started 的说明）
+        self.task_started.connect(self.go_background_to_game)
+        self._listen_task_started()
+
+    # ------------------------------------------------------------------ 托盘 / 关闭
+    def _setup_tray(self) -> None:
+        """建托盘图标（拿不到就留 None，「隐藏」退化成最小化）。"""
+        self._tray = tray_mod.make_tray(
+            self,
+            on_show=self.restore_from_tray,
+            on_quit=self.quit_app,
+            icon=self.windowIcon(),
+        )
+
+    def restore_from_tray(self) -> None:
+        """把窗口从托盘 / 最小化状态叫回来。"""
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def go_background_to_game(self) -> None:
+        """点运行之后：本程序退到后台，并把游戏切到前台。
+
+        为什么要切游戏：用户点完「运行」就是想回去玩，本程序留在前台会挡着 ——
+        而且引擎走的是 PostMessage 后台按键，根本不需要前台。
+
+        ⚠ **先让窗口状态落地，再去抢前台**。``hide()`` / ``showMinimized()``
+        只是把请求排进事件队列，真正的窗口状态变更要等下一次事件循环；
+        如果紧接着就 ``SetForegroundWindow``，Windows 看到"发起抢前台的进程
+        还有可见窗口"，可能把**那个窗口**提上来 ——
+        表现就是"刚缩下去、界面又自己弹回来了"（2026-09-25 用户报的现象）。
+        所以在这里先 ``processEvents()`` 把 hide 落地，抢前台再延后一拍。
+        """
+        if self._tray is not None:
+            self.hide()
+        else:
+            self.showMinimized()
+        QApplication.processEvents()          # 让 hide/最小化先落到系统
+        QTimer.singleShot(120, self._focus_game)
+
+    def _focus_game(self) -> None:
+        """把游戏切到前台（延后调用，见 :meth:`go_background_to_game`）。"""
+        try:
+            from ..tools.game.auto_combat import okww_boot
+
+            okww_boot.bring_game_to_front()
+        except Exception:  # noqa: BLE001 - 切不过去不算错误，用户 Alt+Tab 即可
+            logger.debug("把游戏切到前台失败", exc_info=True)
+
+    def _listen_task_started(self) -> None:
+        """注册「任务已启动」回调 —— 点运行后自动退到后台 + 切游戏。
+
+        ⚠ 回调里**只 emit 信号**，不直接碰界面：这个回调会在 ok-ww 宿主的
+        调用线程（通常是 ``FlowRunThread``）上执行，直接调 ``go_background_to_game()``
+        等于从工作线程操作 Qt（2026-09-27 卡死的根因，详见 :attr:`task_started`）。
+        """
+        try:
+            from ..tools.game.auto_combat import okww_boot
+
+            okww_boot.get_host().add_task_started_listener(
+                lambda _key: self.task_started.emit()
+            )
+        except Exception:  # noqa: BLE001 - 引擎侧坏了不该挡住主窗口
+            logger.debug("注册任务启动回调失败", exc_info=True)
+
+    def quit_app(self) -> None:
+        """真的退出（托盘菜单的「退出」也走这里）。"""
+        self._force_quit = True
+        self.close()
+
+    def close_without_prompt(self) -> None:
+        """不弹确认框直接关掉。
+
+        ⚠ ``smoke_gui`` / ``check_*`` 这些脚本收尾时会调 ``window.close()`` ——
+        加了关闭确认之后那会**弹出模态框并挂住等输入**。脚本要的是"收尾关掉"，
+        不是模拟用户点 X，所以走这个入口。
+        """
+        self._force_quit = True
+        self.close()
+
+    def _game_host(self):
+        """已经建好的引擎宿主；从没建过就是 None。
+
+        用 ``current_host`` 而不是 ``get_host`` —— 关窗口只想读一下
+        "有没有任务在跑"，不该顺手把宿主造出来。
+        """
+        try:
+            from ..tools.game.auto_combat import okww_boot
+
+            return okww_boot.current_host()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _teardown_tray(self) -> None:
+        if self._tray is not None:
+            try:
+                self._tray.hide()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt 回调
+        """关闭确认：隐藏到托盘 / 直接退出 / 取消。
+
+        * **有工具或任务在跑** → 先点明是哪个，再问「停止并退出」
+        * **没有** → 问「隐藏到托盘」还是「直接退出」
+        * **按 X / Esc** → 什么都不做（:data:`tray_mod.CLOSE_CANCEL`）
+
+        三种出口的判定逻辑全在 :mod:`src.gui.tray` 里（纯函数，有单测覆盖），
+        这里只负责执行。
+        """
+        if self._force_quit:
+            self._teardown_tray()
+            event.accept()
+            return
+
+        host = self._game_host()
+        running = tray_mod.running_task_name(host)
+        choice = tray_mod.ask_close(self, running,
+                                    allow_hide=self._tray is not None)
+
+        if choice == tray_mod.CLOSE_CANCEL:
+            event.ignore()
+            return
+
+        if choice == tray_mod.CLOSE_HIDE:
+            self.go_background_to_game()
+            event.ignore()
+            return
+
+        # CLOSE_QUIT：有任务在跑就先停掉，别留个半死不活的引擎
+        if running and host is not None:
+            try:
+                host.stop_task()
+            except Exception:  # noqa: BLE001 - 停不掉也得让用户退出去
+                logger.warning("退出前停止任务失败", exc_info=True)
+        self._force_quit = True
+        self._teardown_tray()
+        event.accept()
+        QApplication.quit()
 
     # ------------------------------------------------------------------ 侧栏排序
     def _setup_nav_reorder(self) -> None:

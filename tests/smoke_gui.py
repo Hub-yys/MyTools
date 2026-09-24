@@ -66,10 +66,26 @@ def main() -> int:
     from PySide6.QtWidgets import QApplication
 
     from src.core.registry import ToolRegistry
+    from src.gui import tray as tray_mod
     from src.gui.main_window import MainWindow
     from src.tools import discover_tools
 
     print("=== MyTools GUI 冒烟测试 ===")
+
+    # ★ 隔离持久化路径（**必须早于构造任何页面**）：
+    #   页面构造/回填会读写 tool_settings.json；曾经有检查脚本没隔离，
+    #   把测试用的勾选写进了用户真实配置（2026-09-24 事故）。
+    #   跑前先记真实文件哈希，跑完断言没变 —— 把"不知不觉改配置"钉死在测试里。
+    import hashlib
+    import tempfile
+
+    from src.core import tool_settings
+
+    real_settings = pathlib.Path(tool_settings.settings_file())
+    real_hash = hashlib.md5(real_settings.read_bytes()).hexdigest() if real_settings.is_file() else None
+
+    tmp_dir = pathlib.Path(tempfile.mkdtemp(prefix="smoke-gui-"))
+    tool_settings.settings_file = lambda: tmp_dir / "tool_settings.json"
 
     discover_tools()
     app = QApplication(sys.argv)
@@ -81,6 +97,20 @@ def main() -> int:
     window = MainWindow()
     check(window is not None, "主窗口可构造")
     check(window.home_interface is not None, "主页已挂载")
+
+    # 图标与托盘 —— 一次静默失败（QMenu 漏导入）就是从这里漏过去的：
+    # 托盘建不出来 → 只能最小化到任务栏 + 任务栏显示 python.exe 的默认图标。
+    # ⚠ 这个文件的 check() 只有 (condition, message) 两个参数。
+    check(not window.windowIcon().isNull(),
+          "主窗口设了图标（否则任务栏是 python 图标）")
+    if tray_mod.tray_available():
+        check(window._tray is not None,
+              "托盘图标已创建（建不出来见日志「托盘图标创建失败」）")
+        check(window._tray is not None and not window._tray.icon().isNull(),
+              "托盘图标不是空的")
+    else:
+        print("  [info] 本平台没有系统托盘，跳过托盘断言"
+              "（想看真机行为：QT_QPA_PLATFORM=windows python tests/smoke_gui.py）")
 
     # 每个滚动页都必须把内层 view 交给滚动区托管：只 new 一个 QWidget 而不 setWidget，
     # 它就是个"浮在滚动区上的裸控件"，尺寸不受布局管理 —— 整页会被压扁
@@ -99,24 +129,37 @@ def main() -> int:
     metas = ToolRegistry.all_metas()
     check(len(metas) > 0, f"{len(metas)} 个工具可渲染")
 
-    # 逐个打开工具面板；create_widget 抛异常会被宿主兜住，不该波及主程序
+    # 逐个打开工具面板；create_widget 抛异常会被宿主兜住，不该波及主程序。
+    #
+    # ⚠ 但"兜住"意味着 `panel is not None` 是**假阳性**：ToolInterfaceHost.ensure_panel()
+    # 在 create_widget 抛异常时只打一行 logger.exception，然后换成 ComingSoonWidget 兜底，
+    # 于是面板照样非 None。曾经就是这个漏洞让"构造失败"在冒烟里一路绿灯。
+    # 所以这里必须再确认拿到的**不是占位控件**——占位出现＝真实构造炸了。
+    from src.gui.widgets import ComingSoonWidget
+
     for meta in metas:
         try:
             window.open_tool(meta.key)
             panel = window.tool_panel(meta.key)
-            check(panel is not None, f"{meta.name}: 面板创建成功")
+            if check(panel is not None, f"{meta.name}: 面板创建成功"):
+                check(
+                    not isinstance(panel, ComingSoonWidget),
+                    f"{meta.name}: 拿到的是真实面板，不是兜底占位"
+                    f"（占位＝create_widget 抛异常，见日志「工具界面创建失败」）",
+                )
         except Exception as exc:  # noqa: BLE001
             check(False, f"{meta.name}: 面板创建异常 {exc}")
 
-    # 主页每个"有工具的"分类各渲染一组（空分类按设计不显示）
-    from src.core.categories import ALL_CATEGORIES
-    from src.gui.widgets import CategorySection
+    # 主页现在是**一张平铺的网格**（2026-09-24 取消分类分组）：
+    # 断言网格只有一个、卡片数 == 工具数，顺带确认不再有分类分组控件。
+    from src.gui.widgets import ToolCard, ToolGrid
 
-    sections = window.home_interface.findChildren(CategorySection)
-    expected = len([c for c in ALL_CATEGORIES if ToolRegistry.by_category(c)])
+    grids = window.home_interface.findChildren(ToolGrid)
+    check(len(grids) == 1, f"主页工具网格 {len(grids)} 个 / 应有 1 个")
+    cards = window.home_interface.findChildren(ToolCard)
     check(
-        len(sections) == expected,
-        f"主页分类分组 {len(sections)} 组 / 应有 {expected} 组",
+        len(cards) == len(metas),
+        f"主页卡片 {len(cards)} 张 / 工具 {len(metas)} 个",
     )
 
     if args.shot:
@@ -175,7 +218,14 @@ def main() -> int:
         window.open_tool(metas[0].key)
         settle()
         save_shot(window, "tools.png")
-        window.close()
+        # 加了关闭确认之后不能直接 close()（会弹模态框挂住）——
+        # 脚本收尾走这个不弹框的入口。
+        window.close_without_prompt()
+
+    # 真实配置必须原封不动（隔离没漏）
+    if real_hash is not None:
+        now_hash = hashlib.md5(real_settings.read_bytes()).hexdigest()
+        check(now_hash == real_hash, "真实 tool_settings.json 未被改动（隔离有效）")
 
     print(f"\n=== 结果：{'全部通过' if not _failures else f'{len(_failures)} 项失败'} ===")
     for item in _failures:

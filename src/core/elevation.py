@@ -199,7 +199,7 @@ def _relaunch_target(argv: list[str] | None) -> tuple[str, str]:
     """算出"重新拉起自己"该用什么可执行文件 + 参数。"""
     args = list(sys.argv[1:] if argv is None else argv)
     if getattr(sys, "frozen", False):
-        # 打包后：sys.executable 就是 MyTools.exe，参数直接跟上
+        # 打包后：sys.executable 就是 WutheringWavesTools.exe，参数直接跟上
         return sys.executable, subprocess.list2cmdline(args)
     # 开发态：python + main.py + 参数
     return sys.executable, subprocess.list2cmdline([sys.argv[0], *args])
@@ -226,6 +226,35 @@ def relaunch_as_admin(argv: list[str] | None = None) -> bool:
 
 # --------------------------------------------------------------------- 提示语
 
+def _elevate_instructions() -> str:
+    """告诉用户「怎么把自己提起来」。
+
+    开发态和打包态的做法**完全不同**，说错了用户会照做、然后发现没用：
+
+    * **打包态**：直接右键 exe →「以管理员身份运行」；
+    * **开发态**：得先把**编辑器 / 终端本身**提起来。只给 ``main.py`` 提权
+      是没用的 —— 父进程（PyCharm / 终端）还是普通权限，
+      UIPI 比的是**当前进程自己的**完整性级别，照样拦。
+    """
+    try:
+        from . import paths
+
+        frozen = paths.is_frozen()
+    except Exception:  # noqa: BLE001 - 判不出来时按打包态给建议，至少不会误导
+        frozen = bool(getattr(sys, "frozen", False))
+
+    if frozen:
+        return "请关掉本工具，右键图标 →「以管理员身份运行」，再点运行。"
+
+    return (
+        "请把【启动本工具的父程序】也以管理员身份运行（只给 main.py 提权没用，"
+        "父进程仍是普通权限，一样会被拦）：\n"
+        "  · PyCharm：先退出 PyCharm，右键 →「以管理员身份运行」，再点运行配置；\n"
+        "  · 终端：关掉当前窗口，右键 →「以管理员身份运行」开新窗口，"
+        "再执行 .venv\\Scripts\\python main.py"
+    )
+
+
 def admin_hint(own: int | None = None, target: int | None = None) -> str:
     """权限不足时给用户的**可操作**说明（别让他去看 ``(0, 'SetCursorPos')``）。"""
     own = own_integrity_level() if own is None else own
@@ -238,7 +267,7 @@ def admin_hint(own: int | None = None, target: int | None = None) -> str:
     lines[-1] += "）"
 
     if not is_elevated():
-        lines.append("请关掉本工具，右键 →「以管理员身份运行」，再点运行。")
+        lines.append(_elevate_instructions())
     else:
         # 已经是管理员还被拦，说明是被 ACE 反外挂挡了输入，得换输入方式
         lines.append(

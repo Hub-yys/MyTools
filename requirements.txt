@@ -1,10 +1,28 @@
 # MyTools 运行时依赖
 #
-# 安装（--no-deps 是必须的）：PySide6-Fluent-Widgets 的元数据里声明依赖"完整版
-# PySide6"（245MB），而它运行时只用 QtWidgets/QtGui/QtCore/QtSvg/QtNetwork，
-# 全都在 Essentials 里（77MB）。下面把依赖全部显式列出，用 --no-deps 跳过解析：
+# ⚠ 安装分两步，而且**顺序不能反**：
 #
-#     pip install -r requirements.txt --no-deps
+#   .venv\Scripts\python -m pip install -r requirements.txt --no-deps
+#   .venv\Scripts\python -m pip install "ok-script[default]==2.0.7b1"
+#
+# 两步各有各的道理，都不能省：
+#
+# 【第一步为什么要 --no-deps】
+#   PySide6-Fluent-Widgets 的元数据里声明依赖"完整版 PySide6"（245MB），
+#   而它运行时只用 QtWidgets/QtGui/QtCore/QtSvg/QtNetwork，全都在
+#   Essentials 里（77MB）。下面把依赖全部显式列出，用 --no-deps 跳过解析，
+#   就不会去拉那个大包。
+#
+# 【第二步为什么必须带依赖解析（不能 --no-deps）】
+#   ok-script 有自己的依赖清单，且对 pywin32 有**硬性排除**：`pywin32!=312`。
+#   本文件里的 `pywin32>=311` 单独装会被 pip 解析成 **312**，而 312 是
+#   ok-script 明确不要的 —— 第二步会把它降到 **311**（311 同时满足两边的约束）。
+#   如果第二步也加了 --no-deps，pywin32 就会停在 312，
+#   而 `import ok` 不会有任何报错，问题要到运行时才暴露，很难查。
+#
+#   `[default]` extra 也要带上：里面是截屏用的 ok-d3dshot 和简繁转换的 OpenCC。
+#   不要装 `[web]`（fastapi/uvicorn/pywebview）和 `[adb]`（adbutils）——
+#   宿主是无 GUI 的本地运行时，这两组用不到，打包 spec 里也明确排除了 fastapi 全家桶。
 #
 # 网络慢到装不动时，见 README「离线安装」一节（tools/fetch_wheels.py 多连接
 # 分段下载 + --no-index 离线安装，实测比 pip 单连接快 15 倍以上）。
@@ -28,3 +46,12 @@ onnxocr-ppocrv5>=0.0.20
 shapely>=2.0
 pyclipper>=1.3
 mss>=9.0
+
+# ---- ok-ww 引擎宿主（4C 自动战斗）----
+# ok-script 是 PyPI 包，**不 vendored**：vendor/okww/ 里的代码全部
+# `from ok import ...`，所以它必须在 venv 里。漏了它的症状是
+# 测试/运行时满屏 `ModuleNotFoundError: No module named 'ok'`。
+# ⚠ 这一行虽然写在这里，但**必须靠上面第二步那条命令来保证装对**
+#   （第一步的 --no-deps 会跳过它的依赖解析，pywin32 会停在 312）。
+# 版本 2.0.7b1 是 ok-ww 指定的版本，别自己升 —— ok-ww 是按它写的。
+ok-script[default]==2.0.7b1

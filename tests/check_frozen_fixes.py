@@ -1,6 +1,6 @@
 """打包版修复验证。
 
-① **提权清单**：MyTools.exe 里必须嵌着 requireAdministrator（否则改了 spec 也没生效）
+① **提权清单**：WutheringWavesTools.exe 里必须嵌着 requireAdministrator（否则改了 spec 也没生效）
 ② **首启动播种顺序**：main.py 必须"先播种、再导入依赖数据的模块"，并且按这个顺序
    真的能把数据读进内存（模拟打包后第一次运行：用户数据目录是空的）
 
@@ -17,8 +17,17 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(r"D:/AI WorkSpace/workbuddy/MyTools")
-EXE = ROOT / "dist" / "MyTools" / "MyTools.exe"
+#: ⚠ 别写成绝对路径。这里原来硬编码了 ``D:/AI WorkSpace/workbuddy/MyTools``，
+#: 项目一改名（WorkSpace → AI Work/MyTools）整个脚本就 FileNotFoundError，
+#: 而且**挂得很难看**：第 ① 步报 FAIL、第 ② 步直接崩。
+#: 其余检查脚本都用 ``__file__`` 反推，跟它们保持一致。
+ROOT = Path(__file__).resolve().parents[1]
+
+#: ⚠ PyInstaller 的产物**不在 dist\ 里**。package.ps1 有意把它放到
+#: build\stage\（`--distpath $StageDir`），dist\ 只留给对外产物（安装包本身），
+#: 免得那堆 _internal\ 被人误发出去。这里以前指着 dist\WutheringWavesTools\，
+#: 所以第 ① 步永远 FAIL「先跑 package.ps1」—— 其实包早就打好了。
+EXE = ROOT / "build" / "stage" / "WutheringWavesTools" / "WutheringWavesTools.exe"
 
 failures: list[str] = []
 

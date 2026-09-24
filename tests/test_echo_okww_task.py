@@ -53,6 +53,9 @@ def make_task(config: JudgeConfig) -> MyToolsEnhanceEchoTask:
     task.fail_reason = ""
     task.info = {}
     task.last_judgement = ""
+    # 统计用的两个计数（正常由 __init__ 初始化，这里绕过了 __init__）
+    task.discard_tally = {}
+    task.checked_echoes = 0
     task.log_info = lambda *a, **k: None
     task.info_set = lambda key, value: task.info.__setitem__(key, value)
     return task
@@ -185,6 +188,180 @@ class TestDefaults(unittest.TestCase):
     def test_judge_config_is_reset_per_instance(self):
         src = inspect.getsource(MyToolsEnhanceEchoTask.__init__)
         self.assertRegex(src, r"self\.judge_config\s*=\s*JudgeConfig\(\)")
+
+
+class TestLanguageGate(unittest.TestCase):
+    """ok-script 会按语言**静默跳过**任务注册 —— 2026-09-24 的致命事故根源。
+
+    ``task_manager.init_tasks()``::
+
+        if len(task.supported_languages) == 0 or locale_name in task.supported_languages:
+            tasks.append(task)
+
+    宿主是无 GUI 的，``app.locale`` 实测是 qfluentwidgets 的默认值 **en_US**，
+    而 ok-ww 的 ``EnhanceEchoTask`` 声明了 ``["zh_CN", "zh_TW"]`` ——
+    子类推承了门禁 → 任务根本没进引擎 → 点「运行」只得到「找不到任务」。
+    """
+
+    def test_base_class_really_declares_the_gate(self):
+        """反证：不覆盖的话确实会被跳过 —— 免得以后有人以为那行多余。"""
+        from okww.task.EnhanceEchoTask import EnhanceEchoTask
+
+        src = inspect.getsource(EnhanceEchoTask.__init__)
+        self.assertRegex(src, r'supported_languages\s*=\s*\["zh_CN"')
+
+    def test_language_gate_is_cleared(self):
+        src = inspect.getsource(MyToolsEnhanceEchoTask.__init__)
+        self.assertRegex(src, r"self\.supported_languages\s*=\s*\[\]")
+
+
+class TestDiscardTally(unittest.TestCase):
+    """弃置原因统计：一次运行结束要能看出"为什么都被弃置"。"""
+
+    def test_format_tally(self):
+        text = okww_task.format_tally(9, {"crit": 5, "valid": 3, "core": 1})
+        self.assertIn("已判 9 次", text)
+        self.assertIn("弃置 9 个", text)
+        # 按数量降序：最多的原因排最前
+        self.assertLess(text.index("双爆不达标"), text.index("有效词条不足"))
+        self.assertIn("凑不齐核心属性", text)
+
+    def test_format_tally_without_discards(self):
+        self.assertIn("暂无弃置", okww_task.format_tally(3, {}))
+
+    def test_check_echo_stats_records_reason(self):
+        task = make_task(JudgeConfig(enable_max_roll_lock=False))
+        keep = task.check_echo_stats(
+            [FakeBox(CRIT, 0.4), FakeBox(CRIT_DMG, 0.4)],
+            [FakeBox("6.3%", 0.4), FakeBox("12.6%", 0.4)],
+        )
+        self.assertFalse(keep)                       # 双爆都低于下限 → 弃置
+        self.assertEqual(task.checked_echoes, 1)
+        self.assertEqual(task.discard_tally, {"crit": 1})
+        self.assertIn("判定统计", task.info)          # 页面靠它把原因显示出来
+
+    def test_keep_does_not_touch_tally(self):
+        task = make_task(JudgeConfig(min_valid_count=2, crit_min=0.0,
+                                     crit_dmg_min=0.0, enable_max_roll_lock=False))
+        keep = task.check_echo_stats([FakeBox(CRIT, 0.3)], [FakeBox("9.3%", 0.3)])
+        self.assertTrue(keep)
+        self.assertEqual(task.checked_echoes, 1)
+        self.assertEqual(task.discard_tally, {})
+
+
+class TestMaterialInsertRecovery(unittest.TestCase):
+    """材料插入的状态机 —— 2026-09-26 修 ok-ww 的致命缺口。
+
+    ok-ww 只认「阶段放入」。而那个按钮的文案是**随状态变**的：
+    材料空着 = 「阶段放入」，材料已在里面 = 「清 除」。
+    只要有一轮「强化并调谐」没把材料消耗掉，下一轮就找不到「阶段放入」→
+    空等 5 秒 → 抛异常 → **整个任务当场结束**（实测跑完 42 次判定后死在这）。
+
+    这组用例把"该恢复"和"该报错"两条路分开钉死。
+    """
+
+    def _task(self, *, stage: bool, clear: bool):
+        """只造个能调 find_add_mat 的壳（绕开需要 executor/device 的 __init__）。"""
+        task = object.__new__(MyToolsEnhanceEchoTask)
+        task._materials_ready_sent = False
+        task.wait_ocr = lambda *a, **k: FakeBox("阶段放入", 0.7) if stage else None
+        task.ocr = lambda *a, **k: FakeBox("清 除", 0.7) if clear else None
+        task.log_info = lambda *a, **k: None      # 恢复路径会记日志
+        return task
+
+    def test_sentinel_is_truthy(self):
+        """哨兵必须为真 —— ok-ww 的循环是 ``if add_mat: have_add_mat = True``。"""
+        self.assertTrue(okww_task._MATERIALS_READY)
+
+    def test_stage_button_returned_when_empty(self):
+        """材料空着 → 正常返回「阶段放入」（点它把材料放进去）。"""
+        got = self._task(stage=True, clear=False).find_add_mat()
+        self.assertIsNotNone(got)
+        self.assertIsNot(got, okww_task._MATERIALS_READY)
+
+    def test_clear_button_reports_ready_then_none(self):
+        """★ 材料已在里面 → **报告一次就绪**，然后返回 None。
+
+        两步缺一不可：
+        * 不报告 → 走 ok-ww 的 raise，整个任务死掉（这就是线上那个 bug）；
+        * 不返回 None → 外层 ``if have_add_mat: break`` 永远进不去，
+          每个声骸白等满 5 秒。
+        """
+        task = self._task(stage=False, clear=True)
+        self.assertIs(task.find_add_mat(), okww_task._MATERIALS_READY)
+        self.assertIsNone(task.find_add_mat())
+
+    def test_neither_button_returns_none(self):
+        """两个都找不到 → 才是真该报错的情况（游戏里「阶段放入」没开）。"""
+        self.assertIsNone(self._task(stage=False, clear=False).find_add_mat())
+
+    def test_flag_resets_when_stage_reappears(self):
+        """下一轮「阶段放入」回来 → 复位，之后还能再报告一次。"""
+        task = self._task(stage=True, clear=True)
+        task.find_add_mat()                        # 阶段放入 → 复位哨兵
+        task.wait_ocr = lambda *a, **k: None       # 材料放进去了
+        self.assertIs(task.find_add_mat(), okww_task._MATERIALS_READY)
+        self.assertIsNone(task.find_add_mat())
+
+    def test_second_round_also_recovers(self):
+        """连续两轮都卡在同一状态 → 每一轮都要能恢复（不能只救第一次）。"""
+        task = self._task(stage=False, clear=True)
+        for _ in range(2):
+            self.assertIs(task.find_add_mat(), okww_task._MATERIALS_READY)
+            self.assertIsNone(task.find_add_mat())
+
+    def test_sentinel_click_is_noop(self):
+        """★ 哨兵被 click 时必须直接返回，不能落到真实点击上。
+
+        真点下去 = 点「清 除」= 把刚放进去的材料**撤掉**。
+        这里故意不给 device：一旦落到 ``super().click`` 就会抛异常，用例即失败。
+        """
+        task = self._task(stage=False, clear=True)
+        task.click(okww_task._MATERIALS_READY, after_sleep=0.3)
+
+
+    def test_okww_loop_no_longer_raises(self):
+        """★ 端到端：照抄 ok-ww ``run()`` 那段循环，喂给它"材料还留在里面"的状态。
+
+        这一段就是线上把整个任务打死的地方。修复前它必定抛
+        「强化设置需要开启阶段放入!」；修复后必须**正常 break 出去**。
+        """
+        import time
+
+        task = self._task(stage=False, clear=True)
+
+        # ↓↓↓ 逐字照抄 okww/task/EnhanceEchoTask.py run() 里的内层 while ↓↓↓
+        start_wait = time.time()
+        have_add_mat = False
+        while time.time() - start_wait < 5:
+            add_mat = task.find_add_mat()
+            if add_mat:
+                have_add_mat = True
+                task.click(add_mat, after_sleep=0.3)
+            else:
+                if have_add_mat:
+                    break
+        if not have_add_mat:
+            raise AssertionError("仍然会抛「强化设置需要开启阶段放入!」"
+                                 " —— 修复没生效")
+        # ↑↑↑ 抄完 ↑↑↑
+
+    def test_okww_loop_still_raises_when_truly_missing(self):
+        """反证：真的两样都没有时**必须**照样抛 —— 别把真错误也吞了。"""
+        import time
+
+        task = self._task(stage=False, clear=False)
+        start_wait = time.time()
+        have_add_mat = False
+        while time.time() - start_wait < 0.05:          # 缩短，用例别真等 5 秒
+            add_mat = task.find_add_mat()
+            if add_mat:
+                have_add_mat = True
+                task.click(add_mat, after_sleep=0.3)
+            else:
+                if have_add_mat:
+                    break
+        self.assertFalse(have_add_mat, "不该被判成就绪")
 
 
 if __name__ == "__main__":

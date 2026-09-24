@@ -56,6 +56,7 @@ class TestTaskFlow(unittest.TestCase):
         self.assertEqual(flow.validate(), [])
 
     def test_bindings_config_attaches_to_nearest_tool_above(self):
+        """★ 旧行为不变：配置**上面**的工具就是它的归属。"""
         flow = TaskFlow(
             name="x",
             steps=[tool(name="A"), config(name="c1"), config(name="c2"), tool(name="B")],
@@ -65,11 +66,40 @@ class TestTaskFlow(unittest.TestCase):
         self.assertEqual([c.name for c in bindings[0]["configs"]], ["c1", "c2"])
         self.assertEqual(bindings[1]["configs"], [])
 
-    def test_bindings_drop_orphan_configs(self):
-        """前面没有工具的配置会被丢弃。"""
-        bindings = bind_configs_to_tools([config(), tool()])
+    def test_bindings_orphan_configs_fall_through_to_tool_below(self):
+        """★ 2026-09-27 修：前面没有工具的配置，**改绑给下面的工具**。
+
+        用户的流程正是「开始 → 配置「绯雪-声骸筛选」 → 配置「绯雪-声骸强化」
+        → 工具「声骸自动强化」」—— 读起来就是"先筛选、再强化"，非常自然。
+        旧逻辑因为那时还没扫到任何工具（``result`` 是空的），把它们**直接丢掉**
+        ⇒ 运行时"配置挂着却不生效"，用户报「进去就直接声骸强化、根本没筛选」。
+
+        这种**静默失效**（不报错、流程看着完全正常）比报错难查得多。
+        """
+        steps = [config(name="绯雪-声骸筛选"), config(name="绯雪-声骸强化"),
+                 tool(name="声骸自动强化")]
+        bindings = bind_configs_to_tools(steps)
         self.assertEqual(len(bindings), 1)
-        self.assertEqual(bindings[0]["configs"], [])
+        self.assertEqual([c.name for c in bindings[0]["configs"]],
+                         ["绯雪-声骸筛选", "绯雪-声骸强化"])
+
+    def test_bindings_both_tools_get_their_own_configs(self):
+        """上下都有工具时各归各的：悬空的顺延到**下面**那个，不当"给最近的一个"。"""
+        flow = TaskFlow(name="x", steps=[
+            config(name="悬空"), tool(name="A"), config(name="c1"), tool(name="B")])
+        bindings = flow.tool_bindings()
+        self.assertEqual([c.name for c in bindings[0]["configs"]], ["悬空", "c1"])
+        self.assertEqual(bindings[1]["configs"], [])
+
+    def test_bindings_keep_config_order(self):
+        """绑到同一个工具时，配置要保持流程里的先后顺序。"""
+        steps = [config(name="c1"), tool(name="A"), config(name="c2")]
+        bindings = bind_configs_to_tools(steps)
+        self.assertEqual([c.name for c in bindings[0]["configs"]], ["c1", "c2"])
+
+    def test_bindings_no_tool_at_all(self):
+        """流程里一个工具都没有 → 配置无处可绑（``validate()`` 也会拦）。"""
+        self.assertEqual(bind_configs_to_tools([config(), config()]), [])
 
     def test_summary(self):
         flow = TaskFlow(name="x", steps=[tool(), config()])

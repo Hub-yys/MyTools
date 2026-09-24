@@ -398,7 +398,7 @@ def _load_into_memory(version: int) -> None:
 def reload_data() -> None:
     """重新读盘、**就地刷新**上面那些公用容器（版本号 +1）。
 
-    用途：①「鸣潮资源库更新」写完盘之后立刻生效；
+    用途：①「资源库更新」写完盘之后立刻生效；
          ② ``main.py`` 万一顺序又错了，界面还能自己救回来（见 :func:`ensure_loaded`）。
     """
     _load_into_memory(DATA_VERSION + 1)
@@ -462,3 +462,31 @@ def find_echo_set(name: str) -> EchoSetInfo | None:
         if item.name == key:
             return item
     return None
+
+
+def character_choice_error(name: str, taken=(), max_length: int | None = None) -> str:
+    """校验"用户选/填的角色" —— 配置页两类配置共用这一份。
+
+    返回**给用户看的错误说明**；空串表示通过。
+
+    两条规则（用户 2026-09-26）：
+    1. 名字必须**精确命中**数据集里的一个角色（不能自由输入）；
+    2. **一个角色只能有一条**配置（``taken`` = 已被别的配置占用的角色）。
+
+    为什么放在 core 而不是各弹框里各写一份：
+    这是纯逻辑，**能单测**（项目的 Qt 弹框测试只做假对象，不弹真框）；
+    两边界面（角色声骸强化 / 角色声骸筛选）用同一份，消息也不会写岔。
+
+    规则 1 的直接动机：列表行的头像是拿名字去 :func:`find_character` 查的，
+    名字一旦是自由文本（用户实测输入"绯雪声骸强化配置"）→ 查不到 → **头像消失**。
+    """
+    text = str(name or "").strip()
+    if not text:
+        return "请先选一个角色"
+    if max_length is not None and len(text) > max_length:
+        return f"名字太长了（最多 {max_length} 个字）"
+    if find_character(text) is None:
+        return f"「{text}」不是一个角色 —— 请从列表里选一个（可以打拼音筛）"
+    if text in {str(x) for x in taken}:
+        return f"「{text}」已经有一条配置了 —— 一个角色只能有一条"
+    return ""

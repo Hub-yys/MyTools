@@ -25,8 +25,14 @@ from .game_data import (
 )
 from . import paths
 
+#: 「配置类型」的稳定标识 —— **任务流程的步骤里存它**，用来分辨这一步挂的是
+#: 哪一类配置（两类配置的 key 长得不一样：一个 id、一个 id）。
+#: ⚠ 定义在 core 而不是 gui：``src/tools/`` 里的工具要根据它判断"挂的是不是我这类配置"，
+#:   tools 层不该 import gui 层。
+KIND = "loadout"
+
 #: 默认存放位置：用户数据目录下的 loadouts.json
-#: （开发态 = <项目根>/data；打包后 = %LOCALAPPDATA%/MyTools，见 core/paths.py）
+#: （开发态 = <项目根>/data；打包后 = %LOCALAPPDATA%/WutheringWavesTools，见 core/paths.py）
 DEFAULT_STORE_PATH = paths.user_data_dir() / "loadouts.json"
 
 
@@ -94,6 +100,45 @@ def parse_picks(value) -> list[EchoPick]:
     return result
 
 
+# ---------------------------------------------------------------- 筛选面板上的两行
+# 游戏里「筛选」面板有：状态 / 品质 / 合鸣（= 套装）/ 主音属性。
+# 合鸣和主音属性这条配置里本来就有（`echo_set` + 各档 `picks` 的属性），
+# **状态和品质是 2026-09-26 用户指出漏掉的**，这里补上。
+
+#: 状态 —— **单选**（游戏里那行是三个单选圈）
+STATUS_DISCARDED = "已弃置"
+STATUS_LOCKED = "已锁定"
+STATUS_UNMARKED = "未标记"
+STATUS_CHOICES = (STATUS_DISCARDED, STATUS_LOCKED, STATUS_UNMARKED)
+#: 默认「已锁定」（2026-09-28 用户批注："默认已锁定"）。
+#: 新增配置时状态勾的就是它 —— 这条只是**新增时的起点**，编辑已有配置
+#: 照样回填它自己存的值（走 :func:`normalize_status`）。
+#: 老数据里没有 ``status`` 字段时也落回这个默认 —— 用户要的就是这个起点。
+DEFAULT_STATUS = STATUS_LOCKED
+
+#: 品质 —— **多选**（游戏里那组是勾选框）
+QUALITY_CHOICES = ("二星", "三星", "四星", "五星")
+#: 默认只勾五星（用户 2026-09-26："品质（默认就是五星）"）
+DEFAULT_QUALITIES = ("五星",)
+
+
+def normalize_status(value) -> str:
+    """任意输入 → 合法的状态；不认识的落回默认（老数据没有这个字段）。"""
+    text = str(value or "").strip()
+    return text if text in STATUS_CHOICES else DEFAULT_STATUS
+
+
+def normalize_qualities(value) -> tuple[str, ...]:
+    """任意输入 → 合法的品质元组（去重、按固定顺序、丢掉不认识的值）。
+
+    空元组也保留 —— 那是"用户把勾都取消了"，不该被悄悄塞回默认值。
+    """
+    if not isinstance(value, (list, tuple)):
+        return DEFAULT_QUALITIES
+    picked = {str(v) for v in value}
+    return tuple(q for q in QUALITY_CHOICES if q in picked)
+
+
 @dataclass
 class Loadout:
     """一条配置。"""
@@ -105,6 +150,9 @@ class Loadout:
     echo_set: str = ""
     #: 每档位选中的声骸（可多选）：cost -> [EchoPick, ...]
     picks: dict[int, list[EchoPick]] = field(default_factory=dict)
+    #: 筛选面板：状态（单选）/ 品质（多选）
+    status: str = DEFAULT_STATUS
+    qualities: tuple[str, ...] = DEFAULT_QUALITIES
     id: str = ""
     updated_at: str = ""
 
@@ -130,7 +178,23 @@ class Loadout:
 
     # ------------------------------------------------------------ 校验
     def validate(self) -> list[str]:
-        """检查必填项，返回错误说明列表（空列表表示通过）。"""
+        """检查必填项，返回错误说明列表（空列表表示通过）。
+
+        ★ 2026-09-28 用户批注："**1C、3C、4C 都可以不填，不校验必填**"。
+
+        所以这里**只**要求两件事：
+
+        * 角色必填；
+        * 声骸套装必填（声骸是挂在套装下的，没套装就无从谈起）。
+
+        各档（1C / 3C / 4C）**一个都不选也是合法的** —— 用户可能只想先建一条
+        "先筛选、后补声骸"的配置，或者这次只想限制其中一档。以前这里会报
+        「4C 声骸为必填项」，正是截图里那条拦人的提示。
+
+        ⚠ 保留的检查：**已经选了**的声骸必须带上属性 —— 半截数据（选了声骸
+        没选属性）会让筛选步骤生成不出来，属于真错误，不是"没填"。
+        这条只在 ``picks`` 非空时生效，不影响"一个都不填"。
+        """
         errors: list[str] = []
 
         if not self.character.strip():
@@ -142,15 +206,9 @@ class Loadout:
         elif find_echo_set(self.echo_set) is None:
             errors.append(f"声骸套装「{self.echo_set}」不在数据集里")
         else:
-            info = find_echo_set(self.echo_set)
-            required = info.required_costs if info else (COST_4, COST_3, COST_1)
-            for cost, label in COST_SECTIONS:
-                if cost not in required:
-                    continue  # 1 件套只要一个声骸，别的档位不该被要求
-                picks = self.picks_of(cost)
-                if not picks:
-                    errors.append(f"{label} 声骸为必填项")
-                    continue
+            # 各档**不再是必填** —— 只校验"选了的那些"是否完整。
+            for _cost, label in COST_SECTIONS:
+                picks = self.picks_of(_cost)
                 missing = [p.echo for p in picks if not p.stats]
                 if missing:
                     errors.append(f"{label} 声骸「{'、'.join(missing)}」还没选属性")
@@ -177,6 +235,28 @@ class Loadout:
         """界面上该显示哪张头像：用户自选的优先，否则用角色联动的。"""
         return self.custom_avatar or self.avatar
 
+    def main_stats_by_cost(self) -> dict[int, tuple[str, ...]]:
+        """每档**要筛的主属性** = 该档所有声骸 pick 上勾的属性并集。
+
+        游戏「主音属性筛选」弹窗里，4C / 3C / 1C 各是一个页签、每个页签一组
+        主属性勾选框 —— 配置里"每档声骸各带属性"其实就是在表达这个
+        （用户 2026-09-26："另外这里也是对应上的"）。
+
+        按数据集里 `STATS_BY_COST` 的顺序去重，保证生成的点击顺序稳定。
+        """
+        from .game_data import STATS_BY_COST
+
+        result: dict[int, tuple[str, ...]] = {}
+        for cost in sorted(self.picks, reverse=True):
+            wanted = {s for pick in self.picks_of(cost) for s in pick.stats if s}
+            if not wanted:
+                continue
+            known = [s for s in STATS_BY_COST.get(cost, ()) if s in wanted]
+            # 数据集里没有的（老数据 / 手改过）也带上，别默默丢掉
+            extra = sorted(wanted - set(known))
+            result[cost] = tuple(known) + tuple(extra)
+        return result
+
     # ------------------------------------------------------------ 序列化
     def to_dict(self) -> dict:
         return {
@@ -185,6 +265,8 @@ class Loadout:
             "avatar": self.avatar,
             "custom_avatar": self.custom_avatar,
             "echo_set": self.echo_set,
+            "status": normalize_status(self.status),
+            "qualities": list(normalize_qualities(self.qualities)),
             "picks": {
                 str(cost): [
                     # 只写新格式（stats 列表）；旧文件由 parse_picks 的兼容读取兜底
@@ -218,6 +300,9 @@ class Loadout:
             avatar=str(data.get("avatar", "")),
             custom_avatar=str(data.get("custom_avatar", "")),
             echo_set=str(data.get("echo_set", "")),
+            # 老数据没有这两个字段 → normalize 会给出默认（未标记 / 五星）
+            status=normalize_status(data.get("status")),
+            qualities=normalize_qualities(data.get("qualities")),
             picks=picks,
             updated_at=str(data.get("updated_at", "")),
         )
@@ -276,6 +361,25 @@ class LoadoutStore:
 
     def by_character(self, character: str) -> list[Loadout]:
         return [item for item in self._items if item.character == character]
+
+    def occupied_characters(self) -> set[str]:
+        """已经被占用的角色名 —— **一个角色只能有一条配置**（用户 2026-09-26 要求）。
+
+        界面拿它把已占用的角色从下拉里剔掉；保存时再校一次（见
+        ``LoadoutDialog.validate``）—— 候选里没有拦不住手打的字。
+
+        ⚠ 为什么 ``add()`` **不**在这里硬拦：loadout 的主键是 ``id`` 不是角色名，
+        而且**老文件里可能已经存在同一角色的多条**（旧版允许），
+        那些必须照常读得出来、显示得出来（用户自己删多的那条）。
+        所以"一角色一条"是**界面层的规则**，不是存储层的不变量 ——
+        这点和 :class:`~src.core.echo_profile.EchoProfileStore` 不同，
+        那边主键本来就是名字，天然拒绝重名。
+        """
+        return {item.character for item in self._items if item.character}
+
+    def has_character(self, character: str) -> bool:
+        """这个角色是不是已经有配置了（界面保存前的校验用）。"""
+        return character in self.occupied_characters()
 
     # ------------------------------------------------------------ 增删改
     def add(self, loadout: Loadout) -> Loadout:

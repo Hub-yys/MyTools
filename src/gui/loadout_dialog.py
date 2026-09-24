@@ -19,7 +19,13 @@ from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QFileDialog,
+    QHBoxLayout,
+    QVBoxLayout,
+    QWidget,
+)
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
@@ -30,6 +36,8 @@ from qfluentwidgets import (
     PushButton,
     ScrollArea,
     StrongBodyLabel,
+    CheckBox,
+    RadioButton,
 )
 
 from ..core.game_data import (
@@ -37,12 +45,29 @@ from ..core.game_data import (
     COST_SECTIONS,
     ECHO_SETS,
     EchoInfo,
+    character_choice_error,
     find_character,
     find_echo_set,
 )
-from ..core.loadout import EchoPick, Loadout
-from .compat import TitleLabel
-from .pickers import EchoPickRow, FilterComboBox, IconComboBox, load_icon
+from ..core.loadout import (
+    DEFAULT_QUALITIES,
+    DEFAULT_STATUS,
+    QUALITY_CHOICES,
+    STATUS_CHOICES,
+    EchoPick,
+    Loadout,
+    normalize_qualities,
+    normalize_status,
+)
+from .compat import CaptionLabel, TitleLabel
+from .pickers import (
+    CHARACTER_BOX_HINT,
+    CHARACTER_BOX_WIDTH,
+    EchoPickRow,
+    FilterComboBox,
+    IconComboBox,
+    load_icon,
+)
 
 #: 套装下拉里那一项占位（选中它 = 还没选套装）
 SET_PLACEHOLDER = "请选择"
@@ -104,13 +129,25 @@ class CostSection(QWidget):
 
 
 class LoadoutDialog(MessageBoxBase):
-    """新增 / 修改一条配置。传 ``loadout`` 就是修改模式（会回填）。"""
+    """新增 / 修改一条配置。传 ``loadout`` 就是修改模式（会回填）。
 
-    def __init__(self, parent: QWidget | None = None, loadout: Loadout | None = None):
+    ``taken_chars`` = **已经被别的配置占用**的角色名（修改模式下不含自己）。
+    界面拿它把已占用的角色从下拉里剔掉，并在 :meth:`validate` 里再校一次 ——
+    **一个角色只能有一条配置**（用户 2026-09-26 要求）。
+
+    为什么候选里剔掉还不够：这个下拉是 ``FilterComboBox``（**可输入**的），
+    用户完全可以把候选筛空、直接敲一个词就点保存。所以保存时必须校验。
+    """
+
+    def __init__(self, parent: QWidget | None = None, loadout: Loadout | None = None,
+                 *, taken_chars=()):
         super().__init__(parent)
         self.editing = loadout is not None
         self.loadout: Loadout = copy.deepcopy(loadout) if loadout is not None else Loadout()
         self._sections: dict[int, CostSection] = {}
+        #: 已被**别的**配置占用的角色（改自己时不排除自己，否则改不了）
+        self._taken = {str(n) for n in taken_chars
+                       if str(n) and str(n) != self.loadout.character}
         #: 用户自选的头像（点"更换"才有），优先于角色联动的头像
         self.custom_avatar: str = ""
 
@@ -123,6 +160,8 @@ class LoadoutDialog(MessageBoxBase):
         )
         self.viewLayout.addWidget(self._build_character_row())
         self.viewLayout.addWidget(self._build_echo_set_row())
+        # 「筛选」面板上的另外两行（用户 2026-09-26 指出漏了）
+        self.viewLayout.addWidget(self._build_filter_rows())
         self.viewLayout.addWidget(self._build_echo_area())
 
         self._restore()
@@ -160,13 +199,23 @@ class LoadoutDialog(MessageBoxBase):
         row.addWidget(self._required_label("角色", top))
 
         self.character_combo = FilterComboBox(top)
-        self.character_combo.setFixedWidth(230)
-        self.character_combo.setPlaceholderText("可直接输入，按内容匹配")
+        # 宽度和「角色声骸强化」那个弹框共用同一个常量（别各写一个数）
+        self.character_combo.setFixedWidth(CHARACTER_BOX_WIDTH)
+        self.character_combo.setPlaceholderText(CHARACTER_BOX_HINT)
+        # 已被别的配置占用的角色不放进来（第一道；第二道在 validate）
         self.character_combo.set_choices(
-            [(c.name, load_icon(c.avatar)) for c in CHARACTERS]
+            [(c.name, load_icon(c.avatar)) for c in CHARACTERS
+             if c.name not in self._taken]
         )
         self.character_combo.textChanged.connect(self._on_character_changed)
         row.addWidget(self.character_combo)
+        if self._taken:
+            # 说明一句，免得用户以为"某个角色怎么找不到了"
+            note = CaptionLabel(
+                f"{len(self._taken)} 个角色已有配置，不在候选里（一个角色只能有一条）",
+                top)
+            note.setTextColor("#8A8F98", "#7C7C7C")
+            row.addWidget(note)
         row.addStretch(1)
         column.addWidget(top)
 
@@ -221,6 +270,66 @@ class LoadoutDialog(MessageBoxBase):
         row.addWidget(note)
 
         row.addStretch(1)
+        return holder
+
+    def _build_filter_rows(self) -> QWidget:
+        """游戏「筛选」面板里的**状态**和**品质**两行（用户 2026-09-26 指出漏了）。
+
+        那块面板一共四行：状态 / 品质 / 合鸣（= 声骸套装）/ 主音属性。
+        合鸣和各档主属性这条配置里本来就有（``echo_set`` + 各档 ``picks`` 的属性），
+        **状态和品质是补的**：
+
+        * **状态** —— 单选（游戏里是三个单选圈）：已弃置 / 已锁定 / 未标记；
+        * **品质** —— 多选（游戏里是勾选框）：二~五星，**默认只勾五星**。
+
+        面板外观照游戏来：状态那三个按钮互斥（用 ``QButtonGroup`` 保证）。
+        """
+        holder = QWidget(self)
+        column = QVBoxLayout(holder)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(10)
+
+        # ---- 状态（单选）----
+        status_row = QWidget(holder)
+        s_row = QHBoxLayout(status_row)
+        s_row.setContentsMargins(0, 0, 0, 0)
+        s_row.setSpacing(16)
+        # 标签宽度和上面几行的「必填项标签」对齐（76 + 星号）；这里不是必填，不加星号
+        s_label = BodyLabel("状态", status_row)
+        s_label.setFixedWidth(76)
+        s_row.addWidget(s_label)
+
+        self._status_group = QButtonGroup(status_row)
+        self._status_group.setExclusive(True)
+        self.status_buttons: dict[str, RadioButton] = {}
+        for index, name in enumerate(STATUS_CHOICES):
+            button = RadioButton(name, status_row)
+            self._status_group.addButton(button, index)
+            self.status_buttons[name] = button
+            s_row.addWidget(button)
+        s_row.addStretch(1)
+        column.addWidget(status_row)
+
+        # ---- 品质（多选）----
+        quality_row = QWidget(holder)
+        q_row = QHBoxLayout(quality_row)
+        q_row.setContentsMargins(0, 0, 0, 0)
+        q_row.setSpacing(16)
+        q_label = BodyLabel("品质", quality_row)
+        q_label.setFixedWidth(76)
+        q_row.addWidget(q_label)
+
+        self.quality_boxes: dict[str, CheckBox] = {}
+        for name in QUALITY_CHOICES:
+            box = CheckBox(name, quality_row)
+            self.quality_boxes[name] = box
+            q_row.addWidget(box)
+
+        note = CaptionLabel(f"默认只勾{DEFAULT_QUALITIES[0]}", quality_row)
+        note.setTextColor("#8A8F98", "#7C7C7C")
+        q_row.addWidget(note)
+        q_row.addStretch(1)
+        column.addWidget(quality_row)
         return holder
 
     def _build_echo_area(self) -> QWidget:
@@ -338,6 +447,33 @@ class LoadoutDialog(MessageBoxBase):
                 section = self._sections.get(cost)
                 if section is not None:
                     section.select_many(item.picks_of(cost))
+        self._restore_filters()
+
+    # ---------------------------------------------------------- 状态 / 品质
+    def _restore_filters(self) -> None:
+        """把状态 / 品质填回界面。
+
+        ⚠ 老数据没有这两个字段 —— ``normalize_*`` 会给默认（未标记 / 五星），
+        所以旧配置打开也是"合法的"，不会出现"一个都没选"的怪状态。
+        """
+        status = normalize_status(self.loadout.status)
+        button = self.status_buttons.get(status)
+        if button is not None:
+            button.setChecked(True)
+        picked = set(normalize_qualities(self.loadout.qualities))
+        for name, box in self.quality_boxes.items():
+            box.setChecked(name in picked)
+
+    def _collect_filters(self) -> None:
+        """把状态 / 品质收回 loadout。
+
+        品质**允许一个都不勾**（用户把勾全取消了就是他的意思，不塞回默认值）；
+        状态靠 ``QButtonGroup`` 保证恰好选中一个。
+        """
+        checked = next((n for n, b in self.status_buttons.items() if b.isChecked()), "")
+        self.loadout.status = normalize_status(checked)
+        self.loadout.qualities = normalize_qualities(
+            tuple(n for n in QUALITY_CHOICES if self.quality_boxes[n].isChecked()))
 
     def _collect(self) -> None:
         """把界面上的选择收回 loadout 里。"""
@@ -354,11 +490,25 @@ class LoadoutDialog(MessageBoxBase):
             item.set_picks(
                 cost, [EchoPick(echo=r.echo.name, stats=r.stats()) for r in rows]
             )
+        self._collect_filters()
 
     # ---------------------------------------------------------------- 校验
     def validate(self) -> bool:  # noqa: D102 - MessageBoxBase 钩子
         self._collect()
-        errors = self.loadout.validate()
+        character = self.loadout.character
+
+        errors: list[str] = []
+        # 角色必须**是**一个角色、而且**没被别的配置占用**（用户 2026-09-26）。
+        # 不能只靠"候选里没有"拦 —— 这个下拉是可输入的。
+        # 规则本体和「角色声骸强化」那边共用一份（core.game_data）。
+        if character:
+            # 不传 max_length：角色是从数据集里选的，长度天然有界；
+            # 老数据里那种超长字符串会被"不是一个角色"这条拦住。
+            error = character_choice_error(character, self._taken)
+            if error:
+                errors.append(error)
+
+        errors.extend(self.loadout.validate())
         if errors:
             InfoBar.error(
                 "还有必填项没填",
@@ -394,6 +544,11 @@ class LoadoutDetailDialog(MessageBoxBase):
         info = find_echo_set(self.loadout.echo_set)
         self.viewLayout.addWidget(self._line("声骸套装", self.loadout.echo_set or "未选",
                                              load_icon(info.icon) if info else None))
+        # 「筛选」面板的另外两行 —— 用户 2026-09-26 补的，详情里也要看得见
+        self.viewLayout.addWidget(self._line("状态", normalize_status(self.loadout.status)))
+        picked = normalize_qualities(self.loadout.qualities)
+        self.viewLayout.addWidget(
+            self._line("品质", "、".join(picked) if picked else "（一个都没勾）"))
         for cost, label in COST_SECTIONS:
             picks = self.loadout.picks_of(cost)
             if picks:
@@ -426,8 +581,16 @@ class LoadoutDetailDialog(MessageBoxBase):
             widget.setFixedSize(QSize(30, 30))
             row.addWidget(widget)
 
-        row.addWidget(BodyLabel(text, holder))
-        row.addStretch(1)
+        body = BodyLabel(text, holder)
+        # ★ **自动换行**（2026-09-27 用户要求）。
+        #   4C/3C/1C 那几行会长得离谱 —— 一档好几只声骸，每只还带若干属性：
+        #   「封庭械囿　属性：攻击百分比、气动伤害加成；霁息兽尊　属性：攻…」
+        #   不换行就被卡片右边**直接截断**（用户看到的正是"属性：攻…"这种断头）。
+        body.setWordWrap(True)
+        # ⚠ 光 setWordWrap 不够：得让 label **拿到受限宽度**才会折行。
+        #   给它 stretch、并且**不要再 addStretch(1)** —— 否则它只占 sizeHint 那么宽，
+        #   反而把右边空着、文字照样溢出。
+        row.addWidget(body, 1)
         return holder
 
     def _character_block(self) -> QWidget:

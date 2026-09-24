@@ -86,6 +86,16 @@ def _make_item(text: str, icon: QIcon | None):
         return SimpleNamespace(text=text, icon=icon, isEnabled=True, userData=None)
 
 
+#: 选**角色**那个下拉框的宽度 —— 配置页两个弹框共用，别各写一个数。
+#: 用户 2026-09-26：以前「角色声骸强化」那个填满整行（650px），"太长了，缩短"；
+#: 现在和「角色声骸筛选」对齐成同一个宽度。
+CHARACTER_BOX_WIDTH = 230
+
+#: 它的提示文字。⚠ 别写长 —— 230px 里只放得下约 190px 的字，
+#: "打名字或拼音筛选，再从列表里选"（210px）会被截成带省略号的半句。
+CHARACTER_BOX_HINT = "选角色（可打拼音筛）"
+
+
 class FilterComboBox(EditableComboBox):
     """可自由输入的下拉框：输入什么，候选就按"包含"过滤成什么；匹配不到 → 没有候选。
 

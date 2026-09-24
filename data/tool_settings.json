@@ -1,52 +1,21 @@
 {
-  "auto_combat": {
-    "region": [
-      0.22,
-      0.02,
-      0.78,
-      0.14
+  "echo_enhance": {
+    "core_stats": [
+      "暴击",
+      "暴击伤害"
     ],
-    "red_min": 140,
-    "green_max": 95,
-    "blue_max": 95,
-    "min_ratio": 0.015,
-    "min_run_ratio": 0.12,
-    "check_interval": 0.2,
-    "normal_attack": true,
-    "normal_interval": 0.1,
-    "skills": [
-      {
-        "name": "共鸣技能",
-        "key": "e",
-        "interval": 6.0,
-        "enabled": true,
-        "icon_region": null,
-        "icon_min_brightness": 60.0
-      },
-      {
-        "name": "声骸技能",
-        "key": "q",
-        "interval": 15.0,
-        "enabled": true,
-        "icon_region": null,
-        "icon_min_brightness": 60.0
-      },
-      {
-        "name": "共鸣解放",
-        "key": "r",
-        "interval": 20.0,
-        "enabled": true,
-        "icon_region": null,
-        "icon_min_brightness": 60.0
-      }
+    "optional_stats": [
+      "攻击百分比",
+      "共鸣效率"
     ],
-    "lock_on_key": "",
-    "pickup_key": "f",
-    "pickup_times": 2,
-    "wait_after_battle": 3.0,
-    "max_battles": 0,
-    "max_battle_seconds": 180.0,
-    "wait_combat_timeout": 120.0,
-    "center_mouse": true
+    "crit_min": 7.5,
+    "crit_dmg_min": 15.0,
+    "enable_crit_check": false,
+    "enable_max_roll_lock": true,
+    "min_valid_count": 3
+  },
+  "echo_change": {
+    "target_stat": "暴击伤害",
+    "max_count": 4
   }
 }

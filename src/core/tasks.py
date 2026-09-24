@@ -2,13 +2,22 @@
 
 **纯逻辑**：不依赖 Qt，可以命令行单测（见 ``tests/test_tasks.py``）。
 
-一条任务流程 = 名字 + 任务类型 + 有序的步骤列表。步骤分两种：
+一条任务流程 = 名字 + 有序的步骤列表。步骤分两种：
 
 - **工具步骤**：一个 ``src/tools/`` 下注册的工具（比如声骸自动强化）；
-- **配置步骤**：一个角色配置（``data/loadouts.json`` 里的 Loadout）。
+- **配置步骤**：一个角色配置（``data/loadouts.json`` / ``data/echo_profiles.json``）。
 
 配置步骤属于**它上面最近的工具步骤** —— 编排界面里把配置拖到某个工具下面
-就是这个语义；运行时把配置 id 传给工具（工具用不用是它自己的事）。
+就是这个语义；运行时把配置 id / 名字传给工具（工具用不用是它自己的事）。
+
+## 「任务类型」不再手填（2026-09-26 用户要求）
+
+原来流程上有一对「任务类型」下拉（一级 = 工具分类，二级 = 具体产品），
+用户可以自己选。用户要求**去掉那两个下拉** —— 类型本来就是"这条流程属于哪一类"，
+看它放了什么工具就知道，不该再让人手填一遍。
+
+→ 改成 :meth:`TaskFlow.derived_type` **从步骤推导**。
+存盘里**不再写** ``type_key`` / ``sub_key``（老数据里那两个字段读的时候直接忽略）。
 """
 
 from __future__ import annotations
@@ -20,8 +29,6 @@ from datetime import datetime
 from pathlib import Path
 
 from . import paths
-from .task_types import describe as _describe_type
-from .task_types import normalize as _normalize_type
 
 #: 步骤类型
 STEP_TOOL = "tool"
@@ -39,8 +46,12 @@ class TaskStep:
     """流程里的一步。"""
 
     type: str                      # STEP_TOOL / STEP_CONFIG
-    key: str = ""                  # 工具的 registry key，或配置的 loadout id
+    key: str = ""                  # 工具的 registry key，或配置的 id / 名字
     name: str = ""                 # 显示名（工具名 / 配置的角色名）
+    #: 配置步骤的**类型**（``"loadout"`` / ``"echo_profile"``）——
+    #: 两类配置的 key 长得不一样（一个 id、一个角色名），光看 key 分不出是哪一类。
+    #: 工具步骤这个字段为空。
+    config_kind: str = ""
 
     @property
     def is_tool(self) -> bool:
@@ -56,14 +67,17 @@ class TaskStep:
         return f"[{prefix}] {self.name or self.key}"
 
     def to_dict(self) -> dict:
-        return {"type": self.type, "key": self.key, "name": self.name}
+        return {"type": self.type, "key": self.key, "name": self.name,
+                "config_kind": self.config_kind}
 
     @classmethod
     def from_dict(cls, data: dict) -> "TaskStep":
         step_type = str(data.get("type", STEP_TOOL))
         if step_type not in (STEP_TOOL, STEP_CONFIG, STEP_START, STEP_END):
             step_type = STEP_TOOL
-        return cls(type=step_type, key=str(data.get("key", "")), name=str(data.get("name", "")))
+        return cls(type=step_type, key=str(data.get("key", "")),
+                   name=str(data.get("name", "")),
+                   config_kind=str(data.get("config_kind", "")))
 
 
 @dataclass
@@ -74,15 +88,6 @@ class TaskFlow:
     steps: list[TaskStep] = field(default_factory=list)
     id: str = ""
     updated_at: str = ""
-    #: 任务类型（只是标签，不影响运行）：一级 = 工具分类 key，"" = 未分类；
-    #: 二级 = 具体产品 / 场景 key。候选表在 core/task_types.py。
-    #: 存 key 不存显示名，以后改名 / 挪分类都不影响老数据。
-    type_key: str = ""
-    sub_key: str = ""
-
-    def __post_init__(self) -> None:
-        # JSON 可能被手改坏、也可能来自还没有类型字段的老版本 —— 统一收拾成合法的一对 key
-        self.type_key, self.sub_key = _normalize_type(self.type_key, self.sub_key)
 
     # ------------------------------------------------------------ 校验
     def validate(self) -> list[str]:
@@ -100,18 +105,46 @@ class TaskFlow:
     def tool_bindings(self) -> list[dict]:
         """把步骤列表整理成「工具 + 它挂的配置」。
 
-        配置属于它上面最近的工具步骤；上面的工具一个都没有时配置会被丢弃
-        （编排界面上保存前应该给出提示）。
+        ## 绑定规则（2026-09-27 修）
+
+        1. **优先绑给上面最近的工具**（"工具后面跟的配置归它"）—— 旧行为，不变；
+        2. 上面**没有**工具的配置（悬空配置），**改绑给下面最近的工具**。
+
+        第 2 条是这次修的 bug。用户把配置放在工具**前面**：
+
+            开始 → 配置「绯雪-声骸筛选」 → 配置「绯雪-声骸强化」 → 工具「声骸自动强化」
+
+        读起来就是"先筛选、再强化"，非常自然；但旧写法
+        （``elif step.type == STEP_CONFIG and result: result[-1][...]``）
+        因为那时 ``result`` 还是空的，就把它们**直接丢掉**了 ——
+        结果是"配置明明挂着，运行时却没生效"，用户报「进去就直接声骸强化、根本没筛选」。
+
+        ⚠ 这条路径**不报错**（只在编排界面保存时给一句很容易看漏的提示），
+        属于**静默失效**，最难查。这种"看着完全合理的流程却不生效"
+        比报错糟糕得多。
 
         返回 ``[{"step": TaskStep(工具), "configs": [TaskStep(配置)...]}, ...]``
         """
-        result: list[dict] = []
-        for step in self.steps:
+        #: 流程下标 → 它是第几个工具步骤
+        tool_index: dict[int, int] = {}
+        count = 0
+        for i, step in enumerate(self.steps):
             if step.is_tool:
-                result.append({"step": step, "configs": []})
-            elif step.type == STEP_CONFIG and result:
-                result[-1]["configs"].append(step)
-            # 其余类型（开始 / 结束标记）不参与绑定
+                tool_index[i] = count
+                count += 1
+
+        result: list[dict] = [{"step": s, "configs": []}
+                              for s in self.steps if s.is_tool]
+        for i, step in enumerate(self.steps):
+            if step.type != STEP_CONFIG:
+                continue
+            above = [j for j in tool_index if j < i]
+            below = [j for j in tool_index if j > i]
+            # ① 上面最近的工具；② 没有就找下面最近的
+            target = max(above) if above else (min(below) if below else None)
+            if target is not None:
+                result[tool_index[target]]["configs"].append(step)
+            # 上下都没有工具 → 丢弃；validate() 会拦"流程里至少要有一个工具步骤"
         return result
 
     # ------------------------------------------------------------ 展示
@@ -120,16 +153,58 @@ class TaskFlow:
         return " → ".join(step.name or step.key for step in self.steps) if self.steps else "空流程"
 
     def type_text(self) -> str:
-        """「游戏 · 鸣潮」；未分类时返回空串（界面上就不显示这个标签）。"""
-        return _describe_type(self.type_key, self.sub_key)
+        """「游戏 · 鸣潮」；推导不出类型时返回空串（界面上就不显示这个标签）。"""
+        from .task_types import describe as _describe_type
+
+        return _describe_type(*self.derived_type())
+
+    # ------------------------------------------------------------ 类型推导
+    def tool_steps(self) -> list[TaskStep]:
+        return [step for step in self.steps if step.is_tool]
+
+    def derived_type(self) -> tuple[str, str]:
+        """流程的「任务类型」—— **从步骤推导**，不再手填（2026-09-26 用户要求）。
+
+        用户去掉了编排界面上的两级下拉：类型本来就是"这条流程属于哪一类"，
+        看它放了什么工具就知道，不该再让人手填一遍。
+
+        推导规则（简单可预期）：
+
+        * 没有任何工具步骤 → ``("", "")``（未分类）；
+        * 有**游戏类**工具 → ``("game", "wuwa")`` —— 本工具目前只支持鸣潮，
+          所以具体游戏直接定成 ``wuwa``，于是「开始」步能真的去查客户端；
+        * 否则取**第一个工具步骤**的分类，二级用「通用」。
+
+        ⚠ 分类取自 ``ToolRegistry`` 里工具**自己声明**的 ``category``
+        （声明式，不去实例化探测 —— 实例化有副作用）。
+        """
+        from .categories import ToolCategory
+
+        metas = []
+        for step in self.tool_steps():
+            meta = _tool_meta(step.key)
+            if meta is not None:
+                metas.append(meta)
+        if not metas:
+            return "", ""
+
+        if any(m.category == ToolCategory.GAME for m in metas):
+            # 具体游戏：现在只有鸣潮一个客户端判据，直接用它
+            return ToolCategory.GAME.key, "wuwa"
+        return metas[0].category.key, "generic"
+
+    def client_spec(self):
+        """「开始」步要检查哪个游戏客户端（不检查时返回 None）。"""
+        from .task_types import client_of
+
+        return client_of(*self.derived_type())
 
     # ------------------------------------------------------------ 序列化
     def to_dict(self) -> dict:
+        # ⚠ 不再写 type_key / sub_key —— 类型已经是推导出来的，存了反而会过期
         return {
             "id": self.id,
             "name": self.name,
-            "type_key": self.type_key,
-            "sub_key": self.sub_key,
             "steps": [step.to_dict() for step in self.steps],
             "updated_at": self.updated_at,
         }
@@ -141,14 +216,23 @@ class TaskFlow:
             for item in (data.get("steps") or [])
             if isinstance(item, dict)
         ]
+        # 老数据里的 type_key / sub_key 直接忽略（改推导了，留着会误导）
         return cls(
             id=str(data.get("id", "")),
             name=str(data.get("name", "")),
-            type_key=str(data.get("type_key", "")),
-            sub_key=str(data.get("sub_key", "")),
             steps=steps,
             updated_at=str(data.get("updated_at", "")),
         )
+
+
+def _tool_meta(key: str):
+    """按 key 取工具元数据；注册表还没发现工具 / key 已失效时返回 None。"""
+    try:
+        from .registry import ToolRegistry
+
+        return ToolRegistry.get_meta(key)
+    except Exception:  # noqa: BLE001 - 推导类型不该把整条流程读崩
+        return None
 
 
 def bind_configs_to_tools(items: list[TaskStep]) -> list[dict]:

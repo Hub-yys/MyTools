@@ -28,6 +28,7 @@ from src.core.game_data import (  # noqa: E402
     CharacterInfo,
     CONFIGURABLE_ECHO_SETS,
     EchoSetInfo,
+    character_choice_error,
     find_character,
     find_echo_set,
     icon_path,
@@ -77,6 +78,60 @@ class TestMatchCharacters(unittest.TestCase):
 
     def test_no_match_returns_empty(self):
         self.assertEqual(match_characters("zzz不存在"), ())
+
+
+class TestCharacterChoiceError(unittest.TestCase):
+    """★ 配置页两类配置共用的「角色选择」校验（用户 2026-09-26）。
+
+    规则：**必须精确命中一个角色** + **一个角色只能有一条配置**。
+
+    为什么值得单独测：这两条以前只是"候选里没有"（界面层），
+    而 ``FilterComboBox`` 是**可输入**的 —— 用户能把候选筛空、直接敲个字就保存。
+    用户实测就是把名字改成"绯雪声骸强化配置"，结果**头像当场消失**
+    （行上的头像是拿名字去 ``find_character`` 查的）。
+    """
+
+    def setUp(self):
+        self.first = CHARACTERS[0].name
+
+    def test_valid_character_passes(self):
+        self.assertEqual(character_choice_error(self.first), "")
+
+    def test_blank_rejected(self):
+        for blank in ("", "   ", None):
+            self.assertIn("请先选一个角色", character_choice_error(blank))
+
+    def test_unknown_character_rejected(self):
+        """★ 就是用户截图里那个输入 —— 它不是角色，必须拒绝。"""
+        error = character_choice_error("绯雪声骸强化配置")
+        self.assertIn("不是一个角色", error)
+        self.assertIn("绯雪声骸强化配置", error, "报错要说清是哪个词不行")
+
+    def test_taken_character_rejected(self):
+        """同一个角色只能有一条。"""
+        error = character_choice_error(self.first, [self.first])
+        self.assertIn("一个角色只能有一条", error)
+
+    def test_taken_is_compared_after_strip(self):
+        """带空格的输入要按去空格之后比 —— 否则会绕过"已占用"。"""
+        error = character_choice_error(f"  {self.first}  ", [self.first])
+        self.assertIn("一个角色只能有一条", error)
+
+    def test_other_taken_does_not_block(self):
+        self.assertEqual(character_choice_error(self.first, ["别的角色"]), "")
+
+    def test_max_length_enforced_when_given(self):
+        # 用一个真实角色名 + 很短的 max_length 来验证长度这条
+        self.assertIn("太长", character_choice_error(self.first, (), 1))
+
+    def test_max_length_optional(self):
+        """不传 max_length 就不查长度 —— 角色从数据集里选时长度天然有界。"""
+        self.assertEqual(character_choice_error(self.first, (), None), "")
+
+    def test_order_existence_before_taken(self):
+        """既不存在、又在 taken 里时，先说"不是一个角色"（更根本的那个问题）。"""
+        error = character_choice_error("查无此人", ["查无此人"])
+        self.assertIn("不是一个角色", error)
 
 
 class TestEchoSets(unittest.TestCase):

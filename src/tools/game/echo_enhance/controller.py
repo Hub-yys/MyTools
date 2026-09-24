@@ -91,21 +91,41 @@ class InputBlocked(RuntimeError):
 
     单独一个类型，是因为它和"找不到按钮"这类业务错误完全不同 ——
     前者改配置没用，只能提权；界面上要能把这句话原样展示给用户。
+
+    ⚠ **只用于"权限/系统拒绝"**。代码自身的错误（参数写错、函数名打错）
+    不许塞进这个类型 —— 见 :func:`_wrap_input_error`。
     """
 
 
-def _wrap_input_error(action: str, exc: Exception) -> InputBlocked:
-    """把 ``(0, 'SetCursorPos', 'No error message is available')`` 翻译成人话。
+#: 这几类是**代码写错了**（参数个数不对、属性名打错……），不是权限问题。
+#: 包装成「权限不足」会把排查带偏。实测踩过（2026-09-27）：
+#: `keybd_event` 多传了一个参数 → ``TypeError`` → 被翻译成
+#: 「本工具已经是管理员权限，仍然被拦 —— 这多半是游戏反外挂（ACE）拦下了合成输入」。
+#: 用户照着提示重新提权、去查反外挂，全白费 —— 真正该看的是那句
+#: ``keybd_event() takes at most 4 arguments (5 given)``。
+_PROGRAMMING_ERRORS = (TypeError, AttributeError, ValueError, KeyError,
+                       IndexError, NameError)
+
+
+def _wrap_input_error(action: str, exc: Exception) -> Exception:
+    """把输入 API 的失败翻译成人话。
 
     pywin32 的报错格式是 ``(错误码, 函数名, 说明)``；错误码 0 = Windows 在输入层
-    直接拒了（UIPI），这个提示对用户毫无意义，必须换掉。
+    直接拒了（UIPI，且不给说明文字），这个提示对用户毫无意义，必须换掉。
+
+    **但只有"像权限/系统拒绝"的才包装成** :class:`InputBlocked`；
+    代码自身的错误（:data:`_PROGRAMMING_ERRORS`）**原样暴露**出来。
     """
+    if isinstance(exc, _PROGRAMMING_ERRORS):
+        return RuntimeError(
+            f"{action} 失败 —— 这是**代码/环境问题，不是权限问题**：{exc}"
+        )
+
     from ....core import elevation
 
-    detail = str(exc)
     return InputBlocked(
         f"{elevation.admin_hint()}\n"
-        f"（原始报错：{action} 失败 — {detail}）"
+        f"（原始报错：{action} 失败 — {exc}）"
     )
 
 
@@ -263,6 +283,35 @@ class GameWindow:
         if after_sleep:
             time.sleep(after_sleep)
 
+    def move_cursor(self, relative_x: float, relative_y: float) -> None:
+        """把光标移到窗口内的相对坐标（只移动，不点击）。
+
+        给"滚轮"用 —— 滚轮只作用于**光标底下**的控件。
+        """
+        import win32api
+
+        x, y = self.abs_point(relative_x, relative_y)
+        try:
+            win32api.SetCursorPos((x, y))
+        except Exception as exc:  # noqa: BLE001
+            raise _wrap_input_error("移动光标", exc) from exc
+
+    def scroll(self, clicks: int) -> None:
+        """在**光标当前位置**滚轮。正数向上、负数向下。
+
+        ★ 2026-09-27 加：给"列表比一屏长"的控件用（合鸣一共 34 套，
+        那个下拉列表只看得到 7 项左右）。滚轮只作用于**光标底下**的控件，
+        所以调用方要先把光标挪到列表上（见 ``prepare.EchoPrep._scroll_list``）。
+        """
+        import win32api
+        import win32con
+
+        try:
+            win32api.mouse_event(win32con.MOUSEEVENTF_WHEEL, 0, 0,
+                                 int(clicks) * win32con.WHEEL_DELTA, 0)
+        except Exception as exc:  # noqa: BLE001
+            raise _wrap_input_error("滚轮", exc) from exc
+
     # ---------------------------------------------------------------- 鼠标
     #
     # 自动战斗必须用下面这几个"**不移动光标**"的方法：动作游戏里移动光标可能带动
@@ -332,9 +381,11 @@ class GameWindow:
             raise ValueError(f"不认识的按键: {key}")
 
         try:
+            # ⚠ keybd_event 是**4** 个参数 (bVk, bScan, dwFlags, dwExtraInfo)，
+            #   别照 mouse_event 的 5 个抄 —— 多传一个会 TypeError。
             win32api.keybd_event(vk, 0, 0, 0)
             time.sleep(0.03)
-            win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0, 0)
+            win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
         except Exception as exc:  # noqa: BLE001
             raise _wrap_input_error(f"按键 {key.upper()}", exc) from exc
         if after_sleep:

@@ -7,7 +7,9 @@ PyQt/PySide-Fluent-Widgets 各版本导出的名字有出入（图标名、标�
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QLabel, QLineEdit, QTreeWidget
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFontMetrics
+from PySide6.QtWidgets import QLabel, QLineEdit, QSizePolicy, QTreeWidget
 
 import qfluentwidgets as qfw
 from qfluentwidgets import FluentIcon as FIF
@@ -32,8 +34,87 @@ __all__ = [
     "CaptionLabel",
     "SearchLineEdit",
     "TreeWidget",
+    "ElidedLabel",
     "resolve_icon",
+    "app_icon",
 ]
+
+
+class ElidedLabel(QLabel):
+    """**单行 + 超宽省略号**的标签，鼠标悬停能看到全名。
+
+    给「头像 + 名字」那类行用：名字一旦比左列宽，Qt 的默认行为要么把控件撑大
+    （把摘要/按钮挤变形），要么自动换行到第 2、3 行（**把行高撑破**）。
+    2026-09-26 用户截图就是这个：名字长了之后三行字把行撑高、头像位置被挤掉。
+
+    两个关键点，少一个都会失效：
+
+    1. ``setFixedWidth`` —— 宽度由调用方钉死，标签**不许**按文字长度自我膨胀；
+    2. 水平 sizePolicy 设成 ``Ignored`` —— 否则布局仍会拿 ``sizeHint``（＝整串文字的
+       宽度）去分配空间，钉死的宽度在父布局里照样被撑开。
+    """
+
+    def __init__(self, text: str = "", parent=None, *, width: int | None = None,
+                 align=None):
+        super().__init__(parent)
+        self._full = ""
+        self.setWordWrap(False)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        if width is not None:
+            self.setFixedWidth(int(width))
+        if align is not None:
+            self.setAlignment(align)
+        self.setText(text)
+
+    # ------------------------------------------------------------------ 文本
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt 命名
+        self._full = str(text or "")
+        # 省略号之后看不全，悬停给全名
+        self.setToolTip(self._full)
+        self._apply_elide()
+
+    def fullText(self) -> str:
+        """未被省略的原文（测试与 tooltip 用）。"""
+        return self._full
+
+    def text(self) -> str:  # noqa: N802 - Qt 命名
+        """⚠ 返回的是**省略后**的字面文本（和基类语义一致）。要原文用 fullText()。"""
+        return super().text()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 回调
+        super().resizeEvent(event)
+        self._apply_elide()
+
+    def _apply_elide(self) -> None:
+        metrics = QFontMetrics(self.font())
+        avail = max(0, self.width())
+        # 宽度还没定下来（布局前是 100）时先按原样放，resizeEvent 会再纠正一次
+        super().setText(metrics.elidedText(
+            self._full, Qt.TextElideMode.ElideRight, avail))
+
+
+def app_icon():
+    """应用图标（``assets/app.ico``），拿不到就返回空 QIcon。
+
+    ⚠ 2026-09-25 之前**没有任何地方调用它** —— 项目里明明生成了 app.ico
+    （``tools/make_app_icon.py``，蓝底圆角 + 工具字形），但 ``QApplication``
+    和主窗口都没设图标，于是**任务栏显示的是 python.exe 的默认图标**。
+    这个函数就是让"设应用图标"只有一处实现，别各处再各写一遍路径拼接。
+
+    不抛异常：图标是锦上添花，拿不到不该挡住启动。空 QIcon 的 ``isNull()``
+    为真，调用方（如 ``tray.make_tray``）会退回 fluent 自带图标。
+    """
+    from PySide6.QtGui import QIcon
+
+    from ..core import paths
+
+    try:
+        path = paths.resource_dir("assets", "app.ico")
+        if path.is_file():
+            return QIcon(str(path))
+    except Exception:  # noqa: BLE001 - 取不到就当没有
+        pass
+    return QIcon()
 
 # --------------------------------------------------------------------- 图标
 # FluentIcon 在不同版本里增减过成员，同名图标不一定存在。

@@ -23,6 +23,7 @@ from .stats import (
     CRIT_DMG,
     DEFAULT_CRIT_DMG_MIN,
     DEFAULT_CRIT_MIN,
+    MAX_CORE_STATS,
     MAX_VALID_COUNT,
     MIN_VALID_COUNT,
     OPTIONAL_CHOICES,
@@ -34,14 +35,35 @@ SETTINGS_KEY = "echo_enhance"
 
 #: ok-ww 宿主里的任务注册名。**单一真源**：
 #: 工具页启动任务用它、``okww_task.py`` 声明用它、``okww_boot.TASKS`` 也是这个 key。
-#: 放在这里是为了让工具页不必 import okww（那会拖慢启动 —— 引擎只在点「运行」时才加载）。
+#: 放在这里是为了让工具页不必 import okww（那会拖慢启动）。
+#: 注意：ok-ww **引擎**是程序启动时默认就拉起的（见 okww_boot.AUTOSTART_DELAY_MS）；
+#: 这里省掉的是「import okww 包」的开销，与引擎何时启动无关。
 TASK_KEY = "声骸自动强化"
 
-#: 默认就是界面第一次打开时的样子：双爆强制勾选、可选属性不勾、有效词条 3 条
+#: 默认就是界面第一次打开时的样子：双爆强制勾选、可选属性不勾
 DEFAULT_CORE: tuple[str, ...] = (CRIT, CRIT_DMG)
-DEFAULT_VALID_COUNT = 3
+#: 「有效词条数」的默认值 = **核心属性条数**（用户要求：核心几条，默认最低就几条）。
+#: 光靠这个常数不够 —— 真正的收敛点在 :meth:`EchoSettings.__post_init__`。
+DEFAULT_VALID_COUNT = len(DEFAULT_CORE)
 
 _VALID_COUNT_RANGE = (MIN_VALID_COUNT, MAX_VALID_COUNT)
+
+
+def valid_count_range(core_stats, optional_stats) -> tuple[int, int]:
+    """「有效词条数」能取的范围 —— **界面加减框与模型共用这一份算法**。
+
+    上界 = 有效词条集合的总条数：声骸 5 个孔位里**每种词条只会出现一次**，
+    集合里没有的种类永远凑不出来（2026-09-24：要求 ≥3 而集合只有 2 条 →
+    每个声骸都在满级那一刻被判弃置）。
+
+    下界 = 核心属性条数：核心属性是"必须有"，全都到齐就天然有那么多条有效词条，
+    再要求更低没有意义（用户要求：**核心几条，有效词条最低就几条**）。
+    """
+    core = frozenset(core_stats or ())
+    total = len(core | frozenset(optional_stats or ()))
+    low = max(MIN_VALID_COUNT, len(core))
+    high = max(low, min(MAX_VALID_COUNT, total))
+    return low, high
 
 
 @dataclass
@@ -55,6 +77,33 @@ class EchoSettings:
     enable_crit_check: bool = True
     enable_max_roll_lock: bool = True
     min_valid_count: int = DEFAULT_VALID_COUNT
+
+    def __post_init__(self) -> None:
+        """把非法/越界配置收敛到合法范围 —— **唯一的收敛点**。
+
+        * 核心属性硬夹到 ``MAX_CORE_STATS``（磁盘手改出 6+ 条时不让它炸
+          ``JudgeConfig``，也保证界面回填后不会出现「勾了 6 条还取消不了」）；
+        * 「有效词条数」夹进合法范围 —— 不该留下"要求一个凑不出来的数"
+          （2026-09-24 那个"每个声骸满级都被弃置"就是这么来的）。
+        """
+        core = tuple(self.core_stats)
+        if len(core) > MAX_CORE_STATS:
+            forced = [s for s in core if s in DEFAULT_CORE]
+            extras = [s for s in core if s not in DEFAULT_CORE]
+            keep = extras[: MAX_CORE_STATS - len(forced)]
+            core = tuple(dict.fromkeys([*forced, *keep]))
+            self.core_stats = core
+
+        low, high = self.valid_count_range()
+        try:
+            want = int(self.min_valid_count)
+        except (TypeError, ValueError):
+            want = low
+        self.min_valid_count = max(low, min(high, want))
+
+    def valid_count_range(self) -> tuple[int, int]:
+        """当前配置下「有效词条数」能取的范围（界面用它设加减框范围）。"""
+        return valid_count_range(self.core_stats, self.optional_stats)
 
     # ---------------------------------------------------------------- 磁盘
     @classmethod
@@ -89,6 +138,11 @@ class EchoSettings:
         core = _pick(raw.get("core_stats"), ALL_STATS)
         # 双爆永远是核心属性，谁也去不掉
         core = tuple(dict.fromkeys([*DEFAULT_CORE, *core]))
+        # 磁盘被手改成 6+ 条时硬夹回上限（__post_init__ 也会再夹一次，这里先收）
+        if len(core) > MAX_CORE_STATS:
+            forced = [s for s in core if s in DEFAULT_CORE]
+            extras = [s for s in core if s not in DEFAULT_CORE]
+            core = tuple(dict.fromkeys([*forced, *extras[: MAX_CORE_STATS - len(forced)]]))
 
         return cls(
             core_stats=core,
@@ -132,6 +186,9 @@ class EchoSettings:
             if self.enable_crit_check
             else "双爆下限：已关闭"
         )
+        # 注：__post_init__ 已保证 min_valid_count 一定凑得出来，所以这里不用再报
+        # "达不到"。引擎侧（JudgeConfig.criterion_warning）的兜底仍然保留 ——
+        # 那是给"直接构造 JudgeConfig"的调用方用的。
         return (
             f"核心 {'/'.join(self.core_stats) or '无'}"
             f" / 可选 {'、'.join(self.optional_stats) or '无'}"

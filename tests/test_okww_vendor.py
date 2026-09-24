@@ -12,11 +12,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 VENDOR = ROOT / "vendor" / "okww"
 
+#: 让本文件能像兄弟测试那样直接跑（``python tests/test_okww_vendor.py``）。
+#: 少了这行只有 ``unittest discover`` 能跑通，直接跑会 ModuleNotFoundError: No module named 'src'
+#: （直接运行脚本时 sys.path 里只有 tests/，没有项目根）。
+sys.path.insert(0, str(ROOT))
+
 #: 宿主配置里**属于 MyTools 自己**的任务模块（不是 vendored ok-ww 的东西）。
 #: 它本该是 `src.*` —— 上面那条"必须改成 okww.*"的规则针对的是从 vendor 搬进来的
 #: 代码（原包名 src，改成 okww 才不会和 MyTools 的 src 撞名）。
 #: 见 src/tools/game/echo_enhance/okww_task.py（ok-ww 流程 + MyTools 判定条件）。
-OWN_TASKS = {"src.tools.game.echo_enhance.okww_task"}
+OWN_TASKS = {
+    "src.tools.game.echo_enhance.okww_task",   # 声骸强化（ok-ww 流程 + 本工具判定）
+    "src.tools.game.echo_change.okww_task",    # 声骸调频（ok-ww 流程 + 本工具容错）
+    "src.tools.game.auto_combat.okww_farm",    # 4C 刷声骸（ok-ww 流程 + 拾取角标计数）
+}
 
 sys.path.insert(0, str(VENDOR))
 
@@ -50,7 +59,11 @@ class TestVendorIntegrity(unittest.TestCase):
 
     def test_no_src_leftover(self):
         for py in VENDOR.rglob("*.py"):
-            text = py.read_text(encoding="utf-8", newline="")
+            # 用 Path.open 而不是 Path.read_text：read_text 的 newline 参数
+            # 是 Python 3.13 才加的，3.12 上传过去会 TypeError。
+            # 语义一样（都是不做换行转换），3.11+ 都能跑。
+            with py.open(encoding="utf-8", newline="") as fh:
+                text = fh.read()
             for token in ("from src.", "from src import", "import src.",
                           "'" + "src.", '"' + "src."):
                 self.assertNotIn(token, text, "%s 仍引用 %s" % (py, token))
@@ -92,9 +105,31 @@ class TestHostConfig(unittest.TestCase):
         self.assertEqual(self.config["ocr"]["lib"], "onnxocr")
 
     def test_tasks_exposed_to_page(self):
+        """★ 页面上暴露的**每一个**任务，都必须在引擎的注册表里。
+
+        以前这条只点名断言了「4C 刷声骸」和「自动战斗」两个，于是 2026-09-25
+        新增「声骸批量调频」时，``TASKS`` 加了、``onetime_tasks`` 漏加，
+        单测全绿；直到真起一次引擎才发现这个任务**根本没注册**——
+        页面上一切正常、点「启动」却找不到任务。
+
+        所以这里改成遍历 ``TASKS``：新增任务时只要忘了写注册表，这条立刻红，
+        不用等 5 分钟去起引擎（见 check_okww_registration.py）。
+        """
         from src.tools.game.auto_combat.okww_boot import TASKS
+
         onetime = {e[1] for e in self.config["onetime_tasks"]}
         trigger = {e[1] for e in self.config["trigger_tasks"]}
+        registered = onetime | trigger
+
+        missing = {k: v for k, v in TASKS.items() if v not in registered}
+        self.assertEqual(
+            missing, {},
+            "TASKS 里这些任务没写进 onetime_tasks / trigger_tasks（点启动会找不到任务）：%s"
+            % missing,
+        )
+
+        # 顺带钉住分类：自动战斗是**触发式**的、刷声骸是**一次性**的，
+        # 混错了会让它该自动跑的时候不跑 / 不该跑的时候自己跑起来
         self.assertIn(TASKS["4C 刷声骸"], onetime)
         self.assertIn(TASKS["自动战斗"], trigger)
 

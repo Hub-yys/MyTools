@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""MyTools 的 PyInstaller 打包配置（**onedir**）。
+"""WutheringWavesTools（鸣潮工具箱）的 PyInstaller 打包配置（**onedir**）。
 
 为什么用 onedir 而不是 onefile：本项目带 30MB 资源 + 21MB OCR 模型 + Qt，
 onefile 每次启动都要把上百 MB 解压到临时目录（启动慢好几秒，也更容易被杀软盯上）。
@@ -10,7 +10,7 @@ onefile 每次启动都要把上百 MB 解压到临时目录（启动慢好几�
 2. **只读资源**（``assets/``、``src/core/data/``）：datas 放进解包目录，
    运行时由 ``src/core/paths.py::resource_dir()`` 从 ``sys._MEIPASS`` 里取；
 3. **用户数据种子**（``data/*.json``）：首次运行由 ``paths.ensure_user_data()``
-   拷到 ``%LOCALAPPDATA%\\MyTools``，之后所有读写都在那边 —— **不写程序目录**
+   拷到 ``%LOCALAPPDATA%\\WutheringWavesTools``，之后所有读写都在那边 —— **不写程序目录**
    （装到 Program Files 也能正常保存；``data/probe/`` 这类运行产物不打进包里）。
 
 ⚠ OCR 模型（``onnxocr/models/ppocrv5`` 里的 det/cls/rec.onnx + 字典，约 21MB）
@@ -155,7 +155,7 @@ exe = EXE(  # noqa: F821
     a.scripts,
     [],
     exclude_binaries=True,
-    name="MyTools",
+    name="WutheringWavesTools",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -183,5 +183,5 @@ coll = COLLECT(  # noqa: F821
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="MyTools",
+    name="WutheringWavesTools",
 )

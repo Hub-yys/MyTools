@@ -61,13 +61,17 @@ def main() -> int:
     # 用主窗口里**真正挂着的**那个页面（不是另建一个游离控件，否则截不到图）
     page = win._tool_hosts["echo_enhance"].ensure_panel()
 
-    print("--- ① 工具页：默认值 → 改一下 → 存盘 → 新页面回填 ---")
-    check(page.valid_stepper.value() == 3, f"默认有效词条 3（实际 {page.valid_stepper.value()}）")
+    print("--- ① 工具页：默认值 → 改一下 → 存盘（但不回填，每次进入都是默认）---")
+    # 联动：核心 = 双爆 2 条 → 有效词条默认就是 2（不是老的固定 3）
+    check(page.valid_stepper.value() == 2,
+          f"默认有效词条 = 核心条数 2（实际 {page.valid_stepper.value()}）")
     check(page.maxroll_switch.isChecked(), "满值保护默认开")
     check(settings_path.exists() is False or True, "（设置文件此时可能还没写）")
 
-    page.valid_stepper.set_value(5)
+    # ⚠ 顺序要紧：**先**勾可选属性（集合变 3 条、上限才升到 3）**再**设值，
+    #   反过来的话 3 会被夹到 2（联动规则见 settings.valid_count_range）
     page._optional_boxes["共鸣效率"].setChecked(True)
+    page.valid_stepper.set_value(3)
     page.crit_field.set_value(9.5)
     page.maxroll_switch.setChecked(False)
     page._update_optional_count()
@@ -76,17 +80,26 @@ def main() -> int:
     saved = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
     echo_saved = saved.get("echo_enhance", {})
     print(f"  存盘内容：{echo_saved}")
-    check(echo_saved.get("min_valid_count") == 5, "有效词条 5 已存盘")
+    check(echo_saved.get("min_valid_count") == 3, "有效词条 3 已存盘")
     check("共鸣效率" in echo_saved.get("optional_stats", []), "可选属性已存盘")
     check(echo_saved.get("crit_min") == 9.5, "暴击下限 9.5 已存盘")
     check(echo_saved.get("enable_max_roll_lock") is False, "满值保护关已存盘")
 
+    # ★ 新语义（2026-09-24 用户要求："不要遗留上次的东西，每次进入都是默认配置"）：
+    #   页面**不再回填**，但改动照旧存盘 —— 任务流程读的就是存下来那份。
     fresh = echo_tool.create_widget(win)
-    check(fresh.valid_stepper.value() == 5, f"新页面回填有效词条 5（实际 {fresh.valid_stepper.value()}）")
-    check(fresh._optional_boxes["共鸣效率"].isChecked(), "新页面回填可选属性")
-    check(abs(fresh.crit_field.value() - 9.5) < 1e-6, "新页面回填暴击下限")
-    check(fresh.maxroll_switch.isChecked() is False, "新页面回填满值保护开关")
+    check(fresh.valid_stepper.value() == 2,
+          f"★ 新页面回到默认有效词条 2（实际 {fresh.valid_stepper.value()}）")
+    check(not fresh._optional_boxes["共鸣效率"].isChecked(), "★ 可选项不回填（默认不勾）")
+    check(abs(fresh.crit_field.value() - 7.5) < 1e-6,
+          f"★ 暴击下限回默认 7.5（实际 {fresh.crit_field.value()}）")
+    check(fresh.maxroll_switch.isChecked() is True, "★ 满值保护回默认开")
+    check(len(fresh._checked_core()) == 2, f"★ 核心回默认双爆（实际 {fresh._checked_core()}）")
     check(fresh._core_boxes["暴击"].isChecked(), "双爆仍是强制勾选")
+    # 盘上仍然是刚才改的那套（任务流程依赖它，不能因为页面不回填就丢）
+    still = json.loads(settings_path.read_text(encoding="utf-8"))["echo_enhance"]
+    check(still.get("min_valid_count") == 3 and abs(still.get("crit_min", 0) - 9.5) < 1e-6,
+          f"底盘上仍是改过的配置（任务流程用）：{still}")
 
     win.switchTo(win._tool_hosts["echo_enhance"])
     for _ in range(6):
@@ -139,7 +152,8 @@ def main() -> int:
     win.grab().save(str(SHOTS / "library_rebuilt.png"))
     print("  截图 → library_rebuilt.png")
 
-    win.close()
+    # 不能直接 close()：加了关闭确认之后会弹模态框挂住（脚本没人点）
+    win.close_without_prompt()
     time.sleep(0.3)
     tmp.cleanup()
     print(f"\n=== 结果：{'全部通过' if not failures else f'{len(failures)} 项失败'} ===")

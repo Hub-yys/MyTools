@@ -10,7 +10,7 @@
 * 归档（PYZ）里有没有本项目的模块 —— 查 build 目录里的 PYZ toc；
 * 解包目录里有没有该在的**数据**（资源 / 种子 / OCR 模型 / 插件源码）。
 
-用法：python packaging/check_build.py [产物目录 dist/MyTools]
+用法：python packaging/check_build.py [产物目录 build/stage/WutheringWavesTools]
 """
 
 from __future__ import annotations
@@ -20,7 +20,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DIST = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "dist" / "MyTools"
+DIST = (Path(sys.argv[1]) if len(sys.argv) > 1
+        else ROOT / "build" / "stage" / "WutheringWavesTools")
 INTERNAL = DIST / "_internal"
 
 #: 归档里必须存在的本项目模块（插件式发现的模块尤其要列上 —— 它们最容易漏）
@@ -34,6 +35,7 @@ REQUIRED_IN_ARCHIVE = [
     "src.tools.game.auto_combat.tool",
     "src.tools.game.auto_combat.okww_boot",    # 4C 自动战斗宿主
     "src.tools.game.echo_enhance.okww_task",   # 声骸强化的 MyTools 子类（ok 侧按名字 import）
+    "src.tools.game.auto_combat.okww_farm",    # 4C 刷声骸的 MyTools 子类（ok 侧按名字 import）
     "src.tools.game.auto_combat.okww_boot",    # ok-ww 引擎宿主
     "ok.core.start_controller",          # ok-script（ok-ww 引擎宿主依赖）
     "ok.task.TaskExecutor",
@@ -86,7 +88,7 @@ print("打包自检：%s" % DIST)
 print("=" * 68)
 
 check(DIST.is_dir(), "产物目录存在")
-check((DIST / "MyTools.exe").is_file(), "MyTools.exe 存在")
+check((DIST / "WutheringWavesTools.exe").is_file(), "WutheringWavesTools.exe 存在")
 
 print("-- 归档里的本项目模块 --")
 modules = read_pyz_modules()

@@ -1,14 +1,17 @@
 ﻿<#
-    MyTools 一键打包：PyInstaller 出绿色目录 → Inno Setup 出安装包
+    WutheringWavesTools（鸣潮工具箱）一键打包：PyInstaller → Inno Setup 安装包
 
         .\package.ps1                  # 版本号自动取 src\app_config.py 的 APP_VERSION
         .\package.ps1 -Version 0.4.0    # 也可以显式指定
 
-    产物：
-        dist\MyTools\                    绿色版（整个目录拷走就能跑）
-        dist\MyToolsSetup-<版本>.exe     安装包
+    产物**只有安装包**：
+        dist\WutheringWavesToolsSetup-<版本>.exe
 
-    用户数据说明：配置文件不在安装目录里，而在 %LOCALAPPDATA%\MyTools
+    ⚠ 不再对外提供"绿色版"（PyInstaller 的 onedir 目录）。
+      它现在只是**中间产物**，落在 build\stage\WutheringWavesTools（build\ 整棵不进库），
+      给 Inno Setup 当打包源用。dist\ 里只剩安装包，别再把那堆 _internal\ 发给别人。
+
+    用户数据说明：配置文件不在安装目录里，而在 %LOCALAPPDATA%\WutheringWavesTools
     （见 src/core/paths.py），所以卸载 / 重装都不会动用户的配置与任务流程。
 #>
 param([string]$Version = '')
@@ -23,14 +26,17 @@ $ErrorActionPreference = 'Continue'
 $Root     = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Python   = Join-Path $Root '.venv\Scripts\python.exe'
 $DistDir  = Join-Path $Root 'dist'
-$Stage    = Join-Path $DistDir 'MyTools'
+#: PyInstaller 的输出目录 = Inno 的打包源。**故意不放在 dist\ 下** ——
+#: dist\ 要留给"对外产物"（只放安装包），那堆 _internal\ 混在里面很容易被误发出去。
+$StageDir = Join-Path $Root 'build\stage'
+$Stage    = Join-Path $StageDir 'WutheringWavesTools'
 $WorkPath = Join-Path $Root 'build\pyinstaller'
 $Spec     = Join-Path $Root 'packaging\mytools.spec'
 $Icon     = Join-Path $Root 'assets\app.ico'
 $Iss      = Join-Path $Root 'installer\mytools.iss'
 # ⚠ $Setup 要到下面**版本号确定之后**才算 —— 文件名里有版本号，而这里 $Version
 #   可能还是空串（不传 -Version 时是从 src\app_config.py 读的）。
-#   曾经在这儿先算过一次，结果最后去检查 "MyToolsSetup-.exe"，
+#   曾经在这儿先算过一次，结果最后去检查 "WutheringWavesToolsSetup-.exe"，
 #   明明安装包已经产出却报「没生成安装包」并退出 1（2026-09-23）。
 
 function Step($text) { Write-Host "`n==> $text" -ForegroundColor Cyan }
@@ -49,9 +55,9 @@ if (-not $Version) {
 }
 
 # 版本号定了，产物名才算得出来（见上面 $Setup 那段注释）
-$Setup = Join-Path $DistDir "MyToolsSetup-$Version.exe"
+$Setup = Join-Path $DistDir "WutheringWavesToolsSetup-$Version.exe"
 
-Write-Host "`nMyTools 打包   版本 $Version" -ForegroundColor Green
+Write-Host "`nWutheringWavesTools 打包   版本 $Version" -ForegroundColor Green
 
 # ---------------------------------------------------------------- 0. 前置
 Step '检查环境'
@@ -78,10 +84,10 @@ if (-not (Test-Path $Icon)) {
 # 交给 PyInstaller 自己删旧产物（--noconfirm）：它用 Python 删，
 # 比在这个脚本里 Remove-Item -Recurse 上千个文件稳（那会触发批量删除确认）
 Step 'PyInstaller 打包（onedir，约 1 分钟）'
-& $Python -m PyInstaller $Spec --noconfirm --distpath $DistDir --workpath $WorkPath
+& $Python -m PyInstaller $Spec --noconfirm --distpath $StageDir --workpath $WorkPath
 if ($LASTEXITCODE -ne 0) { Fail 'PyInstaller 打包失败' }
-if (-not (Test-Path (Join-Path $Stage 'MyTools.exe'))) { Fail "没生成 $Stage\MyTools.exe" }
-Write-Host ('   绿色版：{0}（{1:N1} MB）' -f $Stage,
+if (-not (Test-Path (Join-Path $Stage 'WutheringWavesTools.exe'))) { Fail "没生成 $Stage\WutheringWavesTools.exe" }
+Write-Host ('   中间产物（不对外）：{0}（{1:N1} MB）' -f $Stage,
     ((Get-ChildItem $Stage -Recurse -File | Measure-Object Length -Sum).Sum / 1MB))
 
 # ---------------------------------------------------------------- 2.5 构建自检
@@ -105,10 +111,19 @@ if (-not $Iscc) {
     if ($cmd) { $Iscc = $cmd.Source }
 }
 if (-not $Iscc) {
-    Write-Host '   没找到 Inno Setup —— 只出绿色版。' -ForegroundColor Yellow
-    Write-Host '   想要安装包：winget install --id JRSoftware.InnoSetup -e' -ForegroundColor Yellow
-    Write-Host "`n完成：$Stage" -ForegroundColor Green
-    exit 0
+    # ⚠ 这里**必须失败**，不能像以前那样"只出绿色版然后 exit 0"。
+    #   现在唯一的产物就是安装包；没有 ISCC 就等于这次打包什么都没产出，
+    #   再返回成功会让自动化（以及看退出码的人）误以为打好了。
+    Fail @"
+没找到 Inno Setup（ISCC.exe），打不出安装包。
+
+   安装：winget install --id JRSoftware.InnoSetup -e
+   装完重开一个终端再跑一次（PATH 要刷新）。
+
+   （PyInstaller 的中间产物已经好在 $Stage，
+     装了 Inno 之后可以直接跑 dist\build_installer.ps1 -Mode installer 补出安装包，
+     不用重跑 PyInstaller。）
+"@
 }
 Write-Host "   $Iscc"
 
@@ -119,5 +134,5 @@ if (-not (Test-Path $Setup)) { Fail "没生成 $Setup" }
 
 Write-Host "`n完成！" -ForegroundColor Green
 Write-Host ('   安装包：{0}（{1:N1} MB）' -f $Setup, ((Get-Item $Setup).Length / 1MB))
-Write-Host ('   绿色版：{0}' -f $Stage)
-Write-Host ('   用户数据在：{0}\MyTools（卸载不会删）' -f $env:LOCALAPPDATA)
+Write-Host ('   用户数据在：{0}\WutheringWavesTools（卸载不会删）' -f $env:LOCALAPPDATA)
+Write-Host ('   （中间产物在 {0}，不用管，也不对外发）' -f $Stage) -ForegroundColor DarkGray

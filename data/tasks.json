@@ -2,33 +2,41 @@
   "version": 1,
   "tasks": [
     {
-      "id": "f2ce18d65f98",
-      "name": "清霄声骇自动强化",
-      "type_key": "game",
-      "sub_key": "wuwa",
+      "id": "42cdeebdf006",
+      "name": "赞妮-声骸自动强化",
       "steps": [
         {
           "type": "start",
           "key": "start",
-          "name": "开始"
+          "name": "开始",
+          "config_kind": ""
         },
         {
           "type": "config",
-          "key": "74bb1f7a0e73",
-          "name": "清宵"
+          "key": "26c1382c878d",
+          "name": "赞妮-声骸筛选",
+          "config_kind": "loadout"
+        },
+        {
+          "type": "config",
+          "key": "475738345299",
+          "name": "赞妮-声骸强化",
+          "config_kind": "echo_profile"
         },
         {
           "type": "tool",
           "key": "echo_enhance",
-          "name": "声骸自动强化"
+          "name": "声骸自动强化",
+          "config_kind": ""
         },
         {
           "type": "end",
           "key": "end",
-          "name": "结束"
+          "name": "结束",
+          "config_kind": ""
         }
       ],
-      "updated_at": "2026-09-22 16:27:24"
+      "updated_at": "2026-09-27 22:45:14"
     }
   ]
 }

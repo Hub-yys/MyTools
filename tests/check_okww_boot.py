@@ -30,7 +30,7 @@ def check(cond: bool, msg: str) -> None:
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
 
-    from src.tools.game.auto_combat.okww_boot import get_host
+    from src.tools.game.auto_combat.okww_boot import get_host, input_permission_error
     from src.tools.game.auto_combat.tool import AutoCombatWidget
 
     host = get_host()
@@ -43,6 +43,28 @@ def main() -> int:
           "打开页面后引擎未自动启动（state=%s）" % host.state)
 
     page.start_btn.click()
+    app.processEvents()
+
+    # ★ 启动前预检（2026-09-25 加）：权限不足时**故意不拉引擎** ——
+    #   设计上就"拦在拉引擎之前"（反馈最快，不做无用功）。
+    #   所以这时 state 停在 idle 是**预期行为**，不能按"引擎没起来"判失败；
+    #   但要确认预检真的给出了可操作的说明。
+    #   ⚠ 这段必须放在等 state 收敛**之前**：否则会白等满 150 秒才判失败。
+    blocked = input_permission_error()
+    if blocked:
+        print("  [info] 启动前预检拦下（本机权限不足）：")
+        for line in str(blocked).splitlines():
+            print("         " + line)
+        check(host.state == "idle",
+              "★ 预检拦下时**不拉引擎**（state=%s）" % host.state)
+        check("权限" in str(blocked) or "管理员" in str(blocked),
+              "预检提示说明了原因")
+        host.shutdown()
+        page.close()
+        print("=== 结果：%d/%d 通过（本机权限不足，引擎相关项不适用）==="
+              % (sum(1 for c, _ in CHECKS if c), len(CHECKS)))
+        return 0
+
     deadline = time.time() + 150
     while time.time() < deadline:
         app.processEvents()

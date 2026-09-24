@@ -1,11 +1,19 @@
-"""MyTools 应用层常量。
+"""应用层常量 —— **名字与版本的唯一真源**。
 
 改这里的东西不需要动工具代码；新增分类走 :mod:`src.core.categories`。
+
+⚠ 名字/版本只在这里定义一次，别处一律 ``import``：曾经版本号各写一份，出过
+「安装包 0.3.0 / 界面 v0.1.0」对不上的事（2026-09-23）。用户数据目录名也认
+:data:`APP_NAME`（:mod:`src.core.paths` 直接从这里导入，不再自己抄一份）。
+
+* :data:`APP_NAME` —— 英文标识：exe 名 / 安装包名 / 安装目录名 / 用户数据目录名；
+* :data:`APP_DISPLAY_NAME` —— 中文显示名：窗口标题、主页大标题。
 """
 
-APP_NAME = "MyTools"
-APP_VERSION = "0.4.1"
-APP_AUTHOR = "MyTools"
+APP_NAME = "WutheringWavesTools"
+APP_DISPLAY_NAME = "鸣潮工具箱"
+APP_VERSION = "0.5.3"
+APP_AUTHOR = "yys"
 
 WINDOW_MIN_WIDTH = 960
 WINDOW_MIN_HEIGHT = 640
@@ -25,5 +33,3 @@ CARD_ICON_SIZE = 46
 
 # 工具页：顶部下拉框选工具
 TOOL_COMBO_WIDTH = 280
-
-CONFIG_DIR_NAME = "MyTools"

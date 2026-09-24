@@ -1,4 +1,10 @@
-"""从 bwiki 下载游戏素材：角色头像 / 声骸套装图标 / 声骸图标。
+"""从 **bwiki（主力）+ 库街区（兜底）** 下载游戏素材：角色头像 / 声骸套装图标 / 声骸图标。
+
+⚠ 为什么要两个源：bwiki 只收录了 181 个声骸里的 **130** 个，
+剩下 51 个（风鳞蜃甲 / 霜鳞蜃甲 / 影烁者 …）一直缺图、界面上是空白。
+用户 2026-09-27 指出"这些图片库街区应该全部都是有的" —— 核实：
+「资源库更新」抓下来的 199 条库街区 ``icon_urls`` 里，**51 个缺的全都在**。
+所以 bwiki 查不到时自动改走库街区（图片规格实测一致：256×256 RGBA 透明 PNG）。
 
     .venv\\Scripts\\python tools\\fetch_wuwa_assets.py                  # 三类都下
     .venv\\Scripts\\python tools\\fetch_wuwa_assets.py --list           # 只看有什么，不下载
@@ -67,8 +73,29 @@ ALIASES: dict[str, str] = {
 }
 
 
-def _open(url: str, timeout: int = 45):
-    request = urllib.request.Request(url, headers={"User-Agent": UA, "Referer": REFERER})
+#: ★ 库街区兜底（2026-09-27）
+#: bwiki 只收录了 181 个声骸里的 **130** 个，剩下 51 个（风鳞蜃甲 / 霜鳞蜃甲 / 影烁者 …）
+#: 一直缺图；用户指出"这些图片库街区应该全部都是有的" —— 去核了一下，
+#: 库里那份 ``icon_urls`` **199 条、51 个缺的全都在**。
+#: 这些 URL 是「资源库更新」（``src/core/wuwa_update.py``）抓下来的，存在下面这个文件里。
+#: 实测图床给的是 **256×256 RGBA 透明 PNG，和 bwiki 那批完全同规格**，可以放心混用。
+KUROBBS_ICON_JSON = ROOT / "src" / "core" / "data" / "wuwa_echo_skills.json"
+KUROBBS_REFERER = "https://www.kurobbs.com/"
+
+
+def kurobbs_icons() -> dict[str, str]:
+    """``{声骸名: 库街区图床 URL}``。读不到就返回空表 —— 不影响原来走 bwiki 那条路。"""
+    try:
+        raw = json.loads(KUROBBS_ICON_JSON.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    urls = raw.get("icon_urls")
+    return {str(k): str(v) for k, v in urls.items()} if isinstance(urls, dict) else {}
+
+
+def _open(url: str, timeout: int = 45, referer: str = REFERER):
+    request = urllib.request.Request(
+        url, headers={"User-Agent": UA, "Referer": referer})
     return urllib.request.urlopen(request, timeout=timeout, context=ssl.create_default_context())
 
 
@@ -125,8 +152,8 @@ def resolve_url(table: dict[str, str], name: str) -> str | None:
     return table.get(alias) if alias else None
 
 
-def download(url: str, target: pathlib.Path) -> int:
-    with _open(url) as response:
+def download(url: str, target: pathlib.Path, referer: str = REFERER) -> int:
+    with _open(url, referer=referer) as response:
         blob = response.read()
     if not blob.startswith(b"\x89PNG"):
         raise ValueError(f"返回的不是 PNG（前 8 字节 {blob[:8]!r}）")
@@ -176,22 +203,30 @@ def run_kind(kind: str, skip_existing: bool, list_only: bool) -> tuple[int, int,
     if list_only:
         return 0, 0, []
 
+    # 声骸图缺得多（bwiki 只收了 181 个里的 130 个）→ 用库街区兜底
+    kuro = kurobbs_icons() if kind == "echoes" else {}
+    if kuro:
+        print(f"  库街区兜底表里 {len(kuro)} 个图标 URL（wiki 查不到的会走它）")
+
     done, skipped, failed = 0, 0, []
     for name, relative in items:
         url = resolve_url(table, name)
+        referer, source = REFERER, "wiki"
+        if url is None and name in kuro:
+            url, referer, source = kuro[name], KUROBBS_REFERER, "库街区"
         target = ASSETS_ROOT / relative
 
         if url is None:
-            failed.append((name, "wiki 上没有这张图"))
+            failed.append((name, "wiki 上没有、库街区也没有"))
             continue
         if target.exists() and skip_existing:
             skipped += 1
             continue
 
         try:
-            size = download(url, target)
+            size = download(url, target, referer=referer)
             done += 1
-            print(f"  ✓ {name:14} {size / 1024:6.0f} KB")
+            print(f"  ✓ {name:14} {size / 1024:6.0f} KB  [{source}]")
         except Exception as exc:  # noqa: BLE001
             failed.append((name, f"{type(exc).__name__}: {exc}"))
         time.sleep(DELAY)

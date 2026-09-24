@@ -175,12 +175,41 @@ class TestJudge(unittest.TestCase):
         result = judge(stats((CRIT, 7.5), (CRIT_DMG, 15.0)), self.cfg)
         self.assertNotEqual(result.action, "discard")
 
-    def test_only_one_crit_present_no_crit_check(self):
-        # 只出了暴击、还没出爆伤 → 不该在这一步判弃置（另一项还有孔位可以博）
+    def test_only_one_crit_present_still_judged(self):
+        """只出了暴击、还没出爆伤 → **照样当场弃置**。
+
+        声骸每种副词条**只会出现一次**：已经读出来的 6.3 就是这个声骸最终的
+        暴击值，后面孔位再多也变不出第二个暴击 → 永远到不了 7.5，
+        等下去只是白烧材料。
+
+        （2026-09-25 修正。原实现要求两项都出现才判，注释理由是
+        "另一项还有孔位可以博" —— 那个理由对双爆自身不成立：能博的是
+        **别的**词条，博不出第二个暴击。）
+        """
         result = judge(stats((CRIT, 6.3)), self.cfg)
-        self.assertIsNone(result.crit)
-        self.assertIsNone(result.crit_dmg)
-        self.assertNotEqual(result.action, "discard")
+        self.assertEqual(result.action, "discard")
+        self.assertIn("双爆不达标", result.reason)
+        self.assertAlmostEqual(result.crit, 6.3)
+
+    def test_single_crit_below_dmg_discards(self):
+        """爆伤单项低于下限 → 同样当场弃置。"""
+        result = judge(stats((CRIT_DMG, 12.6)), self.cfg)
+        self.assertEqual(result.action, "discard")
+        self.assertIn("暴伤", result.reason)
+
+    def test_remaining_slots_do_not_save_low_crit(self):
+        """用户强调的那条：**剩余孔位再多也救不了已经低了的暴击**。
+
+        只出了暴击 6.3，还剩 4 个孔（远够凑「有效词条 ≥3」）→ 仍然弃置。
+        """
+        result = judge(stats((CRIT, 6.3)), self.cfg)
+        self.assertEqual(result.action, "discard")
+        self.assertGreater(result.remaining, 0)     # 确实还有孔位，但没意义
+
+    def test_single_crit_passing_continues(self):
+        """单项已达标时不能误判 —— 另一项还没出来，继续强化。"""
+        self.assertNotEqual(judge(stats((CRIT, 8.0)), self.cfg).action, "discard")
+        self.assertNotEqual(judge(stats((CRIT_DMG, 16.0)), self.cfg).action, "discard")
 
     def test_crit_check_can_be_disabled(self):
         # 右侧开关关掉后，双爆下限整个不参与判定：
@@ -215,7 +244,12 @@ class TestJudge(unittest.TestCase):
     # ---------------------------------------------------------- 有效词条数
     def test_not_enough_valid_slots_discards(self):
         # 已出 3 条全都不是有效词条，剩 2 孔 → 最多 2 条有效 < 要求 3 → 弃置
-        cfg = JudgeConfig(min_valid_count=3, crit_min=0.0, crit_dmg_min=0.0)
+        # ⚠ 有效词条集合得真的放得下 3 条：这里多勾两个可选属性。
+        #   否则「≥3」在只有 2 条的集合上永远达不到（见 TestUnreachableValidCount）。
+        cfg = JudgeConfig(
+            optional_stats=frozenset({"攻击百分比", "共鸣效率"}),
+            min_valid_count=3, crit_min=0.0, crit_dmg_min=0.0,
+        )
         result = judge(
             stats(("攻击", 40), ("生命", 500), ("防御", 40)), cfg
         )
@@ -363,6 +397,10 @@ class TestMaxRollLock(unittest.TestCase):
 
     规则位置是关键：**排在所有弃置判定之前** —— 出了满分词条就一律保下来，
     哪怕双爆下限、核心属性、有效词条这几条都想把它弃置。
+
+    （2026-09-25 曾一度把双爆下限提到它前面，用户随后澄清：
+    "出现满暴击/爆伤，后续无论如何都要强化满级并锁定" —— 已改回最高优先。
+    两条规则不冲突：双爆下限管的是**没出满值**的那些声骸。）
     """
 
     def setUp(self):
@@ -374,16 +412,18 @@ class TestMaxRollLock(unittest.TestCase):
         )
 
     def test_max_crit_outranks_crit_check(self):
-        # 爆伤 12.6 不达标，本来该弃置；满暴击先手 → 保住
+        """爆伤 12.6 不达标、本来该弃置；满暴击先手 → 保住。"""
         result = judge(stats((CRIT, MAX_CRIT), (CRIT_DMG, 12.6)), self.cfg)
         self.assertNotEqual(result.action, "discard")
         self.assertIn(CRIT, result.reason)
         self.assertIn("满", result.reason)
 
     def test_max_crit_dmg_outranks_crit_check(self):
+        """反过来一样：满爆伤救得了不达标的暴击。"""
         result = judge(stats((CRIT, 6.3), (CRIT_DMG, MAX_CRIT_DMG)), self.cfg)
         self.assertNotEqual(result.action, "discard")
         self.assertIn(CRIT_DMG, result.reason)
+        self.assertIn("满", result.reason)
 
     def test_max_roll_on_full_echo_locks(self):
         # 已经满 5 条 → 直接上锁
@@ -430,6 +470,187 @@ class TestMaxRollLock(unittest.TestCase):
         cfg = JudgeConfig(enable_max_roll_lock=False)
         result = judge(stats((CRIT, MAX_CRIT), (CRIT_DMG, 12.6)), cfg)
         self.assertEqual(result.action, "discard")
+
+
+class TestUnreachableValidCount(unittest.TestCase):
+    """「有效词条数」超过有效集合条数时**不能按原值判**。
+
+    声骸每种副词条只会出现一次，所以「有效词条数」的实际上限 = 有效集合的条数。
+    默认配置只勾双爆（集合 2 条）而界面默认要求 ≥3 —— 2026-09-24 用户实测
+    "声骸自动强化完全没用"就是这个：**每个声骸都在满级那一刻被判弃置**。
+    """
+
+    def test_unreachable_is_reported(self):
+        cfg = JudgeConfig(min_valid_count=3, crit_min=0.0, crit_dmg_min=0.0)
+        self.assertEqual(len(cfg.valid_stats), 2)
+        self.assertTrue(cfg.min_valid_count_unreachable)
+        self.assertEqual(cfg.effective_min_valid_count, 2)
+        self.assertIn("达不到", cfg.criterion_warning())
+
+    def test_reachable_has_no_warning(self):
+        cfg = JudgeConfig(optional_stats=frozenset({"攻击百分比"}), min_valid_count=3)
+        self.assertFalse(cfg.min_valid_count_unreachable)
+        self.assertEqual(cfg.effective_min_valid_count, 3)
+        self.assertEqual(cfg.criterion_warning(), "")
+
+    def test_full_echo_with_both_crit_survives_default_config(self):
+        """默认配置（只勾双爆、要求 ≥3）下的满级声骸：必须**上锁**而不是弃置。"""
+        cfg = JudgeConfig(
+            crit_min=DEFAULT_CRIT_MIN, crit_dmg_min=DEFAULT_CRIT_DMG_MIN,
+            min_valid_count=3, enable_max_roll_lock=False,
+        )
+        result = judge(
+            stats((CRIT, 9.3), (CRIT_DMG, 18.6), ("攻击", 40), ("生命", 500), ("防御", 40)),
+            cfg,
+        )
+        self.assertEqual(result.action, "lock")
+        self.assertTrue(result.keep)
+
+    def test_reachable_count_still_enforced(self):
+        """能达到了就照原值严格判：集合 4 条、要求 3 条，只出双爆 2 条 → 弃置。"""
+        cfg = JudgeConfig(
+            optional_stats=frozenset({"攻击百分比", "共鸣效率"}),
+            min_valid_count=3, crit_min=0.0, crit_dmg_min=0.0,
+            enable_max_roll_lock=False,
+        )
+        result = judge(
+            stats((CRIT, 9.3), (CRIT_DMG, 18.6), ("攻击", 40), ("生命", 500), ("防御", 40)),
+            cfg,
+        )
+        self.assertEqual(result.action, "discard")
+        self.assertEqual(result.code, "valid")
+
+    def test_discard_codes(self):
+        """弃置原因分类码 —— 统计"为什么全被弃置"要用。"""
+        crit_bad = judge(stats((CRIT, 6.3), (CRIT_DMG, 12.6)),
+                         JudgeConfig(enable_max_roll_lock=False))
+        self.assertEqual(crit_bad.code, "crit")
+
+        core_missing = judge(
+            stats(("攻击", 40), ("生命", 500), ("防御", 40), ("共鸣效率", 10.0)),
+            JudgeConfig(min_valid_count=2, enable_max_roll_lock=False),
+        )
+        self.assertEqual(core_missing.code, "core")
+
+        valid_short = judge(
+            stats((CRIT, 9.3), (CRIT_DMG, 18.6), ("攻击", 40), ("生命", 500), ("防御", 40)),
+            JudgeConfig(optional_stats=frozenset({"攻击百分比", "共鸣效率"}),
+                        min_valid_count=3, enable_max_roll_lock=False),
+        )
+        self.assertEqual(valid_short.code, "valid")
+
+
+from src.tools.game.echo_enhance.stats import format_result_report  # noqa: E402
+
+
+class TestResultReport(unittest.TestCase):
+    """结果报告排版（页面卡片 / 结束弹窗 / 任务流程 summary 共用这份）。"""
+
+    def test_nothing_judged_gives_hint(self):
+        text = format_result_report(checked=0, kept=0, dropped=0)
+        self.assertIn("没有判定任何声骸", text)
+
+    def test_basic_line(self):
+        text = format_result_report(checked=12, kept=5, dropped=7)
+        self.assertIn("判定 12 个", text)
+        self.assertIn("符合条件 5", text)
+        self.assertIn("弃置 7", text)
+
+    def test_perfect_hidden_when_not_enabled(self):
+        text = format_result_report(checked=3, kept=1, dropped=2, perfect=None)
+        self.assertNotIn("满属性", text)
+
+    def test_perfect_shown_when_enabled(self):
+        text = format_result_report(checked=3, kept=2, dropped=1, perfect=1)
+        self.assertIn("满属性 1", text)
+
+    def test_reason_line_uses_human_names(self):
+        text = format_result_report(checked=9, kept=2, dropped=7,
+                                    tally={"crit": 4, "valid": 3})
+        self.assertIn("弃置原因：双爆不达标 4、有效词条不足 3", text)
+
+    def test_failed_reason_takes_priority(self):
+        """异常中断时优先显示**真实原因**，别让用户去查界面。
+
+        2026-09-25 实测：ok-ww 抛的是「强化设置需要开启阶段放入!」，
+        界面却显示「请确认停在 背包 → 声骸 界面」，用户对着界面查了半天。
+        """
+        text = format_result_report(checked=0, kept=0, dropped=0,
+                                    failed_reason="强化设置需要开启阶段放入!")
+        self.assertIn("强化设置需要开启阶段放入!", text)
+        self.assertNotIn("请确认停在", text)
+
+    def test_failed_reason_ignored_when_something_judged(self):
+        """真判定过声骸时，中断原因不该顶掉统计数字。"""
+        text = format_result_report(checked=3, kept=1, dropped=2,
+                                    failed_reason="随便什么原因")
+        self.assertIn("判定 3 个", text)
+        self.assertNotIn("随便什么原因", text)
+
+    def test_blank_reason_keeps_legacy_hint(self):
+        """空白原因等同于没传 —— 旧行为不能退化。"""
+        for blank in (None, "", "   ", "\n"):
+            with self.subTest(blank=blank):
+                text = format_result_report(checked=0, kept=0, dropped=0,
+                                            failed_reason=blank)
+                self.assertIn("没有判定任何声骸", text)
+
+    def test_unknown_reason_code_shown_raw(self):
+        text = format_result_report(checked=1, kept=0, dropped=1,
+                                    tally={"mystery": 1})
+        self.assertIn("mystery 1", text)
+
+
+from src.tools.game.echo_enhance.stats import parse_result_counts  # noqa: E402
+
+
+class TestParseResultCounts(unittest.TestCase):
+    """把报告文本读回成数字（任务页的「本轮报告 / 累计统计」靠它取数）。
+
+    ⚠ 这是**往返测试**：改了 ``format_result_report`` 的排版就必须让这里继续过，
+    否则任务页的统计会悄悄变成 0（谁都发现不了）。
+    """
+
+    def test_roundtrip(self):
+        text = format_result_report(checked=12, kept=5, dropped=7)
+        self.assertEqual(parse_result_counts(text),
+                         {"checked": 12, "kept": 5, "dropped": 7})
+
+    def test_roundtrip_with_perfect_and_tally(self):
+        """带「满属性」和「弃置原因」两行时照样读得对。"""
+        text = format_result_report(checked=9, kept=2, dropped=7, perfect=1,
+                                    tally={"crit": 4, "valid": 3})
+        self.assertEqual(parse_result_counts(text),
+                         {"checked": 9, "kept": 2, "dropped": 7})
+
+    def test_zero_counts_stay_zero(self):
+        """没判定任何声骸 → 全 0，不会把提示语里的数字误抓出来。"""
+        text = format_result_report(checked=0, kept=0, dropped=0)
+        self.assertEqual(parse_result_counts(text),
+                         {"checked": 0, "kept": 0, "dropped": 0})
+
+    def test_interrupted_task_yields_zeros(self):
+        """异常中断（只有原因那句话）→ 0，不该编数字。"""
+        text = format_result_report(checked=0, kept=0, dropped=0,
+                                    failed_reason="强化设置需要开启阶段放入!")
+        self.assertEqual(parse_result_counts(text),
+                         {"checked": 0, "kept": 0, "dropped": 0})
+
+    def test_garbage_input_is_safe(self):
+        for bad in ("", None, "完全不是报告", "判定 abc 个"):
+            with self.subTest(bad=bad):
+                self.assertEqual(parse_result_counts(bad),
+                                 {"checked": 0, "kept": 0, "dropped": 0})
+
+    def test_discard_reason_line_does_not_override_total(self):
+        """★ 回归护栏：「弃置原因：双爆不达标 4」里的 4 **不能**顶掉总的弃置数。
+
+        正则要的是「弃置 N」（后面不跟原因），而原因行是「… 4」——
+        这条测试就是防止有人把正则放宽成 ``弃置.*?(\\d+)``。
+        """
+        text = format_result_report(checked=9, kept=2, dropped=7,
+                                    tally={"crit": 4})
+        self.assertEqual(parse_result_counts(text)["dropped"], 7)
 
 
 if __name__ == "__main__":
