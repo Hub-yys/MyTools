@@ -227,6 +227,11 @@ def main() -> int:
         now_hash = hashlib.md5(real_settings.read_bytes()).hexdigest()
         check(now_hash == real_hash, "真实 tool_settings.json 未被改动（隔离有效）")
 
+    # 真实配置必须原封不动（隔离没漏）
+    if real_hash is not None:
+        now_hash = hashlib.md5(real_settings.read_bytes()).hexdigest()
+        check(now_hash == real_hash, "真实 tool_settings.json 未被改动（隔离有效）")
+
     print(f"\n=== 结果：{'全部通过' if not _failures else f'{len(_failures)} 项失败'} ===")
     for item in _failures:
         print(f"  - {item}")

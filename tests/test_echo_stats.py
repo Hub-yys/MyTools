@@ -540,6 +540,74 @@ class TestUnreachableValidCount(unittest.TestCase):
         self.assertEqual(valid_short.code, "valid")
 
 
+class TestUnreachableValidCount(unittest.TestCase):
+    """「有效词条数」超过有效集合条数时**不能按原值判**。
+
+    声骸每种副词条只会出现一次，所以「有效词条数」的实际上限 = 有效集合的条数。
+    默认配置只勾双爆（集合 2 条）而界面默认要求 ≥3 —— 2026-09-24 用户实测
+    "声骸自动强化完全没用"就是这个：**每个声骸都在满级那一刻被判弃置**。
+    """
+
+    def test_unreachable_is_reported(self):
+        cfg = JudgeConfig(min_valid_count=3, crit_min=0.0, crit_dmg_min=0.0)
+        self.assertEqual(len(cfg.valid_stats), 2)
+        self.assertTrue(cfg.min_valid_count_unreachable)
+        self.assertEqual(cfg.effective_min_valid_count, 2)
+        self.assertIn("达不到", cfg.criterion_warning())
+
+    def test_reachable_has_no_warning(self):
+        cfg = JudgeConfig(optional_stats=frozenset({"攻击百分比"}), min_valid_count=3)
+        self.assertFalse(cfg.min_valid_count_unreachable)
+        self.assertEqual(cfg.effective_min_valid_count, 3)
+        self.assertEqual(cfg.criterion_warning(), "")
+
+    def test_full_echo_with_both_crit_survives_default_config(self):
+        """默认配置（只勾双爆、要求 ≥3）下的满级声骸：必须**上锁**而不是弃置。"""
+        cfg = JudgeConfig(
+            crit_min=DEFAULT_CRIT_MIN, crit_dmg_min=DEFAULT_CRIT_DMG_MIN,
+            min_valid_count=3, enable_max_roll_lock=False,
+        )
+        result = judge(
+            stats((CRIT, 9.3), (CRIT_DMG, 18.6), ("攻击", 40), ("生命", 500), ("防御", 40)),
+            cfg,
+        )
+        self.assertEqual(result.action, "lock")
+        self.assertTrue(result.keep)
+
+    def test_reachable_count_still_enforced(self):
+        """能达到了就照原值严格判：集合 4 条、要求 3 条，只出双爆 2 条 → 弃置。"""
+        cfg = JudgeConfig(
+            optional_stats=frozenset({"攻击百分比", "共鸣效率"}),
+            min_valid_count=3, crit_min=0.0, crit_dmg_min=0.0,
+            enable_max_roll_lock=False,
+        )
+        result = judge(
+            stats((CRIT, 9.3), (CRIT_DMG, 18.6), ("攻击", 40), ("生命", 500), ("防御", 40)),
+            cfg,
+        )
+        self.assertEqual(result.action, "discard")
+        self.assertEqual(result.code, "valid")
+
+    def test_discard_codes(self):
+        """弃置原因分类码 —— 统计"为什么全被弃置"要用。"""
+        crit_bad = judge(stats((CRIT, 6.3), (CRIT_DMG, 12.6)),
+                         JudgeConfig(enable_max_roll_lock=False))
+        self.assertEqual(crit_bad.code, "crit")
+
+        core_missing = judge(
+            stats(("攻击", 40), ("生命", 500), ("防御", 40), ("共鸣效率", 10.0)),
+            JudgeConfig(min_valid_count=2, enable_max_roll_lock=False),
+        )
+        self.assertEqual(core_missing.code, "core")
+
+        valid_short = judge(
+            stats((CRIT, 9.3), (CRIT_DMG, 18.6), ("攻击", 40), ("生命", 500), ("防御", 40)),
+            JudgeConfig(optional_stats=frozenset({"攻击百分比", "共鸣效率"}),
+                        min_valid_count=3, enable_max_roll_lock=False),
+        )
+        self.assertEqual(valid_short.code, "valid")
+
+
 from src.tools.game.echo_enhance.stats import format_result_report  # noqa: E402
 
 
@@ -655,3 +723,38 @@ class TestParseResultCounts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+from src.tools.game.echo_enhance.stats import format_result_report  # noqa: E402
+
+
+class TestResultReport(unittest.TestCase):
+    """结果报告排版（页面卡片 / 结束弹窗 / 任务流程 summary 共用这份）。"""
+
+    def test_nothing_judged_gives_hint(self):
+        text = format_result_report(checked=0, kept=0, dropped=0)
+        self.assertIn("没有判定任何声骸", text)
+
+    def test_basic_line(self):
+        text = format_result_report(checked=12, kept=5, dropped=7)
+        self.assertIn("判定 12 个", text)
+        self.assertIn("符合条件 5", text)
+        self.assertIn("弃置 7", text)
+
+    def test_perfect_hidden_when_not_enabled(self):
+        text = format_result_report(checked=3, kept=1, dropped=2, perfect=None)
+        self.assertNotIn("满属性", text)
+
+    def test_perfect_shown_when_enabled(self):
+        text = format_result_report(checked=3, kept=2, dropped=1, perfect=1)
+        self.assertIn("满属性 1", text)
+
+    def test_reason_line_uses_human_names(self):
+        text = format_result_report(checked=9, kept=2, dropped=7,
+                                    tally={"crit": 4, "valid": 3})
+        self.assertIn("弃置原因：双爆不达标 4、有效词条不足 3", text)
+
+    def test_unknown_reason_code_shown_raw(self):
+        text = format_result_report(checked=1, kept=0, dropped=1,
+                                    tally={"mystery": 1})
+        self.assertIn("mystery 1", text)
