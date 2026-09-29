@@ -552,11 +552,14 @@ ok-ww 配置里还注册了触发式的 `AutoCombatTask`（进战斗自动输出
 
 ## 开源许可
 
-「4C 自动战斗」内置了 [ok-ww](https://github.com/ok-oldking/ok-wuthering-waves)
-的源码与素材（`vendor/okww/`，AGPL-3.0）。**把本工具的安装包分发给他人时，
-必须按 AGPL-3.0 一并提供对应源码** —— 最简单的做法：发安装包时把整个源码目录
-（或对应 commit 的 zip）一起发。详见 `licenses/NOTICES.md`；ok-ww 与 ok-script
-的许可全文在 `licenses/` 下。
+**本项目以 [GNU AGPL-3.0](LICENSE) 授权。** 原因是「4C 自动战斗」内置了
+[ok-ww](https://github.com/ok-oldking/ok-wuthering-waves) 的源码与素材
+（`vendor/okww/`，AGPL-3.0）—— 含 AGPL 衍生代码的作品**必须整体以 AGPL 发布**。
+
+这意味着你可以自由使用、修改、再分发，但**分发时必须一并提供完整对应源码**
+（包括通过网络提供服务的情形）。发安装包时最简单的合规做法：把整个源码目录
+（或对应 commit 的 zip）一起发。详见 [`licenses/NOTICES.md`](licenses/NOTICES.md)；
+ok-ww 与 ok-script 的许可全文在 `licenses/` 下。
 
 > ⚠ **克隆本仓库后缺一部分 vendored 素材，属正常**：`vendor/okww/assets/images/`
 > （48 张逐帧模板图）与 `vendor/okww/assets/echo_model/echo.onnx`（38MB 的 YOLO
@@ -564,6 +567,11 @@ ok-ww 配置里还注册了触发式的 `AutoCombatTask`（进战斗自动输出
 > （`.gitignore` 里有说明）。要跑 4C / 声骸工具，需要自己从 ok-ww 上游把这两个
 > 目录取回来（放到同名路径即可）；只跑资源库 / 配置管理 / 任务流程不受影响。
 > 注意 `packaging/check_build.py` 会检查它们，所以**未补齐时打包自检会不通过**。
+
+> ⚠ **免责声明**：本工具是 UI 自动化程序，**不读写游戏内存**，但自动化操作是否
+> 违反游戏服务条款由厂商政策决定，**使用导致的账号风险请自行评估**。
+> 本项目与库洛游戏（Kuro Games）无任何关联；游戏名称、角色、素材等版权归库洛所有。
+
 
 ## 打包成安装包
 
