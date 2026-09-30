@@ -75,6 +75,9 @@ STAR_COLORS = {5: "#d4a017", 4: "#9b59b6", 3: "#5a8fd4"}
 #: 列表里每行头像的边长 —— 和配置页/任务行同一个尺寸（48），观感统一
 AVATAR_SIZE = 48
 
+#: 卡片墙里每张图的边长（工坊那种方块卡）
+CARD_SIZE = 64
+
 
 class GrabLinkThread(QThread):
     """后台从游戏日志里读抽卡链接。
@@ -458,42 +461,83 @@ class GachaWidget(ScrollArea):
             self._show_empty_hint()
 
     def _render_cards(self, report) -> None:
-        """五星卡片墙：每张显示名字 + "抽了几次"角标。
+        """五星卡片墙：**图片** + 右上角"抽到几次"角标（工坊那个视觉）。
 
-        ⚠ 工坊那里是**头像图**；我们没有干员的抽卡头像素材（那是游戏素材，
-        不入库），所以这里用**名字卡片**代替 —— 信息量一样（谁、抽到几次、
-        是不是歪出来的），只是没图。
+        用户 2026-09-30："这些换成图片，这些素材街区也完全可以取到的，
+        同样这些素材东西可以放到资源库"。
+
+        图片来自：
+        * 角色 → ``assets/game/avatars/<角色名>.png``（``game_data`` 查）
+        * 武器 → ``assets/game/weapons/<武器名>.png``
+
+        拿不到图就用**首字圆图**兜底（同一套 ``avatar_icon``），不留白 ——
+        否则卡片墙会缺一块、看起来像坏了。
         """
         fives = report.all_fives_analysis()
         if not fives:
             return
-        # 统计每个名字出现的次数
-        counts: dict[str, int] = {}
-        for f in fives:
-            if f.name:
-                counts[f.name] = counts.get(f.name, 0) + 1
 
-        columns = 10
+        # 统计每个名字出现的次数（还要记住它的 kind，决定去哪查图）
+        counts: dict[str, int] = {}
+        kinds: dict[str, str] = {}
+        for f in fives:
+            if not f.name:
+                continue
+            counts[f.name] = counts.get(f.name, 0) + 1
+            kinds.setdefault(f.name, f.kind)
+
+        columns = max(1, (self.cards_host.width() or 900) // (CARD_SIZE + 8))
+        columns = min(columns, 12)
         for index, (name, count) in enumerate(
                 sorted(counts.items(), key=lambda kv: -kv[1])):
-            card = CardWidget(self.cards_host)
-            card.setFixedSize(64, 64)
-            box = QVBoxLayout(card)
-            box.setContentsMargins(2, 4, 2, 4)
-            box.setSpacing(0)
+            self.cards_grid.addWidget(
+                self._five_card(name, count, kinds.get(name, "")),
+                index // columns, index % columns)
 
-            label = BodyLabel(name[:4], card)
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setWordWrap(True)
-            box.addWidget(label, 1)
+    def _five_card(self, name: str, count: int, kind: str) -> QWidget:
+        """一张五星卡片：图片铺满 + 右上角 ×N 角标。
 
-            if count > 1:
-                badge = CaptionLabel(f"×{count}", card)
-                badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                badge.setTextColor("#d4a017", "#d4a017")
-                box.addWidget(badge)
+        ⚠ ``IconWidget(parent)`` **只有 parent 一个参数**（实测），
+        尺寸靠 ``setFixedSize``；它自己会把图标缩放到控件大小，
+        没有 ``setScaledContents`` / ``setBorderRadius`` 这些方法。
+        """
+        from qfluentwidgets import IconWidget
 
-            self.cards_grid.addWidget(card, index // columns, index % columns)
+        card = QWidget(self.cards_host)
+        card.setFixedSize(CARD_SIZE, CARD_SIZE)
+
+        icon = self._icon_for(name, kind)
+        view = IconWidget(card)
+        view.setIcon(icon)
+        view.setFixedSize(CARD_SIZE, CARD_SIZE)
+        view.move(0, 0)
+
+        # 名字：图片底下压一行小字，鼠标悬停也能看全名
+        card.setToolTip(f"{name}　×{count}")
+
+        if count > 1:
+            badge = CaptionLabel(f"×{count}", card)
+            badge.setTextColor("#ffffff", "#ffffff")
+            badge.setStyleSheet(
+                "background: rgba(0,0,0,0.6); border-radius: 7px;"
+                " padding: 0 4px; font-weight: 700;")
+            badge.adjustSize()
+            badge.move(CARD_SIZE - badge.width() - 2, 2)
+        return card
+
+    @staticmethod
+    def _icon_for(name: str, kind: str = ""):
+        """名字 → QIcon（角色查头像、武器查武器图，都没有就首字兜底）。"""
+        from ....core import game_data
+        from ....gui.pickers import avatar_icon
+
+        try:
+            if kind == "武器":
+                return avatar_icon(f"weapons/{name}.png", name)
+            info = game_data.find_character(name)
+            return avatar_icon(info.avatar if info else "", name)
+        except Exception:  # noqa: BLE001 - 资料没加载好也不该让卡片建不出来
+            return avatar_icon("", name)
 
     def _pool_block(self, pool) -> QWidget:
         """一个卡池一块：标题行 + **逐条五星**（头像 + 抽数条 + 歪标 + 时间）。

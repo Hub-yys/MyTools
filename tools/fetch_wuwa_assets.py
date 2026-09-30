@@ -84,13 +84,42 @@ KUROBBS_REFERER = "https://www.kurobbs.com/"
 
 
 def kurobbs_icons() -> dict[str, str]:
-    """``{声骸名: 库街区图床 URL}``。读不到就返回空表 —— 不影响原来走 bwiki 那条路。"""
+    """``{名字: 库街区图床 URL}``。读不到就返回空表 —— 不影响原来走 bwiki 那条路。"""
     try:
         raw = json.loads(KUROBBS_ICON_JSON.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     urls = raw.get("icon_urls")
     return {str(k): str(v) for k, v in urls.items()} if isinstance(urls, dict) else {}
+
+
+#: 库街区 wiki 的 getPage 接口（和 ``src/core/wuwa_update.py`` 用的是同一个）
+KUROBBS_PAGE = "https://api.kurobbs.com/wiki/core/catalogue/item/getPage"
+#: catalogueId 映射（实测）：1105 角色 / 1106 武器 / 1107 声骸 / 1219 套装
+KUROBBS_CATALOGUES = {"1105": "角色", "1106": "武器", "1107": "声骸",
+                      "1219": "套装"}
+
+
+def kurobbs_records(catalogue_id: str) -> tuple[list[dict], dict]:
+    """拉库街区某一类的全部条目：``(records, tagTree)``。
+
+    ⚠ 网页 URL 是 ``?fid=1099&sid=1219`` —— **``sid`` 才是 catalogueId**；
+    传 ``fid`` 会返回 0 条且 ``code=200``（静默空，不报错）。
+    """
+    body = urllib.parse.urlencode(
+        {"catalogueId": str(catalogue_id), "page": "1", "limit": "1000"}
+    ).encode()
+    request = urllib.request.Request(
+        KUROBBS_PAGE, data=body,
+        headers={"User-Agent": UA, "Referer": KUROBBS_REFERER,
+                 "Content-Type": "application/x-www-form-urlencoded",
+                 "wiki_type": "9"})
+    with urllib.request.urlopen(request, timeout=60,
+                                context=ssl.create_default_context()) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    data = payload.get("data") or {}
+    records = (data.get("results") or {}).get("records") or []
+    return list(records), data.get("tagTree") or {}
 
 
 def _open(url: str, timeout: int = 45, referer: str = REFERER):
@@ -180,11 +209,34 @@ def _echo_items() -> list[tuple[str, str]]:
     return list(seen.items())
 
 
+def _weapon_items() -> list[tuple[str, str]]:
+    """武器图标的下载清单。
+
+    ⚠ 武器**没有**本地数据文件（不像角色有 ``wuwa_characters.json``），
+    所以名单**直接问库街区**（catalogue 1106「武器」，实测 123 把）——
+    这比"从 icon_urls 里猜哪些是武器"准得多（那份是混在一起的，
+    分不出武器 / 声骸 / 角色）。
+
+    路径：``assets/game/weapons/<武器名>.png``
+    """
+    try:
+        records, _tree = kurobbs_records("1106")
+    except Exception:  # noqa: BLE001 - 拿不到就当没有（不影响别的类别）
+        return []
+    items: list[tuple[str, str]] = []
+    for record in records:
+        name = str(record.get("name", "")).strip()
+        if name:
+            items.append((name, f"weapons/{name}.png"))
+    return items
+
+
 #: 类别 -> (显示名, wiki 前缀, wiki 后缀, 取下载清单)
 KINDS: dict[str, tuple[str, str, str, object]] = {
     "avatars": ("角色头像", "角色 ", " 头像.png", _avatar_items),
     "sets": ("套装图标", "声骸合鸣 ", ".png", _set_items),
     "echoes": ("声骸图标", "声骸 ", " 头像.png", _echo_items),
+    "weapons": ("武器图标", "武器 ", ".png", _weapon_items),
 }
 
 
@@ -206,9 +258,10 @@ def run_kind(kind: str, skip_existing: bool, list_only: bool) -> tuple[int, int,
     # 声骸图缺得多（bwiki 只收了 181 个里的 130 个）→ 用库街区兜底；
     # ★ 套装图标同理（2026-09-30 补）：bwiki 的套装图标页不全，
     #   而库街区那份 icon_urls 里**有全部套装图标**（catalogue 1219）。
-    #   原来这里写的是 `if kind == "echoes"`，于是套装图标永远只走 bwiki、
-    #   缺的那几套就一直是占位图 —— 用户发现"明明有图标为什么不加上去"。
-    kuro = kurobbs_icons() if kind in ("echoes", "sets") else {}
+    #   ★ 武器同理（2026-09-30 再补）：抽卡卡片墙要显示武器图。
+    #   原来这里写的是 `if kind == "echoes"`，于是套装/武器永远只走 bwiki、
+    #   缺的那些就一直是占位图 —— 用户发现"明明有图标为什么不加上去"。
+    kuro = kurobbs_icons() if kind in ("echoes", "sets", "weapons") else {}
     if kuro:
         print(f"  库街区兜底表里 {len(kuro)} 个图标 URL（wiki 查不到的会走它）")
 

@@ -335,8 +335,27 @@ def _fetch_kurobbs(log) -> tuple[dict[str, dict[int, list[str]]], dict[str, str]
     except Exception as exc:  # noqa: BLE001 - 套装图标拿不到不该让整次更新失败
         log(f"  套装图标（catalogue 1219）拉取失败：{exc}")
 
+    # ★ 角色 / 武器图标（2026-09-30 用户："这些素材街区也完全可以取到，
+    #   同样可以放到资源库"）。抽卡卡片墙要显示头像，靠的就是这两份。
+    #   1105 = 共鸣者（角色）、1106 = 武器。
+    extra_icons = 0
+    for cid, label in (("1105", "角色"), ("1106", "武器")):
+        try:
+            more, _ = _kuro_page(cid, log)
+        except Exception as exc:  # noqa: BLE001 - 拿不到不该让整次更新失败
+            log(f"  {label}图标（catalogue {cid}）拉取失败：{exc}")
+            continue
+        for record in more:
+            name = str(record.get("name", "")).strip()
+            content = record.get("content") or {}
+            url = str(content.get("contentUrl", "") or "").strip()
+            if name and url.startswith("http") and name not in icon_urls:
+                icon_urls[name] = url
+                extra_icons += 1
+
     log(f"  库街区：{len(records)} 条记录 / {len(icon_urls)} 个图标 URL "
-        f"（含套装 {set_icon_count}）/ {len(set_tags)} 个套装标签")
+        f"（套装 {set_icon_count} / 角色武器 {extra_icons}）"
+        f" / {len(set_tags)} 个套装标签")
     return by_set, icon_urls
 
 

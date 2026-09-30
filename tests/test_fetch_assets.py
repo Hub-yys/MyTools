@@ -57,8 +57,70 @@ class TestKurobbsFallback(unittest.TestCase):
         self.assertIn('"avatars"', self.source)
         self.assertIn('"echoes"', self.source)
 
+    def test_kinds_table_has_weapons(self):
+        """★ 2026-09-30 新增武器：抽卡卡片墙要显示武器图。"""
+        self.assertIn('"weapons"', self.source)
+        self.assertIn("_weapon_items", self.source)
+
     def test_script_still_parses(self):
         ast.parse(self.source)
+
+
+class TestKurobbsCatalogueIds(unittest.TestCase):
+    """库街区 catalogueId 映射（抽卡卡片墙的素材来源）。"""
+
+    def test_mapping_covers_all_four(self):
+        """1105 角色 / 1106 武器 / 1107 声骸 / 1219 套装 —— 四个都要在。"""
+        from tools import fetch_wuwa_assets as fwa
+
+        for cid, label in (("1105", "角色"), ("1106", "武器"),
+                           ("1107", "声骸"), ("1219", "套装")):
+            with self.subTest(cid=cid):
+                self.assertEqual(fwa.KUROBBS_CATALOGUES.get(cid), label)
+
+    def test_weapon_items_use_weapon_catalogue(self):
+        """★ 武器清单要问 catalogue 1106，**不能**从 icon_urls 里猜。
+
+        icon_urls 是混在一起的（角色/武器/声骸都有），分不出哪个是武器 ——
+        我第一版就是那么写的，会把声骸名也当成武器去查。
+        """
+        import inspect
+
+        from tools import fetch_wuwa_assets as fwa
+
+        source = inspect.getsource(fwa._weapon_items)
+        self.assertIn("1106", source, "武器清单没走武器 catalogue")
+
+
+class TestIconUrlsCoverage(unittest.TestCase):
+    """``icon_urls`` 要覆盖抽卡卡片墙需要的三类素材。"""
+
+    def _urls(self) -> dict:
+        import json
+
+        path = ROOT / "src" / "core" / "data" / "wuwa_echo_skills.json"
+        return json.loads(path.read_text(encoding="utf-8")).get("icon_urls") or {}
+
+    def test_has_characters(self):
+        """角色头像 URL（卡片墙要显示角色图）。"""
+        urls = self._urls()
+        chars = [n for n in ("清宵", "维里奈", "安可", "凌阳") if n in urls]
+        self.assertGreaterEqual(len(chars), 3,
+                                f"角色图标没进 icon_urls：{chars}")
+
+    def test_has_weapons(self):
+        """★ 武器图 URL（用户要求"这些换成图片"）。"""
+        urls = self._urls()
+        weapons = [n for n in ("千古洑流", "云琅") if n in urls]
+        self.assertGreaterEqual(len(weapons), 1,
+                                f"武器图标没进 icon_urls：{weapons}")
+
+    def test_has_sets(self):
+        """套装图标（之前修过的 bug，别退回去）。"""
+        urls = self._urls()
+        for name in ("衔梦照世之心", "镜影流电之瞬", "茜染怀想之花"):
+            with self.subTest(name=name):
+                self.assertIn(name, urls)
 
 
 class TestIconUrlSource(unittest.TestCase):
