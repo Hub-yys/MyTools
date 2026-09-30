@@ -123,6 +123,86 @@ class TestIconUrlsCoverage(unittest.TestCase):
                 self.assertIn(name, urls)
 
 
+class TestEchoIconUrlsCoverage(unittest.TestCase):
+    """★ 每个声骸在 ``icon_urls`` 里都要有 URL —— 否则图鉴/配置页那一列是空的。
+
+    用户 2026-09-30 报："这里的图像为什么还是没加上？"（配置页选声骸那一列）
+    根因：3.7 新增的 3 套套装带来了 6 个新声骸，我给**套装**下了图标，
+    却**没给这些新声骸下** —— 那 6 行的声骸图标是空的。
+
+    这条钉住"数据里的每个声骸都有图源"，别再漏。
+    """
+
+    def test_every_echo_has_a_url(self):
+        import json
+
+        from src.core import game_data
+
+        game_data.ensure_loaded()
+        path = ROOT / "src" / "core" / "data" / "wuwa_echo_skills.json"
+        urls = json.loads(path.read_text(encoding="utf-8")).get("icon_urls") or {}
+
+        missing = [
+            echo.name
+            for items in game_data.ECHOES_BY_COST.values()
+            for echo in items
+            if echo.name not in urls
+        ]
+        self.assertEqual(
+            missing, [],
+            f"{len(missing)} 个声骸没有图标 URL（配置页/图鉴会显示空白）：{missing[:8]}")
+
+
+class TestIconFilesPresent(unittest.TestCase):
+    """★ 图标**文件**是否已下载到本地（``assets/game/``）。
+
+    ⚠ 这条只在**本机下过素材**时才有意义 —— ``assets/game/`` 是游戏素材、
+    不入库（`.gitignore`），克隆仓库后本来就缺。所以拿一个"肯定有"的文件
+    当探针：**只要角色头像下过**，就说明这台机器跑过 fetch_wuwa_assets，
+    那声骸图标也该齐。
+
+    这正是那个 bug 能被发现的地方：套装图标下过了（说明跑过脚本），
+    但新声骸的图没下 —— 靠"逐条比对数据 vs 磁盘"才看得出来。
+    """
+
+    def _assets_root(self):
+        return ROOT / "assets" / "game"
+
+    def test_no_echo_icon_files_missing(self):
+        from src.core import game_data
+
+        game_data.ensure_loaded()
+        root = self._assets_root()
+
+        avatars = root / "avatars"
+        if not avatars.is_dir() or not any(avatars.glob("*.png")):
+            self.skipTest("本机没下过素材（assets/game 不入库，属正常）")
+
+        missing = [
+            echo.name
+            for items in game_data.ECHOES_BY_COST.values()
+            for echo in items
+            if not (root / echo.icon).exists()
+        ]
+        self.assertEqual(
+            missing, [],
+            f"{len(missing)} 个声骸图标文件缺失（跑 "
+            f"`python tools/fetch_wuwa_assets.py --only echoes` 补）："
+            f"{missing[:8]}")
+
+    def test_no_weapon_icon_files_missing(self):
+        from src.core import game_data
+
+        game_data.ensure_loaded()
+        root = self._assets_root()
+        if not (root / "weapons").is_dir():
+            self.skipTest("本机没下过武器图")
+        missing = [w.name for w in game_data.WEAPONS
+                   if not (root / w.icon).exists()]
+        self.assertEqual(missing, [],
+                         f"{len(missing)} 个武器图标缺失：{missing[:8]}")
+
+
 class TestIconUrlSource(unittest.TestCase):
     """``icon_urls`` 里必须**同时**有套装和声骸的图标。"""
 
