@@ -212,6 +212,22 @@ class Pull:
 
     @classmethod
     def from_record(cls, record: dict, pool: str) -> "Pull":
+        """从接口记录构造一次抽卡。
+
+        ## ★ 星级字段叫 ``qualityLevel``，不是 ``rankType``
+
+        实测（2026-09-30，真实接口返回）::
+
+            {"cardPoolType": "角色精准调谐", "resourceId": 21040043,
+             "qualityLevel": 3, "resourceType": "武器",
+             "name": "远行者臂铠·破障", "count": 1, "time": "..."}
+
+        **星级是 ``qualityLevel``**（3/4/5）。我第一版按 ``rankType`` 取，
+        取不到就一律当 3 星 —— 于是界面上"850 抽 0 个五星"，统计全废。
+
+        ⚠ 教训：**别照抄别家的字段名**，要拿真实响应核对。
+        下面同时保留几个别名兜底，万一接口以后改名，不至于又整体退化成 3 星。
+        """
         record = record if isinstance(record, dict) else {}
         name = str(
             record.get("name")
@@ -219,10 +235,16 @@ class Pull:
             or record.get("itemName")
             or ""
         ).strip()
-        try:
-            star = int(record.get("rankType") or record.get("star") or 3)
-        except (TypeError, ValueError):
-            star = 3
+        star = 3
+        for key in ("qualityLevel", "rankType", "star", "quality"):
+            value = record.get(key)
+            if value is None or value == "":
+                continue
+            try:
+                star = int(value)
+            except (TypeError, ValueError):
+                continue
+            break
         return cls(
             name=name,
             star=star,

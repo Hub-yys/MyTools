@@ -260,13 +260,37 @@ class TestParseLink(unittest.TestCase):
 
 
 class TestPullParsing(unittest.TestCase):
-    def test_from_record_uses_rank_type(self):
+    def test_from_record_uses_qualityLevel(self):
+        """★ 星级字段叫 ``qualityLevel`` —— 这是**真实接口**的字段名。
+
+        实测（2026-09-30，真实响应）::
+
+            {"cardPoolType": "角色精准调谐", "resourceId": 21040043,
+             "qualityLevel": 3, "resourceType": "武器",
+             "name": "远行者臂铠·破障", "count": 1, "time": "..."}
+
+        我第一版按 ``rankType`` 取 → 取不到就一律当 3 星 →
+        界面上"850 抽 0 个五星"，整套统计全废。
+        这条钉住字段名，别再照抄别家的实现。
+        """
         pull = gacha.Pull.from_record(
-            {"name": "某角色", "rankType": 5, "resourceType": "角色",
+            {"name": "某角色", "qualityLevel": 5, "resourceType": "角色",
              "time": "2026-09-30 12:00:00"}, "角色活动唤取")
         self.assertEqual(pull.name, "某角色")
         self.assertEqual(pull.star, 5)
         self.assertEqual(pull.kind, "角色")
+
+    def test_star_four_also_read_from_qualityLevel(self):
+        pull = gacha.Pull.from_record({"name": "渊武", "qualityLevel": 4},
+                                      "角色活动唤取")
+        self.assertEqual(pull.star, 4)
+
+    def test_rankType_still_accepted_as_alias(self):
+        """别名兜底：万一接口换名字，不至于又整体退化成 3 星。"""
+        for key in ("rankType", "star", "quality"):
+            with self.subTest(key=key):
+                pull = gacha.Pull.from_record({"name": "x", key: 5}, "p")
+                self.assertEqual(pull.star, 5)
 
     def test_from_record_tolerates_junk(self):
         """字段缺失/类型不对不能炸（接口偶尔给脏数据）。"""

@@ -29,7 +29,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QSize, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -71,6 +71,9 @@ BAR_MAX = 260
 BAR_HEIGHT = 18
 #: 星级角标颜色
 STAR_COLORS = {5: "#d4a017", 4: "#9b59b6", 3: "#5a8fd4"}
+
+#: 列表里每行头像的边长 —— 和配置页/任务行同一个尺寸（48），观感统一
+AVATAR_SIZE = 48
 
 
 class GrabLinkThread(QThread):
@@ -493,13 +496,22 @@ class GachaWidget(ScrollArea):
             self.cards_grid.addWidget(card, index // columns, index % columns)
 
     def _pool_block(self, pool) -> QWidget:
-        """一个卡池一块：标题 + 每行一个五星（名字 + 抽数条 + 歪标）。"""
+        """一个卡池一块：标题行 + **逐条五星**（头像 + 抽数条 + 歪标 + 时间）。
+
+        ★ 这是工坊那条列表的核心视觉（用户 2026-09-30："差在逐条抽数条列表"）：
+
+            [头像] ████████████ 68抽                    (歪)
+            [头像] ██████ 33抽
+            [头像] ███████████████ 81抽                 (歪)
+
+        条的**长度**按抽数走、**颜色**按欧非分级（绿→黄→红）。
+        """
         card = CardWidget(self.pools_host)
         box = QVBoxLayout(card)
         box.setContentsMargins(16, 12, 16, 12)
-        box.setSpacing(6)
+        box.setSpacing(4)
 
-        # 标题行：池名 + 概要
+        # 标题行：池名 + 概要 + 当前垫抽
         head = QHBoxLayout()
         head.setSpacing(14)
         title = BodyLabel(pool.name, card)
@@ -521,32 +533,73 @@ class GachaWidget(ScrollArea):
             head.addWidget(tag)
         box.addLayout(head)
 
+        # 分隔线（工坊那里也有一条）
+        line = QWidget(card)
+        line.setFixedHeight(1)
+        line.setStyleSheet("background: rgba(128,128,128,0.25);")
+        box.addWidget(line)
+
         # 每条五星：时间倒序（最新在最上）
-        for five in reversed(pool.fives_analysis()):
+        fives = list(reversed(pool.fives_analysis()))
+        if not fives:
+            empty = CaptionLabel("这个池还没出过五星。", card)
+            empty.setTextColor(*MUTED)
+            box.addWidget(empty)
+            return card
+        for five in fives:
             box.addWidget(self._five_row(five, card))
         return card
 
     def _five_row(self, five, parent) -> QWidget:
+        """一条五星记录：头像 + 抽数条（左对齐）+ 歪标 + 时间。"""
         row_widget = QWidget(parent)
         row = QHBoxLayout(row_widget)
-        row.setContentsMargins(0, 0, 0, 0)
+        row.setContentsMargins(0, 3, 0, 3)
         row.setSpacing(10)
 
-        name = BodyLabel(five.name or "（未收录）", row_widget)
-        name.setFixedWidth(150)
-        row.addWidget(name)
+        # 头像（拿不到就留一个等宽占位，保持左边对齐）
+        avatar = self._five_avatar(five, row_widget)
+        row.addWidget(avatar, 0, Qt.AlignmentFlag.AlignVCenter)
 
-        # 抽数条（带颜色）。列表里显示的是 **span**（这个金花了几抽），
-        # 不是 cumulative（那是大保底口径，见 gacha.FiveStar 的说明）
-        row.addWidget(_SpanBar(five.span, row_widget))
+        # 抽数条：显示 **span**（这个金花了几抽），不是 cumulative
+        # （cumulative 是大保底口径，见 gacha.FiveStar 的说明）
+        row.addWidget(_SpanBar(five.span, row_widget), 0,
+                      Qt.AlignmentFlag.AlignVCenter)
 
         row.addStretch(1)
         if five.is_lost:
             lost = CaptionLabel("歪", row_widget)
             lost.setTextColor("#c0392b", "#e07070")
-            row.addWidget(lost)
-        row.addWidget(CaptionLabel(five.time, row_widget))
+            row.addWidget(lost, 0, Qt.AlignmentFlag.AlignVCenter)
+        time_label = CaptionLabel(five.time, row_widget)
+        time_label.setTextColor(*MUTED)
+        row.addWidget(time_label, 0, Qt.AlignmentFlag.AlignVCenter)
         return row_widget
+
+    def _five_avatar(self, five, parent) -> QWidget:
+        """五星的头像 —— 角色/武器查 ``game_data``；查不到就用首字兜底图。
+
+        ⚠ 和「配置页 / 任务行」用的是**同一套** :func:`avatar_icon`：
+        查不到图就按名字首字现画一个圆图，不留白（否则左边一列参差不齐）。
+        """
+        from qfluentwidgets import IconWidget
+
+        from ....core import game_data
+        from ....gui.pickers import avatar_icon
+
+        icon = None
+        try:
+            if five.kind == "武器":
+                icon = avatar_icon("", five.name)
+            else:
+                info = game_data.find_character(five.name)
+                icon = avatar_icon(info.avatar if info else "", five.name)
+        except Exception:  # noqa: BLE001 - 资料没加载好也不该让行建不出来
+            icon = avatar_icon("", five.name)
+
+        holder = IconWidget(icon, parent)
+        holder.setFixedSize(QSize(AVATAR_SIZE, AVATAR_SIZE))
+        return holder
 
 
 @registry.register(
