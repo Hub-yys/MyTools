@@ -242,23 +242,48 @@ def _to_int(value) -> int:
         return 0
 
 
-def _fetch_kurobbs(log) -> tuple[dict[str, dict[int, list[str]]], dict[str, str]]:
-    log("拉取库街区官方数据（getPage）…")
-    body = urllib.parse.urlencode({"catalogueId": "1107", "page": "1", "limit": "1000"}).encode()
+def _kuro_page(catalogue_id: str, log) -> tuple[list[dict], dict]:
+    """拉库街区某一类（catalogue）的全部条目。
+
+    返回 ``(records, tagTree)``。``catalogueId`` 映射（2026-09-30 实测）：
+
+    ============  ==================  ====
+    catalogueId   内容                条数
+    ============  ==================  ====
+    1105          共鸣者（角色）        64
+    1106          武器                 123
+    1107          声骸                 205
+    1219          合鸣效果（套装）      37
+    ============  ==================  ====
+
+    ⚠ 网页 URL 是 ``?fid=1099&sid=1219`` —— **``sid`` 才是 catalogueId**。
+    把 ``fid``（1099）传进来会返回 **0 条且 ``code=200``**（静默空，不报错），
+    很容易被误判成"这类没有数据"。
+    """
+    body = urllib.parse.urlencode(
+        {"catalogueId": str(catalogue_id), "page": "1", "limit": "1000"}
+    ).encode()
     headers = {
         "User-Agent": _UA,
         "Content-Type": "application/x-www-form-urlencoded",
         "wiki_type": "9",
     }
     data = _get_json(KUROBBS_PAGE, headers, body)
-    records = data["data"]["results"]["records"]
+    payload = data.get("data") or {}
+    records = (payload.get("results") or {}).get("records") or []
+    return list(records), payload.get("tagTree") or {}
+
+
+def _fetch_kurobbs(log) -> tuple[dict[str, dict[int, list[str]]], dict[str, str]]:
+    log("拉取库街区官方数据（getPage）…")
+    records, tag_tree = _kuro_page("1107", log)
 
     # tagTree 是一棵树：根的 children 里有「套装」（34 个子节点才是套装标签）、
     # 「COST」（COST 4/3/1）、「级别」「异相声骸」等分组。
     # **只**把「套装」分组的子节点当套装 —— 不然 COST/级别标签会被当成套装名。
     set_tags: dict[str, str] = {}
     cost_tags: dict[str, int] = {}
-    for group in data["data"].get("tagTree", {}).get("children", []) or []:
+    for group in tag_tree.get("children", []) or []:
         group_name = str(group.get("name", "") or "")
         if group_name == "套装":
             for child in group.get("children", []) or []:
@@ -291,7 +316,27 @@ def _fetch_kurobbs(log) -> tuple[dict[str, dict[int, list[str]]], dict[str, str]
             bucket = by_set.setdefault(set_name, {}).setdefault(cost, [])  # cost=0 是「记录没打 COST 标」
             if name not in bucket:
                 bucket.append(name)
-    log(f"  库街区：{len(records)} 条记录 / {len(icon_urls)} 个图标 URL / {len(set_tags)} 个套装标签")
+
+    # ★ 套装图标：**另一个 catalogue**（1219「合鸣效果」）。
+    #   ⚠ 声骸那份（1107）里**没有套装图标** —— 它的记录全是声骸，
+    #   所以只从 1107 取 icon_urls 的话，套装图标永远是缺的
+    #   （用户 2026-09-30 就是发现"明明有图标为什么不加上去"）。
+    set_icon_count = 0
+    try:
+        set_records, _ = _kuro_page("1219", log)
+        for record in set_records:
+            name = str(record.get("name", "")).strip()
+            content = record.get("content") or {}
+            url = str(content.get("contentUrl", "") or "").strip()
+            # ⚠ 用 setdefault：声骸那份**优先**（名字重名时别被覆盖）
+            if name and url.startswith("http") and name not in icon_urls:
+                icon_urls[name] = url
+                set_icon_count += 1
+    except Exception as exc:  # noqa: BLE001 - 套装图标拿不到不该让整次更新失败
+        log(f"  套装图标（catalogue 1219）拉取失败：{exc}")
+
+    log(f"  库街区：{len(records)} 条记录 / {len(icon_urls)} 个图标 URL "
+        f"（含套装 {set_icon_count}）/ {len(set_tags)} 个套装标签")
     return by_set, icon_urls
 
 

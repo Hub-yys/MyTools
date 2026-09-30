@@ -146,6 +146,76 @@ class TestKuroOnlySets(unittest.TestCase):
         self.assertEqual(report.new_sets, ["新套装甲"])
 
 
+class TestSetIcons(unittest.TestCase):
+    """★ 套装图标要走**另一个 catalogue**（1219），不能只从声骸那份（1107）拿。
+
+    2026-09-30 用户报："这里明明已经有了套装图标，为什么不加上去？"
+    根因：``icon_urls`` 只从 catalogue 1107（声骸）取，而**套装图标在 1219**，
+    所以套装图标永远是缺的、只能退化成占位图。
+    """
+
+    def test_kuro_page_maps_catalogue_ids(self):
+        """catalogueId 映射表要写对：网页 URL 的 ``sid`` 才是 catalogueId。
+
+        传 ``fid``（1099）会返回 0 条且 ``code=200``（**静默空**），
+        很容易被误判成"这类没数据"。
+        """
+        import inspect
+
+        from src.core import wuwa_update
+
+        source = inspect.getsource(wuwa_update._kuro_page)
+        for cid in ("1105", "1106", "1107", "1219"):
+            self.assertIn(cid, source, f"catalogueId 映射里少了 {cid}")
+
+    def test_set_icons_merged_from_1219(self):
+        """套装图标记录要能被并进 ``icon_urls``（用假页面测，不打网络）。"""
+        import unittest.mock as mock
+
+        from src.core import wuwa_update
+
+        echo_page = (
+            [{"name": "某声骸", "content": {"contentUrl": "http://x/echo.png",
+                                          "relateTagIds": []}}],
+            {},
+        )
+        set_page = (
+            [
+                {"name": "新套装甲",
+                 "content": {"contentUrl": "http://x/setA.png"}},
+                {"name": "某声骸", "content": {"contentUrl": "http://x/evil.png"}},
+            ],
+            {},
+        )
+
+        def fake_page(cid, log):
+            return set_page if str(cid) == "1219" else echo_page
+
+        with mock.patch.object(wuwa_update, "_kuro_page", side_effect=fake_page):
+            _by_set, icon_urls = wuwa_update._fetch_kurobbs(lambda _m: None)
+
+        self.assertEqual(icon_urls.get("新套装甲"), "http://x/setA.png")
+        # ⚠ 重名时**声骸那份优先**，不能被套装页覆盖
+        self.assertEqual(icon_urls.get("某声骸"), "http://x/echo.png")
+
+    def test_missing_set_icons_are_tolerated(self):
+        """套装图标那一页拉失败**不该让整次更新挂掉**（图标是锦上添花）。"""
+        import unittest.mock as mock
+
+        from src.core import wuwa_update
+
+        echo_page = ([], {})
+
+        def fake_page(cid, log):
+            if str(cid) == "1219":
+                raise RuntimeError("这一页挂了")
+            return echo_page
+
+        with mock.patch.object(wuwa_update, "_kuro_page", side_effect=fake_page):
+            _by_set, icon_urls = wuwa_update._fetch_kurobbs(lambda _m: None)
+        self.assertEqual(icon_urls, {})
+
+
 class TestMergeSetsData(unittest.TestCase):
     def test_append_new_set(self):
         local = _local()

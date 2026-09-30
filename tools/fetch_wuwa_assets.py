@@ -203,8 +203,12 @@ def run_kind(kind: str, skip_existing: bool, list_only: bool) -> tuple[int, int,
     if list_only:
         return 0, 0, []
 
-    # 声骸图缺得多（bwiki 只收了 181 个里的 130 个）→ 用库街区兜底
-    kuro = kurobbs_icons() if kind == "echoes" else {}
+    # 声骸图缺得多（bwiki 只收了 181 个里的 130 个）→ 用库街区兜底；
+    # ★ 套装图标同理（2026-09-30 补）：bwiki 的套装图标页不全，
+    #   而库街区那份 icon_urls 里**有全部套装图标**（catalogue 1219）。
+    #   原来这里写的是 `if kind == "echoes"`，于是套装图标永远只走 bwiki、
+    #   缺的那几套就一直是占位图 —— 用户发现"明明有图标为什么不加上去"。
+    kuro = kurobbs_icons() if kind in ("echoes", "sets") else {}
     if kuro:
         print(f"  库街区兜底表里 {len(kuro)} 个图标 URL（wiki 查不到的会走它）")
 
