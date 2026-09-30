@@ -67,6 +67,7 @@ from .pickers import (
     CHARACTER_BOX_HINT,
     CHARACTER_BOX_WIDTH,
     FilterComboBox,
+    avatar_icon,
     load_icon,
     pinyin_keys,
 )
@@ -459,7 +460,10 @@ def step_icon(step):
         meta = ToolRegistry.get_meta(step.key)
         return tool_icon_of(meta) if meta else QIcon()
     avatar = live_config_avatar(step)
-    return load_icon(avatar) if avatar else QIcon()
+    # 图没拿到就用配置名首字现画一个（用户 2026-09-28 要求）
+    if avatar:
+        return avatar_icon(avatar, live_config_name(step))
+    return QIcon()
 
 
 def step_row_data(step) -> dict:
@@ -615,7 +619,7 @@ class TaskEditorDialog(MessageBoxBase):
         self.character_box.setFixedWidth(CHARACTER_BOX_WIDTH)
         self.character_box.setPlaceholderText(CHARACTER_BOX_HINT)
         self.character_box.set_choices(
-            [(c.name, load_icon(c.avatar)) for c in game_data.CHARACTERS])
+            [(c.name, avatar_icon(c.avatar, c.name)) for c in game_data.CHARACTERS])
         # 回填：老流程名不是"角色+后缀"格式时（「日常清声骸」）填不进下拉，
         # 这时留空 + 给一句提示，让用户重新选一个角色（见下面那行 stale 提示）。
         self.character_box.setText(flow_character_of(self.flow.name))
@@ -821,7 +825,7 @@ class TaskEditorDialog(MessageBoxBase):
                     text,
                     {"type": STEP_CONFIG, "key": item_key, "name": item_name,
                      "config_kind": kind},
-                    icon=self._config_icon(item_avatar),
+                    icon=self._config_icon(item_avatar, item_name),
                 )
 
     def _config_entries(self) -> list[tuple[str, str, str, str]]:
@@ -876,11 +880,9 @@ class TaskEditorDialog(MessageBoxBase):
         return info.avatar if info is not None else ""
 
     @staticmethod
-    def _config_icon(avatar: str):
-        """头像相对路径 → QIcon；拿不到给空 QIcon（不画占位图）。"""
-        from PySide6.QtGui import QIcon
-
-        return load_icon(avatar) if avatar else QIcon()
+    def _config_icon(avatar: str, name: str = ""):
+        """头像相对路径 → QIcon；**图没拿到就用首字现画一个**（用户 2026-09-28 要求）。"""
+        return avatar_icon(avatar or "", name)
 
     _MARKER_TEXTS = {STEP_START: "[开始] 开始", STEP_END: "[结束] 结束"}
 

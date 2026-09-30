@@ -1,13 +1,17 @@
 {
   "_source": [
     "https://wiki.biligame.com/wutheringwaves/共鸣者 （中文名）",
-    "https://d33cu3a0euznna.cloudfront.net/2026/09/wuthering-waves-characters-guide （属性 / 武器 / 稀有度）"
+    "https://d33cu3a0euznna.cloudfront.net/2026/09/wuthering-waves-characters-guide （属性 / 武器 / 稀有度）",
+    "https://www.9game.cn/mingchao/12114086.html （3.7 新角色「心」「锁暝」，2026-09-30 手工补录）"
   ],
   "_fetched": "2026-09-21",
-  "_game_version": "3.6",
+  "_game_version": "3.7",
   "_note": "角色名单与属性整理自公开 wiki / 攻略站。属性与武器是从英文站映射回中文的，未经逐条校对 —— 发现对不上直接改本文件即可。",
+  "_manual": "3.7 的「心」「锁暝」是**手工补的** —— bwiki 当时还没建这两个角色的页面，「资源库更新」拉不到。等 wiki 建页后自动更新会以远端为准（属性/武器非空值覆盖，稀有度只在本地为 0 时才写）。",
   "_icons": "头像为程序生成的占位图。把游戏头像按 assets/game/avatars/<角色名>.png 覆盖同名文件即可（游戏里换头像那个界面就能截）。",
   "characters": [
+    { "name": "心", "rarity": 5, "element": "导电", "weapon": "音感仪" },
+    { "name": "锁暝", "rarity": 5, "element": "导电", "weapon": "迅刀" },
     { "name": "景燃", "rarity": 5, "element": "热熔", "weapon": "长刃" },
     { "name": "清宵", "rarity": 5, "element": "气动", "weapon": "迅刀" },
     { "name": "穗穗", "rarity": 5, "element": "冷凝", "weapon": "音感仪" },

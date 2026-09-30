@@ -41,7 +41,7 @@ from .echo_profile_ui import (
     config_display_name,
 )
 from .loadout_dialog import LoadoutDetailDialog, LoadoutDialog
-from .pickers import load_icon
+from .pickers import avatar_icon, load_icon
 
 #: 行内边距 / 元素间距
 ROW_PADDING = 16
@@ -134,7 +134,8 @@ class LoadoutRow(SimpleCardWidget):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(4)
 
-        avatar = load_icon(self.loadout.display_avatar)
+        # 图没拿到就用角色名首字现画一个（用户 2026-09-28 要求）
+        avatar = avatar_icon(self.loadout.display_avatar, self.loadout.character)
         holder: QWidget = IconWidget(avatar, box) if not avatar.isNull() else QLabel(box)
         holder.setFixedSize(QSize(ROW_AVATAR_SIZE, ROW_AVATAR_SIZE))
         column.addWidget(holder, 0, Qt.AlignmentFlag.AlignHCenter)

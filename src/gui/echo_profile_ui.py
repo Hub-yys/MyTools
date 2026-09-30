@@ -30,7 +30,7 @@ from qfluentwidgets import (
 
 from ..core.echo_profile import MAX_NAME_LENGTH, EchoProfile
 from .compat import ElidedLabel
-from .pickers import CHARACTER_BOX_HINT, CHARACTER_BOX_WIDTH
+from .pickers import CHARACTER_BOX_HINT, CHARACTER_BOX_WIDTH, avatar_icon
 
 #: 和 config_interface 里那套保持一致
 ROW_PADDING = 16
@@ -197,7 +197,7 @@ class EchoProfileDialog(MessageBoxBase):
         self.characterBox.setPlaceholderText(CHARACTER_BOX_HINT)
         # 已被占用的角色不放进来 —— "一个角色只能有一条"的第一道（第二道在 validate）
         self.characterBox.set_choices([
-            (c.name, load_icon(c.avatar))
+            (c.name, avatar_icon(c.avatar, c.name))
             for c in self._characters if c.name not in self._taken
         ])
         if self._original:
@@ -367,12 +367,14 @@ class EchoProfileRow(SimpleCardWidget):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(4)
 
-        # 名字就是角色名 → 用那个角色的头像；对不上就留空（不画占位图）
+        # 名字就是角色名 → 用那个角色的头像；**图没拿到就用首字现画一个**
+        # （用户 2026-09-28："如果角色头像没拿到，先用第一个字填充"）——
+        # 新角色是刚被资源库更新拉进来的，那一刻本地必然没有头像图。
         avatar = None
         try:
             info = game_data.find_character(self.profile.name)
-            if info is not None and info.avatar:
-                avatar = load_icon(info.avatar)
+            path = info.avatar if info is not None else ""
+            avatar = avatar_icon(path or "", self.profile.name)
         except Exception:  # noqa: BLE001 - 资料没加载好也不该让行建不出来
             avatar = None
 

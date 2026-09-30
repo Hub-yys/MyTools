@@ -63,8 +63,14 @@ class TestCharacters(unittest.TestCase):
             self.assertIsNone(find_character(key), f"{key!r} 不该匹配到角色")
 
     def test_find_character_is_exact_not_partial(self):
-        # 半截输入不该联动头像
-        self.assertIsNone(find_character(CHARACTERS[0].name[:1]))
+        """半截输入不该联动头像。
+
+        ⚠ 用**名字长度 >1** 的角色来截，别拿 ``CHARACTERS[0]`` ——
+        3.7 的「心」是单字名，``name[:1]`` 就是它自己，这条会假失败。
+        """
+        target = next((c for c in CHARACTERS if len(c.name) > 1), None)
+        self.assertIsNotNone(target, "数据集里没有多字角色名，测不了")
+        self.assertIsNone(find_character(target.name[:1]))
 
 
 class TestMatchCharacters(unittest.TestCase):
@@ -121,8 +127,12 @@ class TestCharacterChoiceError(unittest.TestCase):
         self.assertEqual(character_choice_error(self.first, ["别的角色"]), "")
 
     def test_max_length_enforced_when_given(self):
-        # 用一个真实角色名 + 很短的 max_length 来验证长度这条
-        self.assertIn("太长", character_choice_error(self.first, (), 1))
+        # 用一个真实角色名 + 很短的 max_length 来验证长度这条。
+        # ⚠ 必须挑**名字比 max_length 长**的角色：3.7 的「心」只有 1 个字，
+        #   max_length=1 时它没超长，这条会假失败。
+        target = next((c for c in CHARACTERS if len(c.name) > 1), None)
+        self.assertIsNotNone(target, "数据集里没有多字角色名，测不了")
+        self.assertIn("太长", character_choice_error(target.name, (), 1))
 
     def test_max_length_optional(self):
         """不传 max_length 就不查长度 —— 角色从数据集里选时长度天然有界。"""

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -70,6 +71,74 @@ def load_icon(relative: str) -> QIcon:
     raw = Path(relative)
     path = raw if raw.is_absolute() else Path(icon_path(relative))
     return QIcon(str(path)) if path.exists() else QIcon()
+
+
+#: 首字占位图的配色（和 ``tools/make_placeholders.py`` 画的那套同源思路：
+#: 由名字散列出色相，所以同一个人每次都是同一个颜色）
+_FALLBACK_HUES = 360
+
+
+def avatar_icon(relative: str, name: str = "") -> QIcon:
+    """角色头像：**文件不在就用名字首字现画一个**（用户 2026-09-28 要求）。
+
+    "如果角色头像没拿到，先用第一个字填充"。
+
+    ## 为什么要在**运行时**画，而不是只提前生成好文件
+
+    新角色是「资源库更新」拉进来的 —— 那一刻 `assets/game/avatars/` 里
+    **不会有**对应的图（游戏素材按项目一贯处理不入库，要用户自己截）。
+    如果只是留白，用户看到的就是"名字有了、图是空的"，以为没生效。
+    这里兜一个首字圆图，至少一眼能认出是谁。
+
+    ## 和 ``make_placeholders.py`` 的关系
+
+    那个脚本是**离线**给全量角色铺占位图的；这个是**运行时**的兜底，
+    两者视觉一致（都是散列色相的圆 + 白色首字），所以看不出接缝。
+    """
+    icon = load_icon(relative)
+    if not icon.isNull():
+        return icon
+    return _initial_icon(name)
+
+
+def _initial_icon(name: str) -> QIcon:
+    """画一个"圆底 + 首字"的头像。
+
+    ⚠ 必须**先有 QApplication** 才能建 QPixmap/QPainter ——
+    调用点都在界面里，正常满足；万一没有就返回空图标（不抛）。
+    """
+    text = str(name or "").strip()
+    if not text:
+        return QIcon()
+    try:
+        from PySide6.QtCore import QRectF, Qt as _Qt
+        from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPixmap
+    except Exception:  # noqa: BLE001 - Qt 没装好时不该把界面拖崩
+        return QIcon()
+
+    size = 64
+    pix = QPixmap(size, size)
+    pix.fill(_Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # 色相由名字散列决定 —— 同一个人永远同一个颜色，不同人尽量错开
+        hue = (zlib.crc32(text.encode("utf-8")) % _FALLBACK_HUES)
+        base = QColor.fromHsv(hue, 90, 200)
+        painter.setBrush(QBrush(base))
+        painter.setPen(QPen(base.darker(115), 1))
+        painter.drawEllipse(QRectF(0, 0, size, size))
+
+        font = QFont()
+        font.setPixelSize(int(size * 0.52))
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor(255, 255, 255, 245))
+        painter.drawText(QRectF(0, 0, size, size),
+                         int(_Qt.AlignmentFlag.AlignCenter), text[0])
+    finally:
+        painter.end()
+    return QIcon(pix)
 
 
 def _make_item(text: str, icon: QIcon | None):

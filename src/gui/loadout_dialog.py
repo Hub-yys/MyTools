@@ -66,6 +66,7 @@ from .pickers import (
     EchoPickRow,
     FilterComboBox,
     IconComboBox,
+    avatar_icon,
     load_icon,
 )
 
@@ -204,7 +205,7 @@ class LoadoutDialog(MessageBoxBase):
         self.character_combo.setPlaceholderText(CHARACTER_BOX_HINT)
         # 已被别的配置占用的角色不放进来（第一道；第二道在 validate）
         self.character_combo.set_choices(
-            [(c.name, load_icon(c.avatar)) for c in CHARACTERS
+            [(c.name, avatar_icon(c.avatar, c.name)) for c in CHARACTERS
              if c.name not in self._taken]
         )
         self.character_combo.textChanged.connect(self._on_character_changed)
@@ -371,7 +372,10 @@ class LoadoutDialog(MessageBoxBase):
                 return
 
         info = find_character(self.character_combo.text())
-        self.avatar_view.setIcon(load_icon(info.avatar) if info else QIcon())
+        # 图没拿到就用首字现画（新角色本地必然还没有头像图）
+        self.avatar_view.setIcon(
+            avatar_icon(info.avatar if info else "",
+                        self.character_combo.text().strip()))
 
     def _on_change_avatar(self) -> None:
         """手动挑一张头像图，之后就不再跟角色联动。"""
@@ -599,7 +603,7 @@ class LoadoutDetailDialog(MessageBoxBase):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(12)
 
-        avatar = load_icon(self.loadout.display_avatar)
+        avatar = avatar_icon(self.loadout.display_avatar, self.loadout.character)
         view = IconWidget(avatar, holder) if not avatar.isNull() else QWidget(holder)
         view.setFixedSize(QSize(52, 52))
         row.addWidget(view)
