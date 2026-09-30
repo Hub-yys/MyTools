@@ -57,6 +57,7 @@ ROW_CHROME = (ROW_PADDING * 2 + ROW_LEFT_WIDTH + ROW_BUTTON_WIDTH * 3
 #: 里面**没有** type 字段，类型只是界面上的选择。
 from .config_names import (  # noqa: E402 - 见上方说明
     CONFIG_TYPES,
+    TYPE_BATTLE_PROFILE,
     TYPE_ECHO_PROFILE,
     TYPE_LOADOUT,
     config_display_name,
@@ -65,6 +66,7 @@ from .config_names import (  # noqa: E402 - 见上方说明
 
 __all__ = [
     "CONFIG_TYPES",
+    "TYPE_BATTLE_PROFILE",
     "TYPE_ECHO_PROFILE",
     "TYPE_LOADOUT",
     "ConfigTypeDialog",
@@ -86,8 +88,9 @@ class ConfigTypeDialog(MessageBoxBase):
 
         hint = CaptionLabel(
             f"「{TYPE_LOADOUT}」= 角色 + 声骸套装 + 各档声骸；\n"
-            f"「{TYPE_ECHO_PROFILE}」= 一套强化判定条件（核心属性 / 双爆下限 / 有效词条数…）。\n"
-            "两者互不影响：强化配置只是存着，不改变强化工具自己的设置。",
+            f"「{TYPE_ECHO_PROFILE}」= 一套强化判定条件（核心属性 / 双爆下限 / 有效词条数…）；\n"
+            f"「{TYPE_BATTLE_PROFILE}」= 一个角色的技能快捷键 / 链路 / 战斗脚本。\n"
+            "三者互不影响：后两类只是存着，不改变各自工具自己的设置。",
             self,
         )
         hint.setTextColor("#8A8F98", "#7C7C7C")

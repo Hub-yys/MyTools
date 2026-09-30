@@ -321,6 +321,22 @@ class GachaWidget(ScrollArea):
         note.setWordWrap(True)
         self.root.addWidget(note)
 
+        # ---- 怎么获取（用户 2026-09-30："上方加上怎么获取抽卡记录的说明"）----
+        # ⚠ 这段要**先于按钮**出现：用户卡住的点就是"点按钮没反应怎么办"。
+        # ⚠ 别写 Markdown 星号 —— Qt 的 QLabel 不解析 markdown（实测踩过）。
+        howto = CaptionLabel(
+            "怎么获取：\n"
+            "① 点下面「获取抽卡记录」—— 自动从本机游戏日志里读出链接并填好；\n"
+            "② 如果没读到，就手动取：游戏里　唤取 → 唤取记录 → "
+            "打开页面后多翻几页 → 复制页面链接 → 粘到输入框。\n"
+            "⚠ 链接有时效：取完尽快粘过来；放久了会提示「请求游戏获取日志异常」，"
+            "那时回游戏重新打开一次唤取记录页再复制即可。",
+            view,
+        )
+        howto.setTextColor(*MUTED)
+        howto.setWordWrap(True)
+        self.root.addWidget(howto)
+
         # ---- 取链接行：自动获取（主）+ 手动粘贴（兜底）----
         # ⚠ 这里**不能写 Markdown 星号** —— Qt 的 QLabel 不解析 markdown，
         #   写了会原样显示成「**xxx**」（实测踩过）。

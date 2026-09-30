@@ -414,6 +414,19 @@ def main() -> int:
     )
 
     cfg = ConfigInterface()
+    # ⚠ 每一类都要**有至少一条**才会显示小标题（空分类不摆标题）——
+    #   用户数据里可能一条「角色战斗」都没有，所以这里先塞一条进去，
+    #   否则会误报"小标题没用到常量"（实际是那一类空着）。
+    #   塞的这条走临时 store，跑完不影响真实数据。
+    import pathlib as _pathlib
+    import tempfile as _tempfile
+
+    from src.core.battle_profile import BattleProfile, BattleProfileStore
+
+    _probe = BattleProfile(name="绯雪探针")
+    cfg.battles = BattleProfileStore(
+        _pathlib.Path(_tempfile.mkdtemp()) / "battle_profiles.json")
+    cfg.battles.add(_probe)
     cfg.reload()
     app.processEvents()
     titles = {w.text() for w in cfg.findChildren(StrongBodyLabel)}

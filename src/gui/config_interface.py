@@ -27,13 +27,16 @@ from qfluentwidgets import (
     StrongBodyLabel,
 )
 
+from ..core.battle_profile import BattleProfile, BattleProfileStore
 from ..core.echo_profile import EchoProfileStore
 from ..core.loadout import Loadout, LoadoutStore
 from ..core.registry import logger
 from .compat import CaptionLabel, ElidedLabel, SearchLineEdit, TitleLabel, resolve_icon
-from .config_names import KIND_ECHO_PROFILE, KIND_LOADOUT
+from .config_names import KIND_BATTLE_PROFILE, KIND_ECHO_PROFILE, KIND_LOADOUT
 from .pickers import matches_keyword, pinyin_keys
+from .battle_profile_ui import BattleProfileDialog, BattleProfileRow
 from .echo_profile_ui import (
+    TYPE_BATTLE_PROFILE,
     TYPE_ECHO_PROFILE,
     TYPE_LOADOUT,
     ConfigTypeDialog,
@@ -176,6 +179,8 @@ class ConfigInterface(ScrollArea):
         self.store = LoadoutStore()
         #: 声骸自动强化的多套配置
         self.profiles = EchoProfileStore()
+        #: ★ 角色战斗配置（2026-09-30 新增，用户要求）
+        self.battles = BattleProfileStore()
         self._migrate_profiles()
 
         self.view = QWidget(self)
@@ -290,15 +295,18 @@ class ConfigInterface(ScrollArea):
 
         all_loadouts = self.store.all()
         all_profiles = self.profiles.all()
+        all_battles = self.battles.all()
         keyword = self._keyword()
         loadouts = [x for x in all_loadouts if self._matches_search(x.character)]
         profiles = [x for x in all_profiles if self._matches_search(x.name)]
+        battles = [x for x in all_battles if self._matches_search(x.name)]
 
         self.subtitle.setText(self._subtitle_text(
-            loadouts, profiles, all_loadouts, all_profiles, keyword))
+            loadouts, profiles, battles,
+            all_loadouts, all_profiles, all_battles, keyword))
         self.subtitle.setVisible(True)
 
-        if not loadouts and not profiles:
+        if not loadouts and not profiles and not battles:
             self.list_layout.addWidget(self._empty_hint(keyword))
             return
 
@@ -311,6 +319,16 @@ class ConfigInterface(ScrollArea):
                 row.editRequested.connect(self.edit_profile)
                 row.viewRequested.connect(self.view_profile)
                 row.deleteRequested.connect(self.delete_profile)
+                self.list_layout.addWidget(row)
+
+        # ---- 角色战斗配置（★ 2026-09-30 新增）----
+        if battles:
+            self.list_layout.addWidget(self._section(TYPE_BATTLE_PROFILE))
+            for battle in battles:
+                row = BattleProfileRow(battle, parent=self.list_host)
+                row.editRequested.connect(self.edit_battle)
+                row.viewRequested.connect(self.view_battle)
+                row.deleteRequested.connect(self.delete_battle)
                 self.list_layout.addWidget(row)
 
         # ---- 角色声骸筛选配置 ----
@@ -327,7 +345,8 @@ class ConfigInterface(ScrollArea):
         self._last_row_width = -1
         self._apply_row_width()
 
-    def _subtitle_text(self, loadouts, profiles, all_loadouts, all_profiles,
+    def _subtitle_text(self, loadouts, profiles, battles,
+                       all_loadouts, all_profiles, all_battles,
                        keyword: str) -> str:
         """副标题：搜索时显示"命中多少 / 共多少"，没搜索就显示总数。
 
@@ -336,10 +355,11 @@ class ConfigInterface(ScrollArea):
         if not keyword:
             return "共 " + " · ".join((
                 _type_count(len(all_profiles), TYPE_ECHO_PROFILE),
+                _type_count(len(all_battles), TYPE_BATTLE_PROFILE),
                 _type_count(len(all_loadouts), TYPE_LOADOUT),
             ))
-        hit = len(profiles) + len(loadouts)
-        total = len(all_profiles) + len(all_loadouts)
+        hit = len(profiles) + len(loadouts) + len(battles)
+        total = len(all_profiles) + len(all_loadouts) + len(all_battles)
         return f"搜索「{keyword}」：命中 {hit} / 共 {total} 条"
 
     def _empty_hint(self, keyword: str) -> QWidget:
@@ -380,19 +400,22 @@ class ConfigInterface(ScrollArea):
         if avail == self._last_row_width:
             return
         self._last_row_width = avail
-        # ⚠ findChildren 只接单个类型（给元组会 TypeError），两类各查一次
-        for cls in (LoadoutRow, EchoProfileRow):
+        # ⚠ findChildren 只接单个类型（给元组会 TypeError），三类各查一次
+        for cls in (LoadoutRow, EchoProfileRow, BattleProfileRow):
             for row in self.findChildren(cls):
                 row.set_summary_width(avail)
 
     # ---------------------------------------------------------------- 动作
     def open_add_dialog(self) -> None:
-        """新增 —— 先问建哪一类（2026-09-26 起有两类配置）。"""
+        """新增 —— 先问建哪一类（现在有三类配置）。"""
         chooser = ConfigTypeDialog(self.window())
         if not chooser.exec():
             return
-        if chooser.chosen_type() == TYPE_ECHO_PROFILE:
+        chosen = chooser.chosen_type()
+        if chosen == TYPE_ECHO_PROFILE:
             self.add_echo_profile()
+        elif chosen == TYPE_BATTLE_PROFILE:
+            self.add_battle()
         else:
             # 已被占用的角色传进去 —— 新增时"一个角色只能有一条"
             dialog = LoadoutDialog(
@@ -482,6 +505,71 @@ class ConfigInterface(ScrollArea):
         if profile is None:
             return
         EchoProfileDialog(self.window(), profile=profile, read_only=True).exec()
+
+    # ------------------------------------------------ 角色战斗（★ 2026-09-30）
+    def _new_battle_dialog(self) -> BattleProfileDialog:
+        """构造"新增"用的弹框（单独抽出来便于检查脚本直接构造）。"""
+        return BattleProfileDialog(
+            self.window(), profile=None,
+            taken_chars=self.battles.occupied_characters())
+
+    def add_battle(self) -> None:
+        """新增一条「角色战斗」配置。
+
+        * **角色只能从下拉里选**（已被占用的选不到）；
+        * 起点：快捷键 Q/E/R、链路 0、脚本空（见 ``DEFAULT_SKILL_KEYS``）。
+        """
+        dialog = self._new_battle_dialog()
+        if not dialog.exec():
+            return
+        self.battles.add(dialog.result_profile())
+        self.reload()
+
+    def edit_battle(self, name: str) -> None:
+        """改快捷键 / 链路 / 战斗脚本。角色也能换（但不能换成已被占用的）。"""
+        profile = self.battles.get(name)
+        if profile is None:
+            return
+        dialog = BattleProfileDialog(
+            self.window(), profile=profile,
+            taken_chars=self.battles.occupied_characters())
+        if not dialog.exec():
+            return
+        new_name = dialog.profile_name()
+        if new_name and new_name != profile.name:
+            self.battles.rename(profile.name, new_name)      # 换角色
+            profile = self.battles.get(new_name) or profile
+        updated = dialog.result_profile()
+        profile.skill_keys = updated.skill_keys
+        profile.chain = updated.chain
+        profile.script = updated.script
+        self.battles.update(profile)
+        self.reload()
+
+    def view_battle(self, name: str) -> None:
+        """只读地看一眼这套配置。"""
+        profile = self.battles.get(name)
+        if profile is None:
+            return
+        BattleProfileDialog(self.window(), profile=profile,
+                            read_only=True).exec()
+
+    def delete_battle(self, name: str) -> None:
+        profile = self.battles.get(name)
+        keys = [k for k in ((profile.id if profile else ""), name) if k]
+        if self._blocked_by_flows(
+                KIND_BATTLE_PROFILE,
+                f"「{config_display_name(TYPE_BATTLE_PROFILE, name)}」", *keys):
+            return
+
+        box = MessageBox("删除配置",
+                         f"确定删除「{config_display_name(TYPE_BATTLE_PROFILE, name)}」"
+                         "这条配置吗？删掉就找不回来了。", self.window())
+        box.yesButton.setText("删除")
+        box.cancelButton.setText("取消")
+        if box.exec():
+            self.battles.remove(name)
+            self.reload()
 
     def _used_by_flows(self, kind: str, *keys) -> list[str]:
         """这条配置正被哪些任务流程引用？读不到任务存储时返回空（不拦）。"""

@@ -52,10 +52,45 @@ python -m venv .venv
     PySide6-Essentials shiboken6 PySideSix-Frameless-Window darkdetect pywin32 PySide6-Fluent-Widgets pypinyin
 ```
 
-## 配置（角色声骸筛选）
+## 配置
 
-侧栏「配置」页。一条配置 = 一个角色 + 一套声骸套装 + 4C/3C/1C 各一个声骸（各带一条属性）。
-**一个角色只能有一条配置**（2026-09-26 要求）。数据存在 `data/loadouts.json`。
+侧栏「配置」页，目前有**三类**配置（点「新增」时先选类型）：
+
+| 类型 | 一条 = 什么 | 数据 |
+|---|---|---|
+| **角色声骸筛选** | 一个角色 + 一套套装 + 4C/3C/1C 各一个声骸 | `data/loadouts.json` |
+| **角色声骸强化** | 一套强化判定条件（核心属性 / 双爆下限 / 有效词条数…） | `echo_profiles.json` |
+| **角色战斗**（2026-09-30 新增） | 一个角色的技能快捷键 / 链路 / 战斗脚本 | `battle_profiles.json` |
+
+三类都是**一个角色一条**（用户 2026-09-26 要求），角色只能从下拉里选、不能自由输入。
+
+### 角色战斗配置
+
+用户 2026-09-30 要求新增，字段：
+
+| 字段 | 说明 |
+|---|---|
+| 角色 | 下拉选择（已被别的配置占用的选不到） |
+| 角色头像 | **与角色联动** —— 下拉选谁就显示谁的头像 |
+| 技能快捷键 | 声骸技能 **Q** / 共鸣技能 **E** / 共鸣解放 **R**（默认值，可改） |
+| 角色链路 | `[−] N [+]`，**范围 0~6**，到边界按钮灰掉 |
+| 角色战斗脚本 | 多行文本框 |
+
+> ★ **现在只存不跑**（用户明确："先只存不跑"）——
+> 快捷键和脚本都只是存下来，界面能编辑 / 保存 / 回填，
+> **没有接任何按键执行**。以后要做执行时，从这里读、显式注入任务即可。
+>
+> ⚠ **别去和工具页的设置联动** —— 另两类配置立的规矩就是"配置只是存着，
+> 不改变工具自己的设置"（用户 2026-09-26 否掉了"配置即工具规则"那套设计）。
+
+几个实现约定：
+
+- **链路夹取只有一份**（`battle_profile.clamp_chain`）—— 界面的 +/− 和加载时
+  都调它，否则会出现"按钮夹了、读盘没夹"的越界值；
+- **快捷键统一存大写**（`q` → `Q`）：同一个键不该看着像两个；
+  空格子**回落到默认值**（存空串会让界面那一格空着，像坏了）；
+- **稳定 id**：和另两类一样有 `id`，老数据缺 id 时补发并**立刻落盘**
+  （不落盘的话每次启动换一个新 id，任务里指向它的步骤就永远找不到）。
 
 ### 数据从哪来
 
@@ -1131,6 +1166,8 @@ class DiceTool(BaseTool):
 .venv\Scripts\python tests\test_gacha_link.py       # 从游戏日志读抽卡链接
 .venv\Scripts\python tests\test_data_priority.py    # 数据源优先级：库街区优先
 .venv\Scripts\python tests\test_config_search.py    # 配置页搜索：拼音匹配 + 过滤
+.venv\Scripts\python tests\test_battle_profile.py   # 角色战斗配置：数据 + 弹框
+.venv\Scripts\python tests\test_auto_combat_ui.py   # 4C 队伍头像 / 界面精简
 .venv\Scripts\python tests\smoke_echo_reader.py     # 合成图 → OCR → 判定
 .venv\Scripts\python tests\smoke_echo_runner.py     # 强化流程状态机（假窗口）
 .venv\Scripts\python tests\check_settings_gui.py    # 工具页配置存盘/回填 + 资源库页重建（带截图）

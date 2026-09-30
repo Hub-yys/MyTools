@@ -27,18 +27,28 @@
 
 from __future__ import annotations
 
-#: 两类配置在界面上的**类型名**（同时也是「新增配置」时下拉里的选项）
+#: 三类配置在界面上的**类型名**（同时也是「新增配置」时下拉里的选项）
 TYPE_LOADOUT = "角色声骸筛选"
 TYPE_ECHO_PROFILE = "角色声骸强化"
-CONFIG_TYPES = (TYPE_LOADOUT, TYPE_ECHO_PROFILE)
+#: ★ 2026-09-30 新增（用户要求）：角色战斗配置
+TYPE_BATTLE_PROFILE = "角色战斗"
+CONFIG_TYPES = (TYPE_LOADOUT, TYPE_ECHO_PROFILE, TYPE_BATTLE_PROFILE)
 
 #: 步骤里区分"这是哪一类配置"的标记 —— **本体在 core**（工具层也要用，
 #: 不该从 gui 引），这里原样转出去给界面用。
+from ..core.battle_profile import KIND as KIND_BATTLE_PROFILE  # noqa: E402
 from ..core.echo_profile import KIND as KIND_ECHO_PROFILE  # noqa: E402
 from ..core.loadout import KIND as KIND_LOADOUT  # noqa: E402
 
 #: 类型名 → 步骤里的标记（反向见 :func:`kind_type_name`）
-_KIND_BY_TYPE = {TYPE_LOADOUT: KIND_LOADOUT, TYPE_ECHO_PROFILE: KIND_ECHO_PROFILE}
+_KIND_BY_TYPE = {
+    TYPE_LOADOUT: KIND_LOADOUT,
+    TYPE_ECHO_PROFILE: KIND_ECHO_PROFILE,
+    TYPE_BATTLE_PROFILE: KIND_BATTLE_PROFILE,
+}
+
+#: 反向表。**必须包含全部三类** —— 漏一个会让那种配置在任务里显示成筛选。
+_TYPE_BY_KIND = {kind: name for name, kind in _KIND_BY_TYPE.items()}
 
 
 def type_suffix(type_name: str) -> str:
@@ -73,7 +83,9 @@ def kind_type_name(kind: str) -> str:
 
     ⚠ 空 kind 当作**筛选配置** —— 老流程里只有这一类，存的时候还没这个字段。
     """
-    return TYPE_ECHO_PROFILE if kind == KIND_ECHO_PROFILE else TYPE_LOADOUT
+    if not kind:
+        return TYPE_LOADOUT
+    return _TYPE_BY_KIND.get(kind, TYPE_LOADOUT)
 
 
 def find_config(kind: str, key: str):
@@ -82,7 +94,8 @@ def find_config(kind: str, key: str):
     * ``KIND_LOADOUT`` → ``LoadoutStore``，key 是 **id**；
     * ``KIND_ECHO_PROFILE`` → ``EchoProfileStore``，key 是**稳定 id**
       （``EchoProfile.id``）。找不到时**再按名字试一次** —— 兼容 2026-09-26
-      之前存的流程（那时候强化配置还没有 id，步骤里存的是角色名）。
+      之前存的流程（那时候强化配置还没有 id，步骤里存的是角色名）；
+    * ``KIND_BATTLE_PROFILE`` → ``BattleProfileStore``，key 同样是**稳定 id**。
     """
     key = str(key or "").strip()
     if not key:
@@ -93,6 +106,12 @@ def find_config(kind: str, key: str):
 
             store = EchoProfileStore()
             store.load()
+            return store.by_id(key) or store.get(key)
+
+        if kind == KIND_BATTLE_PROFILE:
+            from ..core.battle_profile import BattleProfileStore
+
+            store = BattleProfileStore()
             return store.by_id(key) or store.get(key)
 
         from ..core.loadout import LoadoutStore
@@ -116,6 +135,8 @@ def live_config_name(step) -> str:
 
     if kind == KIND_ECHO_PROFILE:
         return config_display_name(TYPE_ECHO_PROFILE, getattr(item, "name", ""))
+    if kind == KIND_BATTLE_PROFILE:
+        return config_display_name(TYPE_BATTLE_PROFILE, getattr(item, "name", ""))
     return config_display_name(TYPE_LOADOUT, getattr(item, "character", ""))
 
 
@@ -125,7 +146,8 @@ def live_config_avatar(step) -> str:
     item = find_config(kind, getattr(step, "key", ""))
     if item is None:
         return ""
-    if kind == KIND_ECHO_PROFILE:
+    if kind in (KIND_ECHO_PROFILE, KIND_BATTLE_PROFILE):
+        # 这两类的"名字"都是角色名 → 头像去角色资料里查
         from ..core import game_data
 
         info = game_data.find_character(getattr(item, "name", ""))
