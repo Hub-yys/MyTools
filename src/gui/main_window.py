@@ -49,8 +49,12 @@ HOME_KEY = "HomeInterface"
 CONFIG_KEY = "ConfigInterface"
 TASKS_KEY = "TasksInterface"
 
-#: 侧栏「资源库」分组项的 routeKey
-LIBRARY_GROUP_KEY = "library_group"
+#: 侧栏「资源库」的 routeKey。
+#: ⚠ 2026-09-30 起它**就是页面本身**（不再是"分组/子项"两层）——
+#: 用户要求去掉多余的「鸣潮资源库」那一层（"资源库本身就是了"）。
+#: 值必须和 :class:`WuwaLibraryInterface` 的 ``objectName`` 一致，
+#: 侧栏高亮和拖拽排序都按它找项。
+LIBRARY_KEY = "WuwaLibraryInterface"
 
 
 class ToolInterfaceHost(QWidget):
@@ -333,7 +337,7 @@ class MainWindow(FluentWindow):
         """
         self.nav_reorder = NavReorderHelper(
             self.navigationInterface,
-            movable_keys=[CONFIG_KEY, TASKS_KEY, TOOL_GROUP_KEY, LIBRARY_GROUP_KEY],
+            movable_keys=[CONFIG_KEY, TASKS_KEY, TOOL_GROUP_KEY, LIBRARY_KEY],
             fixed_keys=[HOME_KEY],
             on_order_changed=lambda keys: self.ui_state.set_list(ORDER_KEY, keys),
             parent=self,
@@ -382,21 +386,26 @@ class MainWindow(FluentWindow):
 
     # ------------------------------------------------------------------ 侧栏资源库
     def _build_library_group(self) -> None:
-        """「资源库」分组：下面挂各个游戏的资源页（目前只有鸣潮）。"""
-        self.navigationInterface.addItem(
-            routeKey=LIBRARY_GROUP_KEY,
-            icon=resolve_icon("LIBRARY"),
-            text="资源库",
-            selectable=False,
-            position=NavigationItemPosition.TOP,
-            tooltip="展开查看资源库",
-        )
+        """侧栏「资源库」—— **直接就是鸣潮资源库页面**。
+
+        ★ 2026-09-30 用户要求去掉多余那一层：
+
+            资源库展开没有「鸣潮资源库」这个标签了，干掉他，
+            因为资源库本身就是了
+
+        原来是"资源库"分组 + 一个叫"鸣潮资源库"的子项 —— 目前只有一个
+        游戏页，展开一层再点一次纯属多余。
+
+        ⚠ 路由键用 :data:`LIBRARY_KEY`（= ``WuwaLibraryInterface``），
+        侧栏高亮、拖拽排序都按它找项。
+        以后真加了第二个游戏的资源页，再把这个函数改回 `addItem` +
+        `addSubInterface` 的分组写法即可。
+        """
         self.wuwa_library = WuwaLibraryInterface(self)
         self.addSubInterface(
             self.wuwa_library,
-            self.wuwa_library.icon(),
-            "鸣潮资源库",
-            parent=LIBRARY_GROUP_KEY,
+            resolve_icon("LIBRARY"),
+            "资源库",
         )
 
     # ------------------------------------------------------------------ 跳转

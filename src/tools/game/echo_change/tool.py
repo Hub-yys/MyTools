@@ -19,7 +19,6 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     ScrollArea,
-    StrongBodyLabel,
     ToolButton,
 )
 
@@ -70,7 +69,6 @@ class EchoChangeWidget(ScrollArea):
         layout.setSpacing(14)
 
         layout.addWidget(self._build_run_card(page))
-        layout.addWidget(self._build_report_card(page))
         layout.addWidget(self._build_note_card(page))
         layout.addStretch(1)
         self.setWidget(page)
@@ -213,36 +211,14 @@ class EchoChangeWidget(ScrollArea):
         self.state_label = CaptionLabel("引擎：后台加载中…", card)
         self.state_label.setTextColor("#C9514C", "#E6B4AC")
         card.add(self.state_label)
-        return card
 
-    def _build_report_card(self, parent) -> ConfigCard:
-        card = ConfigCard("结果", "本次运行（点「运行」到「停止」）的统计", parent)
-
-        row = QHBoxLayout()
-        row.setSpacing(34)
-        self.stats: dict[str, StrongBodyLabel] = {}
-        for title in ("成功", "跳过", "失败"):
-            cell = QVBoxLayout()
-            cell.setSpacing(2)
-            head = CaptionLabel(title, card)
-            head.setTextColor(*MUTED)
-            value = StrongBodyLabel("—", card)
-            self.stats[title] = value
-            cell.addWidget(head)
-            cell.addWidget(value)
-            row.addLayout(cell)
-        row.addStretch(1)
-        card.body.addLayout(row)
-
-        self.report_line = CaptionLabel("还没跑过 —— 点「运行」后这里会刷新", card)
-        self.report_line.setTextColor(*MUTED)
-        self.report_line.setWordWrap(True)
-        card.body.addWidget(self.report_line)
-
+        # ⚠ 原来这段在「结果」卡片里。2026-09-30 用户要求删掉那张卡
+        #   （"调频这里不需要什么结果，删掉"）—— 但**错误提示还要有地方显示**
+        #   （启动失败之类），所以把它挪到运行卡里，别把提示一起丢了。
         self.log_line = CaptionLabel("", card)
         self.log_line.setTextColor(*MUTED)
         self.log_line.setWordWrap(True)
-        card.body.addWidget(self.log_line)
+        card.add(self.log_line)
         return card
 
     def _build_note_card(self, parent) -> ConfigCard:
@@ -311,25 +287,6 @@ class EchoChangeWidget(ScrollArea):
         self.target_box.setEnabled(not running)
 
         self._host.poll_done()
-        self._refresh_report()
-
-    def _refresh_report(self) -> None:
-        """从宿主抄一份本次运行的统计（跑完那一刻是冻住的）。"""
-        info = self._host.finished_info(TASK_KEY)
-        if not info:
-            task = self._host.find_task(TASK_KEY)
-            info = getattr(task, "info", None) if task is not None else None
-        if not isinstance(info, dict) or not info:
-            return
-
-        for key, title in (("成功声骸数量", "成功"), ("跳过声骸数量", "跳过"),
-                           ("失败声骸数量", "失败")):
-            value = info.get(key)
-            self.stats[title].setText("—" if value is None else str(value))
-
-        tally = info.get("调频统计")
-        if tally:
-            self.report_line.setText(str(tally))
 
 
 @registry.register(
