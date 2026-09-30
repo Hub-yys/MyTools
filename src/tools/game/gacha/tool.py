@@ -672,27 +672,16 @@ class GachaWidget(ScrollArea):
         return "", ""
 
     def _five_avatar(self, five, parent) -> QWidget:
-        """五星的头像 —— 角色/武器查 ``game_data``；查不到就用首字兜底图。
+        """五星的头像 —— 和卡片墙**共用** :meth:`_icon_for`，别各写一份。
 
-        ⚠ 和「配置页 / 任务行」用的是**同一套** :func:`avatar_icon`：
-        查不到图就按名字首字现画一个圆图，不留白（否则左边一列参差不齐）。
+        ⚠ 这里原来给武器传的是**空路径**（``avatar_icon("", name)``），
+        于是武器永远显示首字兜底图 —— 用户截图里「云」「千」就是这么来的
+        （"这里怎么不改掉"）。**卡片墙改了、列表行忘了改**，
+        正是"两处各写一份"的典型后果；现在统一走 :meth:`_icon_for`。
         """
         from qfluentwidgets import IconWidget
 
-        from ....core import game_data
-        from ....gui.pickers import avatar_icon
-
-        icon = None
-        try:
-            if five.kind == "武器":
-                icon = avatar_icon("", five.name)
-            else:
-                info = game_data.find_character(five.name)
-                icon = avatar_icon(info.avatar if info else "", five.name)
-        except Exception:  # noqa: BLE001 - 资料没加载好也不该让行建不出来
-            icon = avatar_icon("", five.name)
-
-        holder = IconWidget(icon, parent)
+        holder = IconWidget(self._icon_for(five.name, five.kind), parent)
         holder.setFixedSize(QSize(AVATAR_SIZE, AVATAR_SIZE))
         return holder
 

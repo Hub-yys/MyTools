@@ -255,6 +255,88 @@ class TestVerdict(unittest.TestCase):
                 self.assertTrue(color.startswith("#"))
 
 
+class TestWeaponImages(unittest.TestCase):
+    """★ 武器图：列表行和卡片墙**都要**显示真图，不能退回首字兜底图。
+
+    用户 2026-09-30 截图报："这里怎么不改掉" —— 卡片墙改了、
+    **列表行忘了改**（那里给武器传的是空路径），于是武器显示「云」「千」
+    这种首字圆图。这正是"两处各写一份"的后果，所以这里两处都测。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _weapon_five(self):
+        return gacha.FiveStar(name="云琅", span=7, kind="武器",
+                              is_50=True, limited_pool=True)
+
+    def test_weapon_icon_path_is_not_empty(self):
+        """★ ``_icon_for`` 对武器要给出**真图路径**，不能传空串。
+
+        传空串会静默退化成首字兜底图 —— **看起来没报错**，
+        但用户一眼就看出"这不是我要的图"。
+        """
+        import inspect
+
+        from src.tools.game.gacha.tool import GachaWidget
+
+        source = inspect.getsource(GachaWidget._icon_for)
+        self.assertIn("weapons/", source,
+                      "武器没走 weapons/ 路径 —— 会退化成首字兜底图")
+
+    def test_list_row_and_cards_share_one_lookup(self):
+        """★ 列表行与卡片墙必须**共用**同一个取图函数，且都把 ``kind`` 传进去。
+
+        各写一份就会出现"改了一处漏一处"（这次就是这么漏的）。
+        ⚠ 光断言"调了 ``_icon_for``"**不够** —— 传空 kind 也满足那条，
+        但那样武器会静默退回首字兜底图（正是用户截图里的「云」「千」）。
+        所以这里必须断言**实参里带了 kind**。
+        """
+        import inspect
+
+        from src.tools.game.gacha.tool import GachaWidget
+
+        row = inspect.getsource(GachaWidget._five_avatar)
+        self.assertIn("_icon_for", row,
+                      "列表行没复用 _icon_for —— 又会两边走偏")
+        self.assertIn("five.kind", row,
+                      "列表行没把 kind 传给 _icon_for —— 武器会变首字兜底图")
+
+    def test_icon_for_routes_weapon_to_weapons_dir(self):
+        """★ 端到端：``_icon_for(武器名, "武器")`` 要真的取到 weapons/ 下的图。
+
+        这条比查源码强 —— 它直接比较"拿到的图"和"文件里的图"是不是同一张。
+        """
+        import pathlib
+
+        from src.tools.game.gacha.tool import GachaWidget
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        weapons = root / "assets" / "game" / "weapons"
+        if not weapons.is_dir():
+            self.skipTest("没有 assets/game/weapons（素材不入库，本机未下载）")
+        names = [p.stem for p in weapons.glob("*.png")]
+        if not names:
+            self.skipTest("weapons 目录里没有图")
+        name = names[0]
+
+        from src.gui.pickers import load_icon
+
+        got = GachaWidget._icon_for(name, "武器").pixmap(48, 48).toImage()
+        want = load_icon(f"weapons/{name}.png").pixmap(48, 48).toImage()
+        self.assertEqual(got, want, f"{name} 没取到 weapons/ 下的真图")
+
+    def test_weapon_falls_back_gracefully_when_file_missing(self):
+        """图文件不在时仍然要有图（首字兜底），不能留白。"""
+        from src.tools.game.gacha.tool import GachaWidget
+
+        icon = GachaWidget._icon_for("这把武器不存在", "武器")
+        self.assertFalse(icon.isNull(), "查不到图要兜底，不能返回空图标")
+
+
 class TestCharacterOnlyCategories(unittest.TestCase):
     """★ 限定/常驻五星统计**只算角色**，不混武器。
 
