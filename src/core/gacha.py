@@ -612,10 +612,14 @@ def fetch_pool(params: dict[str, str], pool_type: str,
         raise GachaError("接口返回了看不懂的内容")
     code = payload.get("code")
     if code == -1:
+        # ⚠ 这是**最常见**的失败，而且原因不在我们这边：
+        #   抽卡记录链接是**有时效的**，游戏侧要"打开过唤取记录页"才认。
+        #   实测（2026-09-30）：从游戏日志里扒出来的旧链接直接报
+        #   「请求游戏获取日志异常!」—— 所以提示必须说清**怎么办**。
         raise GachaError(
-            str(payload.get("message") or "读取失败")
-            + "\n请在游戏里**打开「唤取记录」页面**后再复制链接重试"
-            "（记录链接会过期）。"
+            (str(payload.get("message") or "读取失败")).strip()
+            + "\n\n这通常是**链接过期**了。请回游戏里："
+            "唤取 → 唤取记录 → **打开页面并多翻几页** → 重新复制链接。"
         )
     if code not in (0, None):
         raise GachaError(str(payload.get("message") or f"接口返回 code={code}"))

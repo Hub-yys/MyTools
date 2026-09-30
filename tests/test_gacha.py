@@ -531,6 +531,32 @@ class TestWidgetRender(unittest.TestCase):
         self.app.processEvents()
         self.assertTrue(widget.status.text())
 
+    def test_ui_text_has_no_markdown_stars(self):
+        """★ 界面文案里**不能有 Markdown 星号**。
+
+        Qt 的 QLabel/CaptionLabel **不解析 markdown** —— 写了 ``**加粗**``
+        会原样显示成星号（实测踩过）。这类问题只能靠"渲染出来看一眼"发现，
+        所以用测试钉住：界面上所有可见文字里不该出现 ``**``。
+        """
+        from qfluentwidgets import CaptionLabel
+
+        widget = self._widget()
+        offenders = [
+            label.text()[:60]
+            for label in widget.findChildren(CaptionLabel)
+            if label.text() and "**" in label.text()
+        ]
+        self.assertEqual(offenders, [], f"界面文案里有 Markdown 星号：{offenders}")
+
+    def test_page_explains_how_to_get_link(self):
+        """页面要说清"怎么取链接"（用户是手动获取，这一步最容易卡）。"""
+        from qfluentwidgets import CaptionLabel
+
+        widget = self._widget()
+        texts = " ".join(lb.text() for lb in widget.findChildren(CaptionLabel))
+        self.assertIn("唤取记录", texts)
+        self.assertIn("怎么取链接", texts)
+
     def test_tool_is_not_coming_soon(self):
         """★ 别忘关 coming_soon —— 默认 True 会让它显示成"即将到来"占位页。"""
         from src.core.registry import ToolRegistry

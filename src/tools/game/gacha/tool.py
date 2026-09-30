@@ -188,14 +188,28 @@ class GachaWidget(ScrollArea):
         self.root.addWidget(TitleLabel("抽卡记录分析", view))
 
         note = CaptionLabel(
-            "从游戏里复制「唤取记录」链接粘到下面，点「读取」即可统计。\n"
-            "数据来自库洛官方接口 —— **需要联网**，会把链接里的玩家参数"
-            "发给库洛服务器（不读游戏、不模拟操作、不需要管理员权限）。",
+            "自己在游戏里取链接 → 粘到下面 → 点「读取」，本工具负责分析。\n"
+            "它不读游戏文件、不模拟操作，只把你给的链接发给库洛官方接口。\n"
+            "需要联网（会把链接里的玩家参数发给库洛服务器）。",
             view,
         )
         note.setTextColor(*MUTED)
         note.setWordWrap(True)
         self.root.addWidget(note)
+
+        # ---- 怎么取链接（★ 这一步最容易卡住）----
+        # ⚠ 这里**不能写 Markdown 星号** —— Qt 的 QLabel 不解析 markdown，
+        #   写了会原样显示成「**xxx**」（实测踩过）。
+        howto = CaptionLabel(
+            "怎么取链接：游戏里　唤取 → 唤取记录 → 打开页面后多翻几页"
+            "（让游戏把记录写出来）→ 复制页面链接。\n"
+            "⚠ 链接有时效：取完尽快粘过来；放久了会提示"
+            "「请求游戏获取日志异常」，那时回游戏重新打开一次唤取记录页再复制即可。",
+            view,
+        )
+        howto.setTextColor(*MUTED)
+        howto.setWordWrap(True)
+        self.root.addWidget(howto)
 
         # ---- 链接行 ----
         link_row = QWidget(view)
