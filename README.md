@@ -201,6 +201,25 @@ catalogue 1106 的 tagTree），加载进 `game_data.WEAPONS`。
 **取数原则**：
 - **名单 / 图标 / 归属 / COST / 稀有度 → 优先库街区**（快、全、结构化）
 - **文字（套装效果原文、声骸技能说明）→ 只能用 bwiki**
+
+> ⚠ **文档原来写对了，代码没跟上**（2026-09-30 修）：
+> 表格上一直写着"库街区优先"，但 `fetch_remote()` 里其实**bwiki 先拉、
+> 库街区只补缺**。用户看着「资源库更新」的日志顺序
+> （套装效果 → 掉落池 → 角色名单 → 库街区）当场就问：
+> "为什么不是优先从库街区拿？"
+>
+> 现在代码和文档一致了：库街区先拉、先合并，bwiki 只补它没有的。
+> `tests/test_data_priority.py` 从**源码顺序**和**合并优先级**两头钉住。
+>
+> ⚠ 两个当时一起修掉的坑：
+>
+> 1. **稀有度解析**：库街区写的是「**五星**」不是「5星」，
+>    `replace("星","")` 会剩下一个「五」，`int()` 失败变 0 ——
+>    于是 64 个角色"有稀有度的"算出来是 **0 个**。现在中文数字也认。
+> 2. **漂泊者重名**：库街区把它按「男/女 × 属性」拆成 **8 条**
+>    （`漂泊者-女-导电`），本地一直用 **4 条**属性版。不归一化的话，
+>    每点一次「获取最新数据」就多出 8 个假角色
+>    （且因为合并是"只增不减"，原有的 4 条还删不掉）。
 - 一切都要取**并集**，任何一边漏页都不能删本地已有条目
 
 **库街区接口的 catalogueId 映射**（`api.kurobbs.com/wiki/core/catalogue/item/getPage`，
@@ -1096,6 +1115,8 @@ class DiceTool(BaseTool):
 .venv\Scripts\python tests\test_gacha.py            # 抽卡记录分析：统计口径 + 界面
 .venv\Scripts\python tests\test_gacha_store.py      # 抽卡历史：合并去重 + 持久化
 .venv\Scripts\python tests\test_gacha_link.py       # 从游戏日志读抽卡链接
+.venv\Scripts\python tests\test_data_priority.py    # 数据源优先级：库街区优先
+.venv\Scripts\python tests\test_config_search.py    # 配置页搜索：拼音匹配 + 过滤
 .venv\Scripts\python tests\smoke_echo_reader.py     # 合成图 → OCR → 判定
 .venv\Scripts\python tests\smoke_echo_runner.py     # 强化流程状态机（假窗口）
 .venv\Scripts\python tests\check_settings_gui.py    # 工具页配置存盘/回填 + 资源库页重建（带截图）

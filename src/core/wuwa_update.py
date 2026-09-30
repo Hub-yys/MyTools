@@ -70,27 +70,58 @@ def _ssl() -> ssl.SSLContext:
 class RemoteSnapshot:
     """一次检查拉下来的全部远端数据（没拉到的字段是空容器，不报错）。"""
 
-    #: ``{套装名: [{pieces, text}, ...]}`` —— bwiki 声骸合鸣表
+    #: ``{套装名: [{pieces, text}, ...]}`` —— bwiki 声骸合鸣表（效果原文**只有它有**）
     sets: dict[str, list[dict]] = field(default_factory=dict)
-    #: ``{套装名: {4: [声骸名...]}}`` —— bwiki SMW 反查
+    #: ``{套装名: {4: [声骸名...]}}`` —— bwiki SMW 反查（兜底）
     echoes_bwiki: dict[str, dict[int, list[str]]] = field(default_factory=dict)
-    #: ``{套装名: {4: [声骸名...]}}`` —— 库街区（cost 键已转 int）
+    #: ``{套装名: {4: [声骸名...]}}`` —— 库街区（**主源**，cost 键已转 int）
     echoes_kuro: dict[str, dict[int, list[str]]] = field(default_factory=dict)
     #: ``{声骸名: 官方图床 URL}`` —— 库街区
     icon_urls: dict[str, str] = field(default_factory=dict)
-    #: ``{角色名: {rarity, element, weapon}}`` —— bwiki 分类:共鸣者
+    #: ``{角色名: {rarity, element, weapon}}`` —— 库街区 1105（**主源**）
     characters: dict[str, dict] = field(default_factory=dict)
+    #: 同上，来自 bwiki 分类:共鸣者（**兜底**，只在主源缺这个角色时用）
+    characters_bwiki: dict[str, dict] = field(default_factory=dict)
 
 
 def fetch_remote(log=lambda _msg: None) -> RemoteSnapshot:
-    """拉全部轻量数据源（套装表 + SMW 反查 + 库街区 getPage，共 3~4 个请求）。"""
+    """拉全部数据源。
+
+    ## ★ 库街区优先（2026-09-30 按用户要求改）
+
+    用户早就说过"这些数据以后**优先从库街区拿**"，但代码一直是
+    **bwiki 先拉、库街区只补缺** —— 界面上那几行日志顺序
+    （套装效果 → 掉落池 → 角色名单 → 库街区）就是这个问题的直接体现，
+    用户看到后当场指出来了。
+
+    现在改成：
+
+    ==================  ==============  ========================================
+    数据                主源            兜底
+    ==================  ==============  ========================================
+    套装名单 + 图标      库街区 1219     bwiki
+    声骸名单 + 套装归属   库街区 1107     bwiki SMW 反查
+    角色名单            库街区 1105     bwiki 分类
+    角色/武器图标        库街区 1105/1106 ——（bwiki 没有武器图）
+    声骸技能说明         bwiki           ——（**只有它有**）
+    套装效果原文         bwiki           ——（**只有它有**）
+    ==================  ==============  ========================================
+
+    ⚠ 后两项**只能**靠 bwiki —— 库街区的 ``textList`` 是空模板
+    （实测：``{"content": "", "placeholder": "请输入小标题"}``），
+    所以那两条日志要写清"这是兜底来源"，别让用户以为又优先错了。
+    """
     snapshot = RemoteSnapshot()
-    snapshot.sets = _fetch_bwiki_sets(log)
-    snapshot.echoes_bwiki = _fetch_bwiki_echo_index(log)
-    snapshot.characters = _fetch_bwiki_characters(log)
+    # ---- 主源：库街区（先拉，后面的 bwiki 只补它没有的）----
     kuro_sets, icon_urls = _fetch_kurobbs(log)
     snapshot.echoes_kuro = kuro_sets
     snapshot.icon_urls = icon_urls
+    snapshot.characters = _fetch_kurobbs_characters(log)
+
+    # ---- 兜底：bwiki（只补库街区确实没有的那两项）----
+    snapshot.sets = _fetch_bwiki_sets(log)
+    snapshot.echoes_bwiki = _fetch_bwiki_echo_index(log)
+    snapshot.characters_bwiki = _fetch_bwiki_characters(log)
     return snapshot
 
 
@@ -138,7 +169,10 @@ def _parse_effects(row_html: str) -> list[dict]:
 
 
 def _fetch_bwiki_sets(log) -> dict[str, list[dict]]:
-    log(f"拉取套装效果（bwiki {SETS_PAGE}）…")
+    # ⚠ 日志里标明"兜底"：用户看到"bwiki"排在最前面会以为又优先错了
+    #   （2026-09-30 就是这么被指出来的）。套装**效果原文**确实只有 bwiki 有，
+    #   但套装**名单**是以库街区为准的。
+    log(f"拉取套装效果原文（兜底源：bwiki {SETS_PAGE}）…")
     data = _bwiki(action="parse", page=SETS_PAGE, prop="text")
     parsed = data.get("parse")
     if not parsed:
@@ -155,7 +189,7 @@ def _fetch_bwiki_sets(log) -> dict[str, list[dict]]:
 
 
 def _fetch_bwiki_echo_index(log) -> dict[str, dict[int, list[str]]]:
-    log("拉取声骸掉落池（bwiki SMW 反查）…")
+    log("拉取声骸掉落池（兜底源：bwiki SMW 反查）…")
     by_set: dict[str, dict[int, list[str]]] = {}
     offset = 0
     for _round in range(20):  # 防呆上限：正常 1~2 轮到底
@@ -201,7 +235,7 @@ def _fetch_bwiki_characters(log) -> dict[str, dict]:
     稀有度 wiki 上**没有结构化字段**（返回空），所以这里可能是 0；
     合并时不会拿 0 覆盖本地已有的星级（见 :func:`_merge_characters_data`）。
     """
-    log("拉取角色名单（bwiki 分类:共鸣者）…")
+    log("拉取角色名单（兜底源：bwiki 分类:共鸣者）…")
     merged: dict[str, dict] = {}
     offset = 0
     for _round in range(20):  # 防呆上限：正常 1~2 轮到底
@@ -240,6 +274,115 @@ def _to_int(value) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+#: 库街区 tagTree 的分组名 → 本地字段名。
+#: 实测（2026-09-30）1105「共鸣者」有五组：稀有度 / 属性 / 武器 / 实装版本 / 风格定位。
+_KURO_CHARACTER_TAGS = {
+    "稀有度": "rarity",
+    "属性": "element",
+    "武器": "weapon",
+}
+
+#: 中文数字 → int。⚠ 库街区写的是「**五星**」不是「5星」——
+#: 直接 ``replace("星","")`` 会剩下一个「五」，``int()`` 失败变成 0
+#: （我第一版就是这么错的：64 个角色「有稀有度」的算出来是 0 个）。
+_CHINESE_NUMERALS = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5,
+                     "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+#: 库街区的角色名 → 本地用的名字。
+#: ★ 漂泊者：库街区把它按「男/女 × 属性」拆成 8 条（``漂泊者-女-导电``），
+#: 本地一直用 4 条属性版（``漂泊者·导电``）。不归一化的话，
+#: 每更新一次就**多出 8 个假角色**（原有的 4 条又删不掉）。
+_KURO_NAME_ALIASES = {
+    "漂泊者-男-导电": "漂泊者·导电",
+    "漂泊者-女-导电": "漂泊者·导电",
+    "漂泊者-男-气动": "漂泊者·气动",
+    "漂泊者-女-气动": "漂泊者·气动",
+    "漂泊者-男-衍射": "漂泊者·衍射",
+    "漂泊者-女-衍射": "漂泊者·衍射",
+    "漂泊者-男-湮灭": "漂泊者·湮灭",
+    "漂泊者-女-湮灭": "漂泊者·湮灭",
+}
+
+
+def _normalize_character_name(name: str) -> str:
+    """库街区角色名 → 本地角色名（见 :data:`_KURO_NAME_ALIASES`）。"""
+    return _KURO_NAME_ALIASES.get(name, name)
+
+
+def _parse_stars(value: str) -> int:
+    """把 ``"五星"`` / ``"5星"`` / ``"5"`` 都解析成 ``5``。"""
+    text = str(value or "").strip().replace("星", "").strip()
+    if not text:
+        return 0
+    if text.isdigit():
+        return int(text)
+    return _CHINESE_NUMERALS.get(text[0], 0)
+
+
+def _fetch_kurobbs_characters(log) -> dict[str, dict]:
+    """拉库街区角色名单（catalogue 1105）—— **角色数据的主源**。
+
+    比 bwiki 强的地方（这也是"优先从库街区拿"的理由）：
+
+    * **稀有度是结构化的** —— bwiki 那边 ``稀有度`` 字段返回 0，
+      所以长期靠手工补；库街区有「稀有度」标签组（值形如「五星」）；
+    * 角色数更全（实测 64 vs bwiki 58）；
+    * 更新更快（bwiki 要等社区编辑）。
+
+    ⚠ 数据在 ``content.relateTagIds`` 里，要拿 ``tagTree`` 反查才有名字 ——
+    直接读 ``content`` 是读不到"五星/导电/迅刀"的。
+    """
+    log("拉取角色名单（库街区 1105）…")
+    try:
+        records, tag_tree = _kuro_page("1105", log)
+    except Exception as exc:  # noqa: BLE001 - 主源失败还有 bwiki 兜底
+        log(f"  库街区角色名单拉取失败（{exc}）—— 稍后用 bwiki 兜底")
+        return {}
+
+    # tagTree → {tag_id: (分组, 值)}
+    tags: dict[str, tuple[str, str]] = {}
+    for group in tag_tree.get("children", []) or []:
+        group_name = str(group.get("name", "") or "")
+        for child in group.get("children", []) or []:
+            node_id = str(child.get("id", "") or "")
+            name = str(child.get("name", "") or "").strip()
+            if node_id and name:
+                tags[node_id] = (group_name, name)
+
+    merged: dict[str, dict] = {}
+    for record in records:
+        raw_name = str(record.get("name", "")).strip()
+        if not raw_name:
+            continue
+        # ⚠ 名字先归一化，否则漂泊者会每更新一次多出 8 条
+        name = _normalize_character_name(raw_name)
+        content = record.get("content") or {}
+        info: dict = {"rarity": 0, "element": "", "weapon": ""}
+        for tag_id in (content.get("relateTagIds") or []):
+            group, value = tags.get(str(tag_id), ("", ""))
+            field_name = _KURO_CHARACTER_TAGS.get(group)
+            if not field_name:
+                continue          # 实装版本 / 风格定位：本地用不上
+            if field_name == "rarity":
+                info["rarity"] = _parse_stars(value)
+            else:
+                info[field_name] = value
+        # 归一化后可能撞车（漂泊者男/女）→ 保留信息更全的那条
+        known = merged.get(name)
+        if known is None or _info_score(info) > _info_score(known):
+            merged[name] = info
+
+    with_rarity = sum(1 for info in merged.values() if info["rarity"])
+    log(f"  角色名单：{len(merged)} 个（其中 {with_rarity} 个有稀有度）")
+    return merged
+
+
+def _info_score(info: dict) -> int:
+    """一条角色信息"有多全"—— 用来在归一化撞车时挑更好的那条。"""
+    return sum(bool(info.get(f)) for f in ("rarity", "element", "weapon"))
 
 
 def _kuro_page(catalogue_id: str, log) -> tuple[list[dict], dict]:
@@ -511,14 +654,18 @@ def _merge_sets_data(local_sets: dict, snapshot: RemoteSnapshot) -> bool:
             sets.append(by_name[name])
             changed = True
 
-    # 声骸掉落池：bwiki ∪ 库街区，对本地取并集（只加不减）
+    # 声骸掉落池：**库街区优先**（主源），bwiki 只补它没有的套装。
+    #
+    # ⚠ 顺序有意义：``_union_echoes`` 是**并集**（只加不减），
+    #   所以先并谁不影响最终名单；但它决定了"某个名字是靠谁进来的"。
+    #   先库街区 = 新套装的声骸先到位（bwiki 通常滞后几周）。
     merged_names: set[str] = set()
-    for set_name, by_cost in snapshot.echoes_bwiki.items():
-        _union_echoes(by_name, set_name, by_cost)
-        merged_names.add(set_name)
     for set_name, by_cost in snapshot.echoes_kuro.items():
         # 库街区的 COST 档在 getPage 里拿不到（记录没有 cost 字段），
-        # 它的条目按名字并进 bwiki 给出的档位；bwiki 也没有的名字进 0 桶 → 跳过。
+        # 它的条目按名字并进已有的档位；实在找不到的进 0 桶 → 跳过。
+        _union_echoes(by_name, set_name, by_cost)
+        merged_names.add(set_name)
+    for set_name, by_cost in snapshot.echoes_bwiki.items():
         _union_echoes(by_name, set_name, by_cost)
         merged_names.add(set_name)
 
@@ -550,30 +697,35 @@ def _merge_characters_data(local_chars: dict, snapshot: RemoteSnapshot) -> bool:
     changed = False
     added: list[str] = []
 
-    for name, info in snapshot.characters.items():
-        local = by_name.get(name)
-        if local is None:
-            entry = {
-                "name": name,
-                "rarity": _to_int(info.get("rarity")),
-                "element": str(info.get("element") or ""),
-                "weapon": str(info.get("weapon") or ""),
-            }
-            by_name[name] = entry
-            chars.append(entry)
-            added.append(name)
-            changed = True
-            continue
-        # 已有角色：只补空字段 / 更新非空且不同值
-        for field_name in ("element", "weapon"):
-            value = str(info.get(field_name) or "")
-            if value and local.get(field_name) != value:
-                local[field_name] = value
+    # ★ 主源（库街区）先过，兜底（bwiki）后过 —— 同一个角色两边都有时，
+    #   主源先写进去，兜底那条再走一遍"只补空字段"的逻辑，不会覆盖主源的值。
+    #   ⚠ 反过来（bwiki 先）就会出现"库街区明明有稀有度，却被 bwiki 的 0 占住"
+    #   —— 这正是改之前的样子。
+    for source in (snapshot.characters, snapshot.characters_bwiki):
+        for name, info in source.items():
+            local = by_name.get(name)
+            if local is None:
+                entry = {
+                    "name": name,
+                    "rarity": _to_int(info.get("rarity")),
+                    "element": str(info.get("element") or ""),
+                    "weapon": str(info.get("weapon") or ""),
+                }
+                by_name[name] = entry
+                chars.append(entry)
+                added.append(name)
                 changed = True
-        rarity = _to_int(info.get("rarity"))
-        if rarity and _to_int(local.get("rarity")) == 0:
-            local["rarity"] = rarity
-            changed = True
+                continue
+            # 已有角色：只补空字段 / 更新非空且不同值
+            for field_name in ("element", "weapon"):
+                value = str(info.get(field_name) or "")
+                if value and local.get(field_name) != value:
+                    local[field_name] = value
+                    changed = True
+            rarity = _to_int(info.get("rarity"))
+            if rarity and _to_int(local.get("rarity")) == 0:
+                local["rarity"] = rarity
+                changed = True
 
     if added:
         local_chars["_fetched"] = time.strftime("%Y-%m-%d")
