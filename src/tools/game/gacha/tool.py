@@ -65,10 +65,19 @@ ACCENT = ("#1a1a1a", "#f0f0f0")
 
 PAGE_MARGIN = (36, 32, 36, 28)
 
-#: 抽数条的宽度（像素/抽）—— 条太长会撑爆一行，太长就截断
-BAR_UNIT = 4
-BAR_MAX = 260
-BAR_HEIGHT = 18
+#: 抽数条的宽度（像素/抽）。60 抽的条 = 60*3.2 ≈ 192px，接近头像宽度
+BAR_UNIT = 3.2
+#: 条的最大 / 最小宽度。最短也给到 76px —— 否则「1抽」的条只有几个像素，
+#: 数字都写不下（用户要求"调粗一些，跟角色头像宽度差不多宽"）
+BAR_MAX = 300
+BAR_MIN = 76
+#: 条的高度 —— 接近头像（48），这样整行看着厚实（原来是 18，太细）
+BAR_HEIGHT = 34
+
+
+def bar_width(span: int) -> int:
+    """抽数 → 条的像素宽度（夹在 :data:`BAR_MIN` ~ :data:`BAR_MAX` 之间）。"""
+    return int(min(BAR_MAX, max(BAR_MIN, max(0, int(span)) * BAR_UNIT)))
 #: 星级角标颜色
 STAR_COLORS = {5: "#d4a017", 4: "#9b59b6", 3: "#5a8fd4"}
 
@@ -180,31 +189,43 @@ class _SpanBar(QWidget):
     """一条抽数条（带颜色 + 数值）。
 
     工坊那条列表的核心视觉：绿=欧、黄=正常、红=非。
+
+    ★ 2026-09-30 按用户要求调粗调高：
+    "这种横条太细了，调粗一些，跟角色头像宽度差不多宽" ——
+    所以高度接近头像（``BAR_HEIGHT``），最短也保证能看清数字。
     """
 
     def __init__(self, span: int, parent=None):
         super().__init__(parent)
         self._span = max(0, int(span))
         self.setFixedHeight(BAR_HEIGHT)
-        width = min(BAR_MAX, max(28, self._span * BAR_UNIT))
-        self.setFixedWidth(width + 44)      # bar + 文字
+        self.setFixedWidth(bar_width(self._span))
 
     def paintEvent(self, event):  # noqa: N802 - Qt 回调
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         color = QColor(gacha.span_color(self._span))
-        width = min(BAR_MAX, max(28, self._span * BAR_UNIT))
 
         painter.setBrush(color)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(0, 0, width, BAR_HEIGHT - 4, 4, 4)
+        # 圆角跟着高度走，看起来是"胶囊条"（工坊那种）
+        radius = max(4, (BAR_HEIGHT - 6) // 2)
+        painter.drawRoundedRect(0, 3, bar_width(self._span), BAR_HEIGHT - 6,
+                                radius, radius)
 
         painter.setPen(QColor("#ffffff"))
         font = painter.font()
-        font.setPointSize(max(font.pointSize() - 1, 7))
+        font.setPointSize(max(font.pointSize() + 1, 9))
+        font.setBold(True)
         painter.setFont(font)
-        painter.drawText(6, BAR_HEIGHT - 9, f"{self._span}抽")
+        text = f"{self._span}抽"
+        metrics = painter.fontMetrics()
+        painter.drawText(
+            (bar_width(self._span) - metrics.horizontalAdvance(text)) // 2,
+            (BAR_HEIGHT + metrics.ascent() - metrics.descent()) // 2,
+            text)
         painter.end()
+
 
 
 class GachaWidget(ScrollArea):
@@ -595,7 +616,17 @@ class GachaWidget(ScrollArea):
         return card
 
     def _five_row(self, five, parent) -> QWidget:
-        """一条五星记录：头像 + 抽数条（左对齐）+ 歪标 + 时间。"""
+        """一条五星记录：**头像 + 抽数条 + 歪/欧/非**。
+
+        ★ 2026-09-30 用户要求：
+        "这种横条太细了，调粗一些，跟角色头像宽度差不多宽，
+        **然后歪、欧、非就写在横条后，时间就不要了**"。
+
+        所以这里：
+        * 条在左边（宽度见 :func:`bar_width`，高度接近头像）；
+        * 条**紧跟着**就是评价文字（歪 / 欧 / 非），不再用 stretch 顶到最右；
+        * **不再显示时间**（用户明确不要）。
+        """
         row_widget = QWidget(parent)
         row = QHBoxLayout(row_widget)
         row.setContentsMargins(0, 3, 0, 3)
@@ -610,15 +641,35 @@ class GachaWidget(ScrollArea):
         row.addWidget(_SpanBar(five.span, row_widget), 0,
                       Qt.AlignmentFlag.AlignVCenter)
 
+        # 评价文字：紧跟在条后面（歪 / 欧 / 非 三选一，常驻池不标歪）
+        text, color = self._verdict(five)
+        if text:
+            verdict = BodyLabel(text, row_widget)
+            verdict.setTextColor(color, color)
+            row.addWidget(verdict, 0, Qt.AlignmentFlag.AlignVCenter)
+
         row.addStretch(1)
-        if five.is_lost:
-            lost = CaptionLabel("歪", row_widget)
-            lost.setTextColor("#c0392b", "#e07070")
-            row.addWidget(lost, 0, Qt.AlignmentFlag.AlignVCenter)
-        time_label = CaptionLabel(five.time, row_widget)
-        time_label.setTextColor(*MUTED)
-        row.addWidget(time_label, 0, Qt.AlignmentFlag.AlignVCenter)
         return row_widget
+
+    @staticmethod
+    def _verdict(five) -> tuple[str, str]:
+        """这条五星的评价：**歪 / 欧 / 非**（用户要写在条后面）。
+
+        * **歪**：限定池里出了非 UP（最优先，用户最关心这个）
+        * **欧 / 非**：按这次用了多少抽分级（和条的颜色同一套阈值）
+        * 常驻池不判"歪"（没有 UP 概念），只按欧非分级
+
+        阈值复用 :data:`src.core.gacha.SPAN_COLORS` 的思路：
+        ≤60 抽算欧、≥74 抽算非，中间不标（正常出货不值得标）。
+        """
+        if five.is_lost:
+            return "歪", "#c0392b"
+        span = int(five.span or 0)
+        if span <= 60:
+            return "欧", "#2e8b57"
+        if span >= 74:
+            return "非", "#c0392b"
+        return "", ""
 
     def _five_avatar(self, five, parent) -> QWidget:
         """五星的头像 —— 角色/武器查 ``game_data``；查不到就用首字兜底图。

@@ -189,6 +189,72 @@ class TestSpanColor(unittest.TestCase):
                 self.assertTrue(gacha.span_color(span).startswith("#"))
 
 
+class TestSpanBarGeometry(unittest.TestCase):
+    """★ 抽数条的尺寸（用户 2026-09-30："太细了，调粗一些，跟头像差不多宽"）。"""
+
+    def test_bar_is_thick(self):
+        """★ 条要够高 —— 原来 18px 太细，现在接近头像。"""
+        from src.tools.game.gacha import tool as ui
+
+        self.assertGreaterEqual(ui.BAR_HEIGHT, 30, "条还是太细")
+
+    def test_width_scales_with_span(self):
+        """抽数越多条越长（但夹在上下限之间）。"""
+        from src.tools.game.gacha import tool as ui
+
+        self.assertLess(ui.bar_width(10), ui.bar_width(60))
+        self.assertLess(ui.bar_width(60), ui.bar_width(80))
+
+    def test_short_span_has_readable_minimum(self):
+        """★ 1 抽的条也要够宽，否则数字写不下。
+
+        用户要的就是"跟角色头像宽度差不多" —— 最窄也得是个能看的块。
+        """
+        from src.tools.game.gacha import tool as ui
+
+        self.assertGreaterEqual(ui.bar_width(1), 60)
+
+    def test_long_span_is_capped(self):
+        """超长的条要封顶，别把一行撑爆。"""
+        from src.tools.game.gacha import tool as ui
+
+        self.assertLessEqual(ui.bar_width(999), ui.BAR_MAX)
+
+
+class TestVerdict(unittest.TestCase):
+    """★ 条后面的评价文字（用户：**歪 / 欧 / 非** 写在横条后）。"""
+
+    def _verdict(self, *, is_lost: bool, span: int) -> tuple[str, str]:
+        from src.tools.game.gacha.tool import GachaWidget
+
+        five = gacha.FiveStar(name="x", span=span, is_50=not is_lost,
+                              limited_pool=True)
+        return GachaWidget._verdict(five)
+
+    def test_lost_wins_over_luck(self):
+        """★ 歪了就是「歪」——哪怕这次只用了 5 抽（欧）。"""
+        text, _color = self._verdict(is_lost=True, span=5)
+        self.assertEqual(text, "歪")
+
+    def test_lucky(self):
+        self.assertEqual(self._verdict(is_lost=False, span=20)[0], "欧")
+
+    def test_unlucky(self):
+        self.assertEqual(self._verdict(is_lost=False, span=78)[0], "非")
+
+    def test_normal_has_no_label(self):
+        """中间区间不标（正常出货不值得标字）。"""
+        self.assertEqual(self._verdict(is_lost=False, span=65)[0], "")
+
+    def test_every_case_returns_color_when_labelled(self):
+        """标了字就必须给颜色（否则白字看不见）。"""
+        for lost, span in ((True, 5), (False, 20), (False, 78)):
+            with self.subTest(lost=lost, span=span):
+                text, color = self._verdict(is_lost=lost, span=span)
+                self.assertTrue(text)
+                self.assertTrue(color.startswith("#"))
+
+
 class TestCharacterOnlyCategories(unittest.TestCase):
     """★ 限定/常驻五星统计**只算角色**，不混武器。
 
