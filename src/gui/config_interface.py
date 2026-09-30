@@ -29,7 +29,9 @@ from qfluentwidgets import (
 
 from ..core.echo_profile import EchoProfileStore
 from ..core.loadout import Loadout, LoadoutStore
+from ..core.registry import logger
 from .compat import CaptionLabel, ElidedLabel, TitleLabel, resolve_icon
+from .config_names import KIND_ECHO_PROFILE, KIND_LOADOUT
 from .echo_profile_ui import (
     TYPE_ECHO_PROFILE,
     TYPE_LOADOUT,
@@ -413,7 +415,55 @@ class ConfigInterface(ScrollArea):
             return
         EchoProfileDialog(self.window(), profile=profile, read_only=True).exec()
 
+    def _used_by_flows(self, kind: str, *keys) -> list[str]:
+        """这条配置正被哪些任务流程引用？读不到任务存储时返回空（不拦）。"""
+        try:
+            from ..core.tasks import TaskStore, flows_using_config
+
+            return flows_using_config(TaskStore().all(), kind, *keys)
+        except Exception:  # noqa: BLE001 - 读任务出错不该把"删除配置"整个卡死
+            logger.warning("检查配置引用失败（kind=%s, keys=%s）", kind, keys,
+                           exc_info=True)
+            return []
+
+    def _blocked_by_flows(self, kind: str, display: str, *keys) -> bool:
+        """配置被任务流程引用 → 弹提示并**拒绝删除**，返回 True。
+
+        用户 2026-09-28 要求："已完成任务流程里使用的配置，不能直接删除配置，
+        需要先删除任务，才能删除配置"。
+
+        ⚠ 这里用的是 ``MessageBox`` 而不是 ``InfoBar``：``InfoBar`` 只是浮一条
+        提示，用户很容易看漏，然后一脸茫然"为什么点了删除没反应"。
+        弹框能明确告诉他**是哪几条流程**在占用、以及该怎么办。
+        """
+        users = self._used_by_flows(kind, *keys)
+        if not users:
+            return False
+
+        shown = "、".join(f"「{name}」" for name in users[:5])
+        if len(users) > 5:
+            shown += f" 等 {len(users)} 条"
+        box = MessageBox(
+            "配置正在被使用",
+            f"{display} 正被 {shown} 任务流程使用，不能删除。\n\n"
+            "请先到「任务」页删除这些流程，再回来删除配置 —— "
+            "否则那些流程里的一步会失效（工具拿不到配置）。",
+            self.window(),
+        )
+        box.yesButton.setText("知道了")
+        box.cancelButton.hide()          # 只读提示，没有可取消的操作
+        box.exec()
+        return True
+
     def delete_profile(self, name: str) -> None:
+        profile = self.profiles.get(name)
+        # 引用它的键：稳定 id + 名字（老流程存的是角色名，见 flows_using_config）
+        keys = [k for k in ((profile.id if profile else ""), name) if k]
+        if self._blocked_by_flows(
+                KIND_ECHO_PROFILE,
+                f"「{config_display_name(TYPE_ECHO_PROFILE, name)}」", *keys):
+            return
+
         box = MessageBox("删除配置",
                          f"确定删除「{config_display_name(TYPE_ECHO_PROFILE, name)}」"
                          "这条配置吗？删掉就找不回来了。", self.window())
@@ -445,6 +495,14 @@ class ConfigInterface(ScrollArea):
     def delete_loadout(self, loadout_id: str) -> None:
         loadout = self.store.get(loadout_id)
         if loadout is None:
+            return
+
+        # ★ 被任务流程引用的配置不能删（用户 2026-09-28 要求）——
+        #   筛选配置的步骤 key 就是 Loadout.id，另外带上角色名兜底。
+        keys = [k for k in (loadout_id, getattr(loadout, "character", "")) if k]
+        if self._blocked_by_flows(
+                KIND_LOADOUT,
+                f"「{config_display_name(TYPE_LOADOUT, loadout.character)}」", *keys):
             return
 
         box = MessageBox(

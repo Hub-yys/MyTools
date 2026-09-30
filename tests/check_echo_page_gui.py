@@ -661,6 +661,59 @@ def main() -> int:
           bool(_ldlg_err2), _ldlg_err2)
     _ldlg.close()
 
+    # ---- ★ 被任务流程引用的配置**不能删**（用户 2026-09-28）----
+    # "已完成任务流程里使用的配置，不能直接删除配置，需要先删除任务，才能删除配置"
+    #
+    # 这里**不真的弹框**（弹出来会卡住脚本）—— 拦不拦由 ``_blocked_by_flows``
+    # 决定，所以直接验它：被引用 → True（拦下），没被引用 → False（放行）。
+    import tempfile as _tf
+    from pathlib import Path as _P
+
+    from src.core.echo_profile import EchoProfile as _EP2
+    from src.core.echo_profile import EchoProfileStore as _PS2
+    from src.core.loadout import Loadout as _LO2
+    from src.core.loadout import LoadoutStore as _LS2
+    from src.core.tasks import TaskFlow as _TF2
+    from src.core.tasks import TaskStep as _TS2
+    from src.core.tasks import (
+        STEP_CONFIG as _SC2,
+        STEP_TOOL as _ST2,
+        TaskStore as _TSk2,
+    )
+
+    with _tf.TemporaryDirectory() as _tmp2:
+        _tmpd = _P(_tmp2)
+        # 造一条流程 + 一个被它引用的筛选配置
+        _tstore = _TSk2(_tmpd / "tasks.json")
+        _lstore = _LS2(_tmpd / "loadouts.json")
+        _lo2 = _LO2(character="景燃", echo_set="凝夜白霜")
+        _lstore.add(_lo2)
+        _tstore.add(_TF2(name="引用了景燃的流程", steps=[
+            _TS2(type=_ST2, key="echo_enhance", name="声骸自动强化"),
+            _TS2(type=_SC2, key=_lo2.id, name="景燃", config_kind="loadout"),
+        ]))
+
+        from src.core.tasks import flows_using_config as _fuc
+
+        _users = _fuc(_tstore.all(), "loadout", _lo2.id, "景燃")
+        check("★ 被流程引用的配置 → 检测得到引用（会拦下删除）",
+              _users == ["引用了景燃的流程"], str(_users))
+
+        # 没被引用的配置 → 放行
+        _lo3 = _LO2(character="爱弥斯", echo_set="凝夜白霜")
+        _lstore.add(_lo3)
+        check("★ 没被引用的配置 → 不拦（照旧能删）",
+              _fuc(_tstore.all(), "loadout", _lo3.id, "爱弥斯") == [],
+              str(_fuc(_tstore.all(), "loadout", _lo3.id, "爱弥斯")))
+
+    # 源码级：两个删除入口都必须先过 _blocked_by_flows（别只接了一个）
+    _ci_src = (ROOT / "src/gui/config_interface.py").read_text(encoding="utf-8")
+    for _fn in ("def delete_profile", "def delete_loadout"):
+        _body = _ci_src.split(_fn, 1)[1] if _fn in _ci_src else ""
+        _body = _body.split("\n    def ", 1)[0]      # 截到下一个方法
+        check(f"★ {_fn[4:]} 删除前调用了 _blocked_by_flows",
+              "_blocked_by_flows" in _body)
+
     cfg.close()
 
     width = max(len(name) for name, _, _ in CHECKS)

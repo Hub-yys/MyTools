@@ -245,6 +245,52 @@ def bind_configs_to_tools(items: list[TaskStep]) -> list[dict]:
     return flow.tool_bindings()
 
 
+def flows_using_config(flows, kind: str, *keys) -> list[str]:
+    """哪些任务流程**引用了**这条配置？返回流程名列表（给界面提示用）。
+
+    用户 2026-09-28 要求："已完成任务流程里使用的配置，不能直接删除配置，
+    需要先删除任务，才能删除配置"。
+
+    ## 为什么必须拦
+
+    配置步骤靠 ``key`` 指向配置（筛选配置用 ``Loadout.id``、强化配置用
+    ``EchoProfile.id``）。配置一删，流程里那一步就变成**悬空引用**：
+    界面上那一步会显示成「xxx（配置已不在）」，而**运行时工具拿不到配置**，
+    等于那一步静默失效 —— 用户看到的是"流程明明还在，却不筛选了"。
+    这正是 ``live_config_name`` 里那段"（配置已不在）"的来源。
+
+    所以要在这里拦住，让用户**先删流程、再删配置**，把因果关系摆到明面上。
+
+    ## 匹配规则
+
+    ``keys`` 传这条配置的**所有**可用于指向它的键，因为历史上存过不同形式：
+
+    * **id**：稳定 id（现行）；
+    * **名字**：2026-09-26 之前强化配置还没有 id，步骤里存的是角色名
+      （见 ``config_names.find_config`` 的兼容说明）——
+      所以名字也要一起比，否则老流程引用会被漏掉、照样能删出事。
+
+    ``kind`` 为空串时**任意类型都算**（防御性：极老的步骤没有 config_kind 字段，
+    这种步骤按 ``KIND_LOADOUT`` 处理，见 ``kind_type_name``）；调用方一般会传准。
+
+    名字为空 / 没被任何流程引用 → 返回空列表（可以删）。
+    """
+    wanted = {str(k).strip() for k in keys if str(k or "").strip()}
+    if not wanted:
+        return []
+    names: list[str] = []
+    for flow in flows or ():
+        for step in getattr(flow, "steps", ()) or ():
+            if getattr(step, "type", "") != STEP_CONFIG:
+                continue
+            if kind and (getattr(step, "config_kind", "") or "") not in ("", kind):
+                continue
+            if str(getattr(step, "key", "") or "").strip() in wanted:
+                names.append(getattr(flow, "name", "") or "（未命名）")
+                break                      # 同一条流程只报一次
+    return names
+
+
 class TaskStore:
     """任务流程的本地存储（一个 JSON 文件装全部）。"""
 

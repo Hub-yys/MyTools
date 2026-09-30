@@ -20,6 +20,7 @@ from src.core.tasks import (  # noqa: E402
     TaskStep,
     TaskStore,
     bind_configs_to_tools,
+    flows_using_config,
 )
 
 
@@ -150,6 +151,89 @@ class TestStore(unittest.TestCase):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text("{ 坏的", encoding="utf-8")
         self.assertEqual(len(TaskStore(self.path)), 0)
+
+
+class TestFlowsUsingConfig(unittest.TestCase):
+    """★ 配置被任务流程引用时**不能删除**（用户 2026-09-28 要求）。
+
+    规则："已完成任务流程里使用的配置，不能直接删除配置，需要先删除任务，
+    才能删除配置"。
+
+    这是纯逻辑（不弹框），界面上那两个删除入口都调它。
+    """
+
+    def _flow(self, name: str, *steps: TaskStep) -> TaskFlow:
+        return TaskFlow(name=name, steps=list(steps))
+
+    def _cfg(self, key: str, kind: str = "loadout",
+             name: str = "景燃") -> TaskStep:
+        return TaskStep(type=STEP_CONFIG, key=key, name=name, config_kind=kind)
+
+    def test_matches_by_id(self):
+        flow = self._flow("流程A", tool(), self._cfg("id-123"))
+        self.assertEqual(flows_using_config([flow], "loadout", "id-123"),
+                         ["流程A"])
+
+    def test_returns_empty_when_unused(self):
+        """没被引用的配置 → 空列表（可以删）。"""
+        flow = self._flow("流程A", tool(), self._cfg("id-123"))
+        self.assertEqual(flows_using_config([flow], "loadout", "别的id"), [])
+
+    def test_matches_by_name_for_legacy_flows(self):
+        """★ 老流程步骤里存的是**角色名**而不是 id（2026-09-26 之前）。
+
+        只比 id 的话这种引用会被漏掉、配置照样能删出事 —— 所以名字也要比。
+        """
+        flow = self._flow("老流程", tool(),
+                          self._cfg("景燃", kind="echo_profile"))
+        self.assertEqual(
+            flows_using_config([flow], "echo_profile", "某id", "景燃"),
+            ["老流程"])
+
+    def test_kind_filters_by_type(self):
+        """筛选配置的 id 和强化配置的 id 可能撞车 —— kind 不同的不该误判。"""
+        flow = self._flow("流程A", tool(), self._cfg("same-key", kind="loadout"))
+        self.assertEqual(flows_using_config([flow], "loadout", "same-key"),
+                         ["流程A"])
+        self.assertEqual(flows_using_config([flow], "echo_profile", "same-key"),
+                         [])
+
+    def test_step_without_kind_still_matches(self):
+        """极老的步骤没有 config_kind 字段 —— 仍应算作引用（防御性）。"""
+        flow = self._flow("老流程", tool(),
+                          TaskStep(type=STEP_CONFIG, key="k1", name="景燃"))
+        self.assertEqual(flows_using_config([flow], "loadout", "k1"), ["老流程"])
+
+    def test_each_flow_reported_once(self):
+        """同一条流程里引用了两次也只报一次（别在提示里重复列同一个名字）。"""
+        flow = self._flow("流程A", tool(), self._cfg("k1"), self._cfg("k1"))
+        self.assertEqual(flows_using_config([flow], "loadout", "k1"), ["流程A"])
+
+    def test_multiple_flows_all_listed(self):
+        flows = [self._flow("流程A", tool(), self._cfg("k1")),
+                 self._flow("流程B", tool(), self._cfg("k1"))]
+        self.assertEqual(flows_using_config(flows, "loadout", "k1"),
+                         ["流程A", "流程B"])
+
+    def test_tool_steps_are_ignored(self):
+        """工具步骤的 key 不该被当成配置引用（哪怕字符串一样）。"""
+        flow = self._flow("流程A", tool(key="k1"))
+        self.assertEqual(flows_using_config([flow], "loadout", "k1"), [])
+
+    def test_empty_keys_never_match(self):
+        """没有可比的键（空 id / 空名字）→ 不拦（宁可放行也不要误拦）。"""
+        flow = self._flow("流程A", tool(), self._cfg("k1"))
+        self.assertEqual(flows_using_config([flow], "loadout"), [])
+        self.assertEqual(flows_using_config([flow], "loadout", "", "   "), [])
+
+    def test_empty_flow_list(self):
+        self.assertEqual(flows_using_config([], "loadout", "k1"), [])
+        self.assertEqual(flows_using_config(None, "loadout", "k1"), [])
+
+    def test_unnamed_flow_gets_placeholder(self):
+        flow = self._flow("", tool(), self._cfg("k1"))
+        self.assertEqual(flows_using_config([flow], "loadout", "k1"),
+                         ["（未命名）"])
 
 
 if __name__ == "__main__":
