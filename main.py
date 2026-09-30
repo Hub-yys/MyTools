@@ -74,51 +74,92 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _check_admin() -> None:
-    """启动时确认权限够不够。
+def _check_admin() -> bool:
+    """启动前的权限闸门：**不是管理员就拒绝启动**，返回是否放行。
 
-    打包版带了 ``requireAdministrator`` 清单（``packaging/mytools.spec`` 的
-    ``uac_admin=True``），正常情况下这里一定已经是管理员，这段只是兜底 ——
-    开发态 ``python main.py`` 直接跑、或清单没生效时提个醒，
-    免得用户跑到游戏前面才发现"点了游戏没反应"。
+    用户 2026-09-30 要求："增加应用启动时，如果不是管理员权限，启动失败，
+    并提示需要以管理模式启动"。
+
+    ## 为什么是"拒绝启动"而不是"提醒一下"
+
+    鸣潮带反外挂（ACE），游戏自身跑在**高完整性级别**。Windows 的 UIPI 会
+    静默丢掉低权限进程发往高权限窗口的**全部输入**（``PostMessage`` 也一样）——
+    表现是"点了游戏没反应"，**而且不报错**。
+
+    以前这里是"提醒 + 用户可以点『仍然继续』"：用户选了继续，进去之后每个游戏
+    工具都点不动，还会去查"坐标是不是错了"。**与其让他带着一个注定不工作的
+    状态往下走，不如当场拒绝。**
+
+    ⚠ 打包版带了 ``requireAdministrator`` 清单（``packaging/mytools.spec``
+    的 ``uac_admin=True``），正常情况下走不到这里；这段兜底的是
+    **开发态直接 ``python main.py``**（用户明确要求开发态也拦）。
+
+    ## 返回值
+
+    ``True`` = 放行；``False`` = 不放行，调用方要**以非 0 退出**。
+
+    非 Windows 直接放行（本项目只支持 Windows，但别让别的平台起不来）。
     """
-    from src.core import elevation, paths
+    from src.core import elevation
 
     if not elevation.is_windows():
-        return
+        return True
 
     level = elevation.own_integrity_level()
     if elevation.is_elevated():
-        logging.getLogger(__name__).info("已以管理员权限运行（%s）", elevation.level_name(level))
-        return
+        logging.getLogger(__name__).info(
+            "已以管理员权限运行（%s）", elevation.level_name(level))
+        return True
 
-    logging.getLogger(__name__).warning(
-        "当前不是管理员权限（%s）：游戏若以管理员身份运行，点击/按键会被系统拦掉",
+    logging.getLogger(__name__).error(
+        "启动被拒绝：当前不是管理员权限（%s）—— 游戏在高完整性级别运行，"
+        "本工具的点击/按键会被 UIPI 静默丢掉",
         elevation.level_name(level),
     )
-    if not paths.is_frozen():
-        return                       # 开发态不弹窗，看日志就够
 
+    # Qt 已经起来了（调用点在 QApplication 之后），所以可以弹框。
+    # 万一 Qt 没起好，也不能因为"弹不出框"就把闸门放过去 —— 那就白拦了。
+    try:
+        from PySide6.QtWidgets import QMessageBox
+
+        restart = _ask_restart_as_admin()
+    except Exception:  # noqa: BLE001 - 界面起不来时按下"不放行"处理
+        logging.getLogger(__name__).exception("权限提示框弹不出来")
+        restart = False
+
+    if restart and elevation.relaunch_as_admin():
+        logging.getLogger(__name__).info("已发起提权重启，本进程退出")
+        return False
+
+    return False
+
+
+def _ask_restart_as_admin() -> bool:
+    """弹"权限不足"框，返回用户是否选择以管理员身份重启。
+
+    ⚠ 这里**不再提供"仍然继续"**（用户要求启动失败）—— 只给两个出口：
+    提权重启，或退出。想继续就得先拿到权限。
+    """
     from PySide6.QtWidgets import QMessageBox
 
     from src.app_config import APP_DISPLAY_NAME
 
     box = QMessageBox()
-    box.setWindowTitle("权限不足")
-    box.setIcon(QMessageBox.Icon.Warning)
-    box.setText(f"{APP_DISPLAY_NAME} 目前不是管理员权限。")
+    box.setWindowTitle("权限不足，无法启动")
+    box.setIcon(QMessageBox.Icon.Critical)
+    box.setText(f"{APP_DISPLAY_NAME} 需要管理员权限才能启动。")
     box.setInformativeText(
-        "鸣潮带反外挂（ACE），游戏本身运行在管理员权限下 ——\n"
-        "这时 Windows 会拦掉本工具发出的点击和按键，表现是「点了游戏没反应」。\n\n"
-        "建议以管理员身份重新启动。"
+        "鸣潮带反外挂（ACE），游戏本身运行在管理员权限下。\n"
+        "Windows 会拦掉普通权限程序发出的点击和按键，表现是"
+        "「点了游戏没反应」—— 而且不报错。\n\n"
+        "所以本工具**必须**以管理员身份运行，否则所有游戏功能都用不了。\n\n"
+        "点「以管理员身份重启」会弹出 UAC 确认框。"
     )
     restart = box.addButton("以管理员身份重启", QMessageBox.ButtonRole.AcceptRole)
-    box.addButton("仍然继续", QMessageBox.ButtonRole.RejectRole)
+    box.addButton("退出", QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(restart)
     box.exec()
-    if box.clickedButton() is restart:
-        if elevation.relaunch_as_admin():
-            raise SystemExit(0)      # 新实例已经起来了，本进程退场
-        logging.getLogger(__name__).warning("提权重启被取消")
+    return box.clickedButton() is restart
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -156,7 +197,12 @@ def main(argv: list[str] | None = None) -> int:
     # 主窗口自己也设了一份（SetWindowIcon 会覆盖），但应用级这份不能省 ——
     # 否则没有主窗口时（如启动早期的报错框）又回到 python.exe 的默认图标。
     app.setWindowIcon(app_icon())
-    _check_admin()
+
+    # ★ 权限闸门（用户 2026-09-30 要求）：不是管理员就**启动失败**。
+    #   放在 QApplication 之后（要弹框）、但在发现工具/建主窗口之前 ——
+    #   权限不够时连主窗口都不该出现，免得用户以为"能用了"。
+    if not _check_admin():
+        return 1
 
     imported = discover_tools()
     metas = ToolRegistry.all_metas()

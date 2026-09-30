@@ -14,6 +14,10 @@
 
 ## 跑起来
 
+> ⚠ **必须用「管理员」终端跑**（2026-09-30 起）。不是管理员时程序会弹框提示
+> 并以非 0 退出 —— 因为游戏在高完整性级别运行，普通权限下所有游戏功能都点不动。
+> 直接用普通 PowerShell 跑会**起不来**，这不是 bug。
+
 ```powershell
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt --no-deps
@@ -24,11 +28,18 @@ python -m venv .venv
 但它运行时只用到 QtWidgets / QtGui / QtCore / QtSvg / QtNetwork，全在 **PySide6-Essentials（77MB）** 里。
 依赖已在 `requirements.txt` 里全部显式列出，跳过解析就不会去拉那个大包。
 
+> 只想**看界面/跑测试**（不碰游戏功能）时，不需要管理员：
+> `tests/` 里的单测和冒烟脚本都直接跑，不受启动闸门影响
+> （闸门只在 `main()` 里，测试不进那条路）。
+
 ### PyCharm
 
 用 File → Open 打开项目目录即可。`.idea/runConfigurations/MyTools.xml` 里已经放好
 **MyTools** 和 **Smoke Core** 两个运行项；解释器指向 `.venv\Scripts\python.exe`。
 如果 PyCharm 没自动认出 `.venv`，手动在 Settings → Python Interpreter 里指过去。
+
+> ⚠ 因为启动要求管理员，**PyCharm 本身也要以管理员身份运行**，
+> 它拉起来的 `main.py` 才带管理员权限（子进程继承父进程的权限）。
 
 ### 离线安装（网络慢的时候）
 
@@ -346,8 +357,20 @@ MyTools 只提供两样东西：界面上的筛选条件，以及"把条件注�
    游戏**不必切到前台**，运行期间可以照常用电脑 —— 但别把游戏窗口关掉或最小化。
 5. **本工具要以管理员身份运行**。鸣潮带 ACE 反外挂，游戏跑在 **High 完整性级别**；
    Windows 的 UIPI 会拦掉低权限进程发往高权限窗口的**全部输入**（`PostMessage` 也一样），
-   表现是"点了游戏没反应"，而且不报错。打包版已带 `requireAdministrator` 清单
-   （双击弹 UAC 就是以管理员启动）；开发态请用管理员的命令行跑。
+   表现是"点了游戏没反应"，而且不报错。
+
+   > ★ **2026-09-30 起：不是管理员就"启动失败"**（用户要求）。
+   > 以前是"提醒 + 可以点『仍然继续』"，结果用户选继续之后每个游戏工具都点不动，
+   > 还会去查"坐标是不是错了"——**不如当场拒绝**。
+   >
+   > 现在的行为：启动时检查权限，不是管理员就弹框（标题「权限不足，无法启动」），
+   > **只给两个出口：以管理员身份重启 / 退出**，然后进程以**非 0 退出码**结束。
+   > 打包态和**开发态一视同仁**（开发态也得用管理员的终端跑）。
+   > 打包版另带 `requireAdministrator` 清单（`packaging/mytools.spec` 的
+   > `uac_admin=True`），正常双击就弹 UAC，走不到这个闸门。
+   >
+   > 实现在 `main.py` 的 `_check_admin()`（返回 `False` → `main()` 返回 1），
+   > 由 `tests/test_admin_gate.py` 覆盖。
 
 ### 配置项
 
