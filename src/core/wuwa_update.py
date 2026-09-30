@@ -715,8 +715,65 @@ def apply_updates(
         )
     # 就地重载内存数据：资源库页在下次显示时会发现版本号变了并重建，不必重启程序
     game_data.reload_data()
+
+    # 4) ★ **把缺的图标下下来**（2026-09-30 用户："资源库已经更新了，
+    #    这图片为什么没自动补上？"）
+    #
+    #    以前这一步**只写 URL、从不下载** —— 下载一直是
+    #    ``tools/fetch_wuwa_assets.py`` 那个手动脚本干的，
+    #    于是"数据更新了但图还是空的"。两件事本就不该分开。
+    #
+    #    ⚠ 必须在 ``reload_data()`` **之后**跑：要按新的声骸/套装/武器名单
+    #    去算"缺哪些图"，先下载的话拿到的还是旧名单。
+    done.extend(_download_missing_icons(log))
+
     done.append("已写盘，并已就地刷新内存数据 —— 打开资源库页即可看到最新内容（不用重启）。")
     return done
+
+
+def _download_missing_icons(log=lambda _m: None) -> list[str]:
+    """下载本地缺的图标文件（角色 / 套装 / 声骸 / 武器都要）。
+
+    返回给人看的结果行（放在"更新完成"的报告里）。
+
+    ⚠ **只补缺**：已有的文件绝不覆盖 —— 用户可能自己换过图
+    （README 里就是这么教的）。
+    """
+    from . import assets  # noqa: PLC0415 - 避免和 paths 的初始化顺序纠缠
+
+    wanted: dict[str, str] = {}
+    urls = game_data.ICON_URLS
+
+    def want(name: str, relative: str) -> None:
+        url = urls.get(name)
+        if url:
+            wanted.setdefault(relative, url)
+
+    for character in game_data.CHARACTERS:
+        want(character.name, character.avatar)
+    for echo_set in game_data.ECHO_SETS:
+        want(echo_set.name, echo_set.icon)
+    for items in game_data.ECHOES_BY_COST.values():
+        for echo in items:
+            want(echo.name, echo.icon)
+    for weapon in game_data.WEAPONS:
+        want(weapon.name, weapon.icon)
+
+    root = assets.assets_root()
+    missing = [rel for rel in wanted if not (root / rel).exists()]
+    if not missing:
+        return ["图标已齐全（没有要补的）"]
+
+    log(f"补下 {len(missing)} 张缺的图标（已存在的会跳过）…")
+    done_count, failed = assets.ensure_assets(wanted, log=log)
+    lines = [f"图标已补齐（新下 {done_count} 张，原本就有 "
+             f"{len(wanted) - len(missing)} 张）"]
+    if failed:
+        # 不把它当失败：少几张图不影响用，但要说清楚
+        lines.append(f"⚠ {len(failed)} 张没下下来（其余照常）："
+                     + "；".join(failed[:3])
+                     + ("…" if len(failed) > 3 else ""))
+    return lines
 
 
 # --------------------------------------------------------------------- 命令行

@@ -182,6 +182,18 @@ def resolve_url(table: dict[str, str], name: str) -> str | None:
 
 
 def download(url: str, target: pathlib.Path, referer: str = REFERER) -> int:
+    """按 URL 下一个 PNG 到指定路径。
+
+    ⚠ 和 ``src/core/assets.py`` 的 :func:`~src.core.assets.download_icon`
+    **不是重复实现**，两者面向不同来源：
+
+    * 这里：来源是 **bwiki**（要 bwiki 的 Referer）、且要能写到**任意路径**；
+    * core 那份：来源是**库街区**、路径固定在 ``assets/game/`` 下，
+      供「资源库更新」**自动补图**用。
+
+    共同点（PNG 校验 / 建目录）两边都有；真要合并得先统一 Referer 策略，
+    现在这样各自够用、也更清楚。
+    """
     with _open(url, referer=referer) as response:
         blob = response.read()
     if not blob.startswith(b"\x89PNG"):

@@ -203,6 +203,144 @@ class TestIconFilesPresent(unittest.TestCase):
                          f"{len(missing)} 个武器图标缺失：{missing[:8]}")
 
 
+class TestAutoDownloadOnUpdate(unittest.TestCase):
+    """★ 「资源库更新」要**自己把缺的图补上**，不能只写 URL。
+
+    用户 2026-09-30 报："资源库已经更新了，这图片为什么没自动补上？"
+
+    根因：更新流程**只写图标 URL、从不下载图片** —— 下载一直是
+    ``tools/fetch_wuwa_assets.py`` 那个手动脚本干的。于是"数据更新了、
+    图还是空的"。现在 ``apply_updates`` 里加了 ``_download_missing_icons()``。
+    """
+
+    def test_update_calls_download_step(self):
+        """★ 接线检查：``apply_updates`` 必须调用补图那一步。"""
+        import inspect
+
+        from src.core import wuwa_update
+
+        source = inspect.getsource(wuwa_update.apply_updates)
+        self.assertIn("_download_missing_icons", source,
+                      "更新流程没补图 —— 又会'数据更新了图还是空的'")
+
+    def test_download_step_runs_after_reload(self):
+        """★ 补图必须在 ``reload_data()`` **之后**。
+
+        要先拿到**新的**声骸/套装/武器名单才知道缺哪些图；
+        顺序反了就是拿旧名单算，新图照样补不上。
+        """
+        import inspect
+
+        from src.core import wuwa_update
+
+        source = inspect.getsource(wuwa_update.apply_updates)
+        reload_at = source.find("reload_data()")
+        download_at = source.find("_download_missing_icons")
+        self.assertGreater(reload_at, -1, "没找到 reload_data()")
+        self.assertGreater(download_at, -1, "没找到补图那步")
+        self.assertLess(reload_at, download_at,
+                        "补图在 reload_data() 之前 —— 会拿旧名单算")
+
+    def test_icon_urls_exposed_for_downloader(self):
+        """``game_data.ICON_URLS`` 要能被补图逻辑读到（角色/武器/声骸都要有）。"""
+        from src.core import game_data
+
+        game_data.ensure_loaded()
+        self.assertTrue(game_data.ICON_URLS, "ICON_URLS 是空的")
+        for name in ("解形煞", "云琅"):
+            with self.subTest(name=name):
+                self.assertIn(name, game_data.ICON_URLS)
+
+    def test_missing_files_are_downloaded(self):
+        """★ 端到端：删掉一张图 → 补图那步要把它下回来（内容一致）。
+
+        ⚠ 这条会**真的下载**（约一秒）。没有网/没素材时 skip。
+        """
+        import hashlib
+
+        from src.core import assets, game_data, wuwa_update
+
+        game_data.ensure_loaded()
+        root = assets.assets_root()
+        if not (root / "avatars").is_dir():
+            self.skipTest("本机没下过素材")
+
+        # 挑一张有 URL 的声骸图，备份后删掉
+        victim = None
+        for items in game_data.ECHOES_BY_COST.values():
+            for echo in items:
+                if game_data.ICON_URLS.get(echo.name) and (root / echo.icon).exists():
+                    victim = echo
+                    break
+            if victim:
+                break
+        if victim is None:
+            self.skipTest("找不到可用于测试的声骸图")
+
+        path = root / victim.icon
+        original = path.read_bytes()
+        digest = hashlib.sha256(original).hexdigest()
+        path.unlink()
+        try:
+            wuwa_update._download_missing_icons(log=lambda _m: None)
+            self.assertTrue(path.exists(), f"{victim.name} 没被自动补回来")
+            after = hashlib.sha256(path.read_bytes()).hexdigest()
+            self.assertEqual(after, digest, "补回来的图和原来不一致")
+        finally:
+            if not path.exists():          # 下载失败也要还原，别留个坑
+                path.write_bytes(original)
+
+    def test_existing_files_are_not_overwritten(self):
+        """★ 已有的图**绝不能覆盖** —— 用户可能自己换过图。
+
+        README 里就写着"换成自己的图：直接覆盖同名文件"，
+        自动补图要是覆盖回去，等于把用户的替换毁了。
+
+        ⚠ 要测的是 :func:`~src.core.assets.ensure_assets` **本身**的保护，
+        不能走 ``_download_missing_icons`` —— 那个函数在"什么都不缺"时
+        会**提前返回**，测的就不是保护逻辑了（我第一版就这么写的，
+        结果把保护删掉测试居然还通过）。
+        所以这里**直接喂一个文件已存在**的清单给 ensure_assets。
+        """
+        from src.core import assets, game_data
+
+        game_data.ensure_loaded()
+        root = assets.assets_root()
+        if not (root / "avatars").is_dir():
+            self.skipTest("本机没下过素材")
+
+        # 挑一张有 URL 的声骸图，写成"用户自己换的"假图
+        victim = None
+        for items in game_data.ECHOES_BY_COST.values():
+            for echo in items:
+                if game_data.ICON_URLS.get(echo.name):
+                    victim = echo
+                    break
+            if victim:
+                break
+        if victim is None:
+            self.skipTest("找不到有 URL 的声骸")
+
+        path = root / victim.icon
+        original = path.read_bytes() if path.exists() else None
+        marker = b"\x89PNG\r\n\x1a\n" + b"USER_REPLACED_THIS" * 4
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(marker)
+        try:
+            # 直接把"这张已有"的清单喂进去 —— 必须跳过
+            done, _failed = assets.ensure_assets(
+                {victim.icon: game_data.ICON_URLS[victim.name]},
+                log=lambda _m: None)
+            self.assertEqual(done, 0, "已经存在的图不该被下载")
+            self.assertEqual(path.read_bytes(), marker,
+                             "已有的图被覆盖了！用户的替换被毁")
+        finally:
+            if original is not None:
+                path.write_bytes(original)      # 还原真图
+            else:
+                path.unlink(missing_ok=True)
+
+
 class TestIconUrlSource(unittest.TestCase):
     """``icon_urls`` 里必须**同时**有套装和声骸的图标。"""
 

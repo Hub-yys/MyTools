@@ -340,6 +340,11 @@ ECHO_SKILLS: dict[str, dict[str, str]] = {}
 #: 套装名 -> 出场版本（如 ``"3.5"``）。人工整理，见同目录的 JSON。
 SET_VERSIONS: dict[str, str] = {}
 
+#: ``{名字: 图床 URL}`` —— 角色 / 套装 / 声骸 / 武器的图标来源。
+#: 由「资源库更新」抓下来存在 ``wuwa_echo_skills.json`` 的 ``icon_urls`` 里。
+#: 自动补图（``core/assets.py``）靠它知道该去哪儿下图。
+ICON_URLS: dict[str, str] = {}
+
 # --------------------------------------------------------------------- 内存数据
 #
 # ⚠ 下面这几个名字是**公用的全局清单**：别的模块是
@@ -430,6 +435,14 @@ def _load_into_memory(version: int) -> None:
     SET_VERSIONS.update({
         str(name): str(ver)
         for name, ver in dict(_SET_VERSION_DATA.get("versions", {})).items()
+    })
+
+    # 图标 URL：自动补图要靠它（角色 / 套装 / 声骸 / 武器混在一张表里）
+    ICON_URLS.clear()
+    ICON_URLS.update({
+        str(name): str(url)
+        for name, url in dict(_SKILL_DATA.get("icon_urls", {})).items()
+        if str(url).startswith("http")
     })
 
     CHARACTERS[:] = _build_characters(_CHARACTER_DATA)
