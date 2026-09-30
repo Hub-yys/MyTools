@@ -23,6 +23,7 @@ from qfluentwidgets import (
     TitleLabel,
 )
 
+from ...core import paths
 from ...core.categories import ToolCategory
 from ...core.registry import registry
 from ...core.tool_base import BaseTool
@@ -250,6 +251,9 @@ class WuwaLibraryUpdateTool(BaseTool):
     key = "wuwa_library_update"
     name = "资源库更新"
     description = "自动检查鸣潮资源库数据更新，一键获取最新数据"
+    #: 自带图标（2026-09-30 用户提供的一整套）
+    icon_path = str(paths.resource_dir("assets", "icons",
+                                       "wuwa_library_update.png"))
 
     def create_widget(self, parent=None):
         return WuwaLibraryUpdatePanel(parent)

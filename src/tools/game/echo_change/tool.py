@@ -343,6 +343,9 @@ class EchoChangeTool(BaseTool):
     key = "echo_change"
     name = "声骸批量调频"
     version = "0.1.0"
+    #: 自带图标（2026-09-30 用户提供的一整套）。写了它就**优先用图**，
+    #: 不再用 ``icon_name`` 对应的 Fluent 图标（见 gui/widgets.tool_icon_of）。
+    icon_path = str(paths.resource_dir("assets", "icons", "echo_change.png"))
 
     def create_widget(self, parent=None):
         return EchoChangeWidget(self.meta(), parent)

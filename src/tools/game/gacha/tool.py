@@ -53,7 +53,7 @@ from qfluentwidgets import (
     TitleLabel,
 )
 
-from ....core import gacha
+from ....core import gacha, paths
 from ....core.categories import ToolCategory
 from ....core.registry import registry
 from ....core.tool_base import BaseTool
@@ -697,6 +697,8 @@ class GachaTool(BaseTool):
     """抽卡记录分析工具。"""
 
     key = "gacha"
+    #: 自带图标（2026-09-30 用户提供的一整套）
+    icon_path = str(paths.resource_dir("assets", "icons", "gacha.png"))
     #: ⚠ BaseTool 默认 ``coming_soon = True``（显示"即将到来"占位页）——
     #: 这个工具是**真做完了的**，必须显式关掉，否则点进去还是占位页。
     coming_soon = False

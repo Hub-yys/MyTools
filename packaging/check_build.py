@@ -48,8 +48,12 @@ REQUIRED_IN_ARCHIVE = [
 #: 解包目录里必须存在的数据（相对 _internal）
 REQUIRED_DATA = [
     "assets/game/avatars",
+    # 工具图标（2026-09-30 起五个工具都自带图标，都要在）
     "assets/icons/echo_enhance.png",
     "assets/icons/auto_combat.png",
+    "assets/icons/echo_change.png",
+    "assets/icons/gacha.png",
+    "assets/icons/wuwa_library_update.png",
     "data/loadouts.json",
     "src/core/data/wuwa_echo_sets.json",
     "src/core/data/wuwa_weapons.json",         # 武器图鉴（2026-09-30 新增）

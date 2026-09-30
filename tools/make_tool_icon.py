@@ -1,11 +1,24 @@
 """生成**工具图标**（``assets/icons/<名字>.png``）。
 
 和 ``tools/make_app_icon.py`` 同一套画法（qfluentwidgets 的 FluentIcon 字形 + 圆角底），
-只是输出成 256×256 的 png —— 侧栏和主页的工具卡片用的是这个。
+只是输出成 512×512 的 png —— 侧栏和主页的工具卡片用的是这个。
 
     python tools/make_tool_icon.py auto_combat GAME "#C0392B"
 
 参数：工具 key、FluentIcon 成员名、底色（可省，默认 Fluent 主色蓝）。
+
+⚠ **2026-09-30 起五个工具都有专门设计的图标了**（用户提供的 SVG 转 PNG），
+现在这个脚本只在"**新加工具、暂时没图**"时用来顶一下：
+
+    4C 自动战斗      assets/icons/auto_combat.png
+    声骸自动强化      assets/icons/echo_enhance.png
+    声骸批量调频      assets/icons/echo_change.png
+    抽卡记录分析      assets/icons/gacha.png
+    资源库更新       assets/icons/wuwa_library_update.png
+
+**别拿这个脚本去覆盖它们** —— 生成的是一色底 + 单色字形，
+和那套设计好的图完全不同。``assets/icons/`` 也不在 .gitignore 里
+（工具图标是**自制**的，不是游戏素材，入库）。
 """
 
 from __future__ import annotations
