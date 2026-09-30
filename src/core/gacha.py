@@ -69,6 +69,58 @@ PITY_FIVE = 80
 #: 四星保底（10 抽必出四星及以上）
 PITY_FOUR = 10
 
+#: **常驻**五星角色 —— 用来判定"歪没歪"（见 :func:`is_limited`）。
+#: ⚠ 这份名单要维护：鸣潮的常驻池会随版本**扩充**（新角色进常驻后要从限定名单里
+#: 拿掉）。来源是官方公告 + 攻略站核对（2026-09-30：常驻五虎）。
+#: 不在这个名单里的五星角色 = 限定（UP）。
+PERMANENT_CHARACTERS: frozenset[str] = frozenset({
+    "维里奈", "凌阳", "鉴心", "安可", "卡卡罗",
+})
+
+#: **常驻**五星武器。同样要维护。
+#: 常驻武器池的五把五星（每类武器各一把）。
+PERMANENT_WEAPONS: frozenset[str] = frozenset({
+    "千古洑流", "浩境粼光", "时和岁稔", "停驻之烟", "擎渊怒涛",
+})
+
+
+def is_limited(name: str, kind: str = "") -> bool:
+    """这个五星是**限定（UP）**还是常驻/歪的？
+
+    参考鸣潮工坊的判定：``!常驻角色名单.includes(name) && !常驻武器名单.includes(name)``
+    —— 也就是"两边常驻名单都不在"才算限定。
+
+    ⚠ 名字取不到（接口没给）时返回 **True**：宁可当限定（不影响"歪没歪"的
+    分母），也不要当成"歪"从而把不歪率算低。
+
+    ⚠ 这份名单**必须维护**。判断错的后果：不歪率、每 UP 均值全错，
+    而且**不报错**（数字看着很正常）。
+    """
+    text = str(name or "").strip()
+    if not text:
+        return True
+    return text not in PERMANENT_CHARACTERS and text not in PERMANENT_WEAPONS
+
+
+#: 抽数条的配色分级：``(上限, 颜色)`` —— 抽数 **小于等于** 上限就用这个颜色。
+#: 阈值参考鸣潮工坊：绿(欧) / 黄(正常) / 红(非)。
+#: ⚠ 顺序必须从小到大，第一个命中为准。
+SPAN_COLORS: tuple[tuple[int, str], ...] = (
+    (40, "#4aa96c"),      # 绿：很欧
+    (60, "#7fae72"),      # 浅绿
+    (73, "#c8a86a"),      # 黄：正常
+    (80, "#d9705a"),      # 橙红：接近/吃到保底
+    (10 ** 9, "#c0392b"),  # 红：超过保底（异常，理论上不该出现）
+)
+
+
+def span_color(span: int) -> str:
+    """抽数 → 颜色（抽数条用）。"""
+    for limit, color in SPAN_COLORS:
+        if span <= limit:
+            return color
+    return SPAN_COLORS[-1][1]
+
 #: 欧非评价：``(平均出货抽数下限, 称号, 颜色)`` —— 从大到小匹配。
 #: 阈值参考鸣潮工坊那套（平均抽数越低越欧）。
 LUCK_TIERS: tuple[tuple[float, str, str], ...] = (
@@ -181,11 +233,38 @@ class Pull:
 
 
 @dataclass
+class FiveStar:
+    """一个出过的五星（含"第几抽出、歪没歪"）。"""
+
+    name: str = ""
+    time: str = ""
+    kind: str = ""
+    #: 这次出五星用掉多少抽（**距离上一个五星**，含它自己）。界面显示用这个
+    span: int = 0
+    #: 距离上一次 **UP** 的抽数（含它自己）。大保底用：歪了会累加。
+    #: 「每 UP 平均多少抽」按它算。
+    cumulative: int = 0
+    #: 是不是 UP（限定）。常驻池一律 True
+    is_up: bool = True
+    #: 这个五星出自限定池吗（常驻池不参与"歪没歪"统计）
+    limited_pool: bool = False
+    #: 限定池里：这次是 UP（没歪）还是歪了。常驻池恒 False
+    is_50: bool = False
+
+    @property
+    def is_lost(self) -> bool:
+        """歪了没（限定池里出了非 UP）。"""
+        return self.limited_pool and not self.is_50
+
+
+@dataclass
 class PoolStats:
     """一个卡池的统计。"""
 
     name: str = ""
-    #: 该池全部记录（按接口顺序，通常是最新在前）
+    #: 卡池类型（:data:`POOLS` 里的编号）。用来判断是不是限定池
+    pool_type: str = ""
+    #: 该池全部记录（按接口顺序，**最新在前**）
     pulls: list[Pull] = field(default_factory=list)
 
     # ---------------------------------------------------------------- 基础
@@ -250,8 +329,8 @@ class PoolStats:
     def five_star_spans(self) -> list[tuple[Pull, int]]:
         """``[(五星, 它用掉多少抽), ...]``，按**时间顺序**。
 
-        界面要给每个五星标"第几抽出"，直接用这个 —— 别在界面里重算一遍
-        （两处各写一份，方向搞反了会静默显示错的数字）。
+        ⚠ 这里**不管大保底** —— 单纯是"两个五星之间隔了多少抽"。
+        要判断"这个五星是不是 UP、这次算不算歪"，用 :meth:`fives_analysis`。
         """
         ordered = list(reversed(self.pulls))
         result: list[tuple[Pull, int]] = []
@@ -262,6 +341,101 @@ class PoolStats:
                 result.append((pull, count))
                 count = 0
         return result
+
+    # ------------------------------------------------ 大保底 / UP 分析
+    @property
+    def is_limited_pool(self) -> bool:
+        """这个池子是不是**限定池**（角色活动 / 武器活动）。
+
+        只有限定池才有"歪没歪""大保底"的概念；常驻池一律不算。
+        """
+        return self.pool_type in ("1", "2")
+
+    def fives_analysis(self) -> list["FiveStar"]:
+        """把五星逐个分析出来：抽数、是不是 UP、是否歪。
+
+        ## 两个**不同**的计数（★ 这是最容易算错的地方）
+
+        参考鸣潮工坊的实现，这里要同时维护两个计数：
+
+        ==============  ==========================  ==========================
+        字段            含义                        什么时候重置
+        ==============  ==========================  ==========================
+        ``span``        距离上一个**五星**           每个五星都重置
+                        （界面上"这个金花了几抽"）
+        ``cumulative``  距离上一次 **UP**            只有出 UP 才重置
+                        （大保底用：歪了会累加）     歪了继续累加
+        ==============  ==========================  ==========================
+
+        ## 为什么必须分开
+
+        我第一版只写了"距离上一个五星"，然后照抄参考实现的
+        ``a = t ? 1 : a + 1``（只有 UP 才重置）——**把两个口径混成了一个**，
+        结果界面上"第几抽"的数字会变成累计值（124 抽这种），明显不对。
+
+        而"每 UP 平均多少抽"用的**是** ``cumulative`` 那个口径
+        （大保底的抽数也算在这一次 UP 头上）。
+
+        常驻池没有 UP 概念，``is_up`` 一律 True、``is_50`` 恒 False
+        （不参与"歪没歪"统计）。
+        """
+        ordered = list(reversed(self.pulls))
+        result: list[FiveStar] = []
+        span = 0            # 距离上一个五星
+        cumulative = 0      # 距离上一次 UP（大保底）
+        for pull in ordered:
+            span += 1
+            cumulative += 1
+            if pull.star != 5:
+                continue
+            limited = self.is_limited_pool
+            is_up = True if not limited else is_limited(pull.name, pull.kind)
+            result.append(FiveStar(
+                name=pull.name,
+                time=pull.time,
+                kind=pull.kind,
+                span=span,
+                cumulative=cumulative,
+                is_up=is_up,
+                limited_pool=limited,
+                is_50=is_up if limited else False,
+            ))
+            span = 0                          # 每个五星都重置
+            # ★ 大保底：UP 才重置 cumulative；歪了继续累加（下一个必 UP）
+            cumulative = 0 if is_up or not limited else cumulative
+        return result
+
+    def up_count(self) -> int:
+        """限定池里出了几个 UP（没歪的五星）。"""
+        return sum(1 for f in self.fives_analysis() if f.is_50)
+
+    def not_up_rate(self) -> float | None:
+        """**不歪率**（小保底不歪的百分比）。
+
+        口径：限定池里所有五星中，**UP 占的比例**。
+        没抽过限定池返回 ``None``（而不是 0 —— 0 会被误读成"每次都歪"）。
+        """
+        fives = self.fives_analysis()
+        if not self.is_limited_pool or not fives:
+            return None
+        return sum(1 for f in fives if f.is_50) / len(fives) * 100.0
+
+    def average_per_up(self) -> float | None:
+        """**每出一个 UP 平均要多少抽**。
+
+        = 该池总抽数 / UP 个数。没出过 UP 返回 ``None``。
+
+        ⚠ 口径说明：工坊的「每UP角色需 74.6 抽」就是这个 —— **总抽数除以 UP 数**
+        （歪掉的那些抽也算在里面，因为为了拿到 UP 你**确实**花了那些抽）。
+        **不是** ``cumulative`` 的平均值。
+
+        举例：3255 抽 / 63 金 = 51.7（平均出金）；而每 UP 是
+        ``3255 / UP数``，因为常驻池的抽、歪掉的抽都摊在 UP 头上。
+        """
+        ups = self.up_count()
+        if not self.is_limited_pool or not ups:
+            return None
+        return self.total / ups
 
     def _tier(self, average: float) -> tuple[str, str]:
         """按平均出货抽数取评价 —— 阈值从大到小匹配，第一个命中的就是。
@@ -316,9 +490,74 @@ class GachaReport:
         items = [p for pool in self.pools for p in pool.five_stars]
         return sorted(items, key=lambda p: p.time, reverse=True)
 
+    def all_fives_analysis(self) -> list[FiveStar]:
+        """所有五星的逐条分析（含歪没歪），按时间倒序。"""
+        items = [f for pool in self.pools for f in pool.fives_analysis()]
+        return sorted(items, key=lambda f: f.time, reverse=True)
+
+    def limited_fives(self) -> list[FiveStar]:
+        """**获得过的限定角色**（去重按名字）。
+
+        对应工坊那句「共获得限定五星 44 个，常驻五星 19 个」。
+
+        ⚠ **只算角色，不算武器**。反推验证（用户截图，2026-09-30）：
+        ``44 + 19 = 63 = 五星数``，两个数加起来正好等于总五星数 ——
+        说明这两类统计的都是**角色**（武器在工坊里另有「每UP武器需」那一栏）。
+        把武器混进来会让两个数加起来超过总五星数。
+        """
+        seen: dict[str, FiveStar] = {}
+        for f in self.all_fives_analysis():
+            if f.kind == "武器":
+                continue
+            if f.limited_pool and f.is_50 and f.name:
+                seen.setdefault(f.name, f)
+        return list(seen.values())
+
+    def permanent_fives(self) -> list[str]:
+        """**获得过的常驻角色**名字（去重）。
+
+        口径与 :meth:`limited_fives` 对称：**只算角色**（见那里的说明）。
+        判定用 :func:`is_limited`（名字不在常驻名单里才算限定）。
+        """
+        names: list[str] = []
+        for f in self.all_fives_analysis():
+            if not f.name or f.kind == "武器":
+                continue
+            if not is_limited(f.name, f.kind) and f.name not in names:
+                names.append(f.name)
+        return names
+
+    def not_up_rate(self) -> float | None:
+        """整体**不歪率**（只看限定池）。没抽过限定池返回 ``None``。"""
+        fives = [
+            f for pool in self.pools if pool.is_limited_pool
+            for f in pool.fives_analysis()
+        ]
+        if not fives:
+            return None
+        return sum(1 for f in fives if f.is_50) / len(fives) * 100.0
+
+    def average_per_up(self, kind: str = "角色") -> float | None:
+        """**每 UP 角色 / 每 UP 武器**平均多少抽。
+
+        ``kind`` 传 ``"角色"`` 或 ``"武器"`` —— 对应工坊那两栏。
+        角色看池 1（角色活动），武器看池 2（武器活动）。
+        """
+        want = "1" if kind == "角色" else "2"
+        for pool in self.pools:
+            if pool.pool_type == want:
+                return pool.average_per_up()
+        return None
+
     def active_pools(self) -> list[PoolStats]:
         """抽过的池子（没抽过的不显示，免得界面一排全 0）。"""
         return [p for p in self.pools if p.total]
+
+    def pool_by_type(self, pool_type: str) -> PoolStats | None:
+        for pool in self.pools:
+            if pool.pool_type == pool_type:
+                return pool
+        return None
 
     def luck(self) -> tuple[str, str] | None:
         """整体欧非评价（按全部卡池合计的平均出货抽数）。
@@ -394,7 +633,7 @@ def fetch_report(params: dict[str, str], log=lambda _m: None) -> GachaReport:
     for pool_type, display in POOLS:
         log(f"拉取「{display}」…")
         records = fetch_pool(params, pool_type)
-        stats = PoolStats(name=display)
+        stats = PoolStats(name=display, pool_type=pool_type)
         stats.pulls = [Pull.from_record(r, display) for r in records]
         report.pools.append(stats)
         log(f"  {display}：{stats.total} 抽")

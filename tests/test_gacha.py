@@ -43,6 +43,175 @@ def make_pool(name: str, seq, pool_name: str = "") -> gacha.PoolStats:
     return gacha.PoolStats(name=name, pulls=list(reversed(oldest_first)))
 
 
+def five_pool(segments, *, name="角色活动唤取", pool_type="1",
+              kind="角色") -> gacha.PoolStats:
+    """按"每段 = 前面垫 N 抽杂 + 1 抽金"造限定池。
+
+    ``segments = [(金的名字, 前面垫几抽), ...]``（时间正序）。
+
+    这样构造的好处：每段的 **span 就等于 filler+1**，
+    期望值可以直接由构造推出，不用手算（手算必错，我错过两次）。
+    """
+    pulls, t = [], 0
+    for gold, filler in segments:
+        for _ in range(filler):
+            pulls.append(gacha.Pull(name="杂", star=3, time=f"t{t:05d}",
+                                    kind=kind))
+            t += 1
+        pulls.append(gacha.Pull(name=gold, star=5, time=f"t{t:05d}",
+                                kind=kind))
+        t += 1
+    return gacha.PoolStats(name=name, pool_type=pool_type,
+                           pulls=list(reversed(pulls)))
+
+
+class TestPityAndUp(unittest.TestCase):
+    """★ 大保底 / UP / 歪 —— 这是"数据分析不对"的**根因所在**。
+
+    参考鸣潮工坊的实现，要维护**两个**计数：
+
+    ==============  ====================  ==================
+    字段            含义                  重置时机
+    ==============  ====================  ==================
+    ``span``        距离上一个**五星**     每个五星都重置
+    ``cumulative``  距离上一次 **UP**      只有 UP 才重置
+    ==============  ====================  ==================
+
+    我第一版把两者混成一个（照抄了参考里"只有 UP 才重置"的那句），
+    结果界面上的"第几抽"会变成累计值。
+    """
+
+    #: 正序：垫3->歪(维里奈) 垫7->UP(心) 垫12->歪(卡卡罗) 垫4->UP(锁暝) 垫20->UP(心)
+    SEGS = [("维里奈", 3), ("心", 7), ("卡卡罗", 12), ("锁暝", 4), ("心", 20)]
+
+    def _pool(self):
+        return five_pool(self.SEGS)
+
+    def test_span_is_gap_between_five_stars(self):
+        """``span`` = 距离上一个**五星**，不管歪没歪都重置。"""
+        pool = self._pool()
+        expect = [filler + 1 for _n, filler in self.SEGS]
+        self.assertEqual([f.span for f in pool.fives_analysis()], expect)
+
+    def test_cumulative_carries_over_on_loss(self):
+        """★ ``cumulative`` 歪了**继续累加**（大保底）。
+
+        构造推演：
+          维里奈(歪) = 4
+          心(UP)     = 4 + 8  = 12   ← 继承上面歪掉那段
+          卡卡罗(歪) = 13
+          锁暝(UP)   = 13 + 5 = 18   ← 再继承
+          心(UP)     = 21
+        """
+        pool = self._pool()
+        self.assertEqual([f.cumulative for f in pool.fives_analysis()],
+                         [4, 12, 13, 18, 21])
+
+    def test_up_and_lost_flags(self):
+        pool = self._pool()
+        fives = pool.fives_analysis()
+        self.assertEqual([f.is_50 for f in fives],
+                         [False, True, False, True, True])
+        self.assertEqual([f.is_lost for f in fives],
+                         [True, False, True, False, False])
+
+    def test_up_count_and_not_up_rate(self):
+        pool = self._pool()
+        self.assertEqual(pool.up_count(), 3)
+        self.assertAlmostEqual(pool.not_up_rate(), 60.0)   # 3/5
+
+    def test_average_per_up_is_total_over_ups(self):
+        """每 UP 平均 = **总抽数 / UP 数**（歪掉的抽也算进去）。
+
+        总 = 4+8+13+5+21 = 51，UP = 3 → 17.0
+        """
+        pool = self._pool()
+        self.assertAlmostEqual(pool.average_per_up(), 51 / 3)
+
+    def test_resident_pool_has_no_up_concept(self):
+        """常驻池没有 UP/歪 —— 两个指标都返回 ``None``（不是 0）。
+
+        返回 0 会被界面显示成"0.0%"，读起来像"每次都歪"，是误导。
+        """
+        pool = five_pool([("维里奈", 5), ("卡卡罗", 30)],
+                         name="角色常驻唤取", pool_type="3")
+        self.assertFalse(pool.is_limited_pool)
+        self.assertIsNone(pool.not_up_rate())
+        self.assertIsNone(pool.average_per_up())
+        # 但 span 照常算（常驻池也要显示第几抽）
+        self.assertEqual([f.span for f in pool.fives_analysis()], [6, 31])
+
+    def test_limited_pool_types(self):
+        """只有池 1（角色活动）/ 2（武器活动）算限定池。"""
+        for ptype, limited in (("1", True), ("2", True), ("3", False),
+                               ("4", False), ("5", False), ("6", False),
+                               ("7", False)):
+            with self.subTest(pool_type=ptype):
+                pool = gacha.PoolStats(name="x", pool_type=ptype)
+                self.assertEqual(pool.is_limited_pool, limited)
+
+
+class TestLimitedJudgement(unittest.TestCase):
+    """UP 判定的依据是**常驻名单**（不在名单里 = 限定）。"""
+
+    def test_permanent_characters_are_not_limited(self):
+        for name in ("维里奈", "凌阳", "鉴心", "安可", "卡卡罗"):
+            with self.subTest(name=name):
+                self.assertFalse(gacha.is_limited(name, "角色"),
+                                 f"{name} 是常驻，不该算限定")
+
+    def test_others_are_limited(self):
+        for name in ("心", "锁暝", "绯雪", "爱弥斯"):
+            with self.subTest(name=name):
+                self.assertTrue(gacha.is_limited(name, "角色"))
+
+    def test_blank_name_defaults_to_limited(self):
+        """名字取不到时当**限定**：宁可不算"歪"，也不要把不歪率算低。"""
+        self.assertTrue(gacha.is_limited("", "角色"))
+
+
+class TestSpanColor(unittest.TestCase):
+    """抽数条配色：低抽数绿（欧）、高抽数红（非）。"""
+
+    def test_low_is_green_high_is_red(self):
+        low = gacha.span_color(10)
+        high = gacha.span_color(79)
+        self.assertNotEqual(low, high)
+        # 抽数越小越"绿"（G 分量更高）
+        def greenish(hexcolor: str) -> int:
+            return int(hexcolor[3:5], 16)
+
+        self.assertGreater(greenish(low), greenish(high))
+
+    def test_monotonic_thresholds_cover_everything(self):
+        for span in (1, 40, 41, 60, 61, 73, 74, 80, 81, 200):
+            with self.subTest(span=span):
+                self.assertTrue(gacha.span_color(span).startswith("#"))
+
+
+class TestCharacterOnlyCategories(unittest.TestCase):
+    """★ 限定/常驻五星统计**只算角色**，不混武器。
+
+    反推验证（用户截图）：``限定44 + 常驻19 = 63 = 五星数`` ——
+    两个数加起来正好是总五星，说明统计的都是角色。
+    把武器混进来会让两数之和超过总数。
+    """
+
+    def test_weapons_excluded(self):
+        report = gacha.GachaReport(pools=[
+            five_pool([("维里奈", 3), ("心", 7)], name="角色活动唤取",
+                      pool_type="1", kind="角色"),
+            five_pool([("千古洑流", 5)], name="武器活动唤取",
+                      pool_type="2", kind="武器"),
+        ])
+        limited = [f.name for f in report.limited_fives()]
+        permanent = report.permanent_fives()
+        self.assertIn("心", limited)
+        self.assertNotIn("千古洑流", limited, "武器不该进限定角色统计")
+        self.assertNotIn("千古洑流", permanent, "武器不该进常驻角色统计")
+        self.assertIn("维里奈", permanent)
+
+
 class TestParseLink(unittest.TestCase):
     """★ 链接参数名和接口参数名**不一样**，这层映射错了就完全拉不到数据。"""
 
@@ -329,17 +498,30 @@ class TestWidgetRender(unittest.TestCase):
         widget.render(report)
         self.app.processEvents()
 
-        self.assertEqual(widget.tiles["total"].value_label.text(), "3")
-        self.assertEqual(widget.tiles["five"].value_label.text(), "2")
+        self.assertEqual(widget.stat_total.value_label.text(), "3")
+        self.assertEqual(widget.stat_fives.value_label.text(), "2")
+        # 抽过的池子各一块
         self.assertEqual(widget.pools_box.count(), 2)
-        self.assertEqual(widget.fives_box.count(), 2)
+
+    def test_overview_shows_all_five_metrics(self):
+        """★ 工坊那五个指标都要有：总抽 / 平均出金 / 不歪率 / 每UP角色 / 每UP武器。"""
+        widget = self._widget()
+        report = gacha.GachaReport(pools=[
+            make_pool("角色活动唤取", [(3, "a1"), (5, "a2")]),
+        ])
+        widget.render(report)
+        self.app.processEvents()
+        for attr in ("stat_total", "stat_avg", "stat_not_up",
+                     "stat_fives", "stat_up_char", "stat_up_weapon"):
+            self.assertTrue(hasattr(widget, attr), f"少了 {attr}")
 
     def test_empty_report_shows_hint(self):
         widget = self._widget()
         widget.render(gacha.GachaReport())
         self.app.processEvents()
-        self.assertEqual(widget.tiles["total"].value_label.text(), "0")
-        self.assertEqual(widget.fives_box.count(), 1, "应给一行『还没出过五星』提示")
+        self.assertEqual(widget.stat_total.value_label.text(), "0")
+        # 没数据时给一句提示，而不是一片空白
+        self.assertGreaterEqual(widget.pools_box.count(), 1)
 
     def test_bad_link_shows_message_not_crash(self):
         """粘错链接 → 界面上出提示，不弹异常。"""

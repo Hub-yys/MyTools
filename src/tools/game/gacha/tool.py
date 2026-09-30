@@ -1,17 +1,26 @@
-"""鸣潮「唤取记录」分析 —— 工具页。
+"""抽卡记录分析 —— 工具页。
 
 用户从游戏里复制「唤取记录」链接 → 粘进来 → 点「读取」→ 看统计。
-数据来源是库洛官方接口（见 :mod:`src.core.gacha`），**本页不做 UI 自动化**。
+数据来自库洛官方接口（见 :mod:`src.core.gacha`），**本页不做 UI 自动化**。
+
+界面参照鸣潮工坊的抽卡分析（用户 2026-09-30 要求"直接做成工坊那样"）：
+
+    ┌ 总览大字 ────────────────────────────────┐
+    │  欧非评价（大标题）                        │
+    │  总抽数 / 平均出金                         │
+    │  不歪率 · 五星数 · 每UP角色 · 每UP武器      │
+    ├ 抽卡总结 ─────────────────────────────────┤
+    │  共获得限定五星 N 个，常驻五星 M 个         │
+    │  [五星卡片墙，每张带"抽了几次"角标]         │
+    ├ 分卡池 ───────────────────────────────────┤
+    │  每个五星一行：名字 + 抽数条（带颜色）+ 歪标 │
+    └───────────────────────────────────────────┘
 
 ## 为什么它不是 ok-ww 那条路
 
 本项目其它游戏工具都是"UI 自动化"（模拟点击/读屏）。这个不一样：
-它**联网请求官方接口**，拿的是**账号的抽卡数据**。所以：
-
-* 不需要管理员权限、不需要游戏开着、不需要 ok-ww 引擎；
-* 但要**联网**，并且会把链接里的玩家参数发给库洛服务器。
-
-界面上把这件事说清楚（顶部那句说明），别让用户以为它偷偷干了什么。
+它**联网请求官方接口**，拿的是**账号的抽卡数据**。所以不需要管理员权限、
+不需要游戏开着、不需要 ok-ww 引擎；但要联网。
 
 ## 拉取放在后台线程
 
@@ -21,6 +30,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -35,9 +45,9 @@ from qfluentwidgets import (
     InfoBar,
     LineEdit,
     PrimaryPushButton,
-    PushButton,
     ScrollArea,
     StrongBodyLabel,
+    SubtitleLabel,
     TitleLabel,
 )
 
@@ -48,8 +58,17 @@ from ....core.tool_base import BaseTool
 
 #: 说明文字颜色（(浅色, 深色)）—— 和其它页同一套灰
 MUTED = ("#8A8F98", "#7C7C7C")
+#: 强调色（大数字）
+ACCENT = ("#1a1a1a", "#f0f0f0")
 
 PAGE_MARGIN = (36, 32, 36, 28)
+
+#: 抽数条的宽度（像素/抽）—— 条太长会撑爆一行，太长就截断
+BAR_UNIT = 4
+BAR_MAX = 260
+BAR_HEIGHT = 18
+#: 星级角标颜色
+STAR_COLORS = {5: "#d4a017", 4: "#9b59b6", 3: "#5a8fd4"}
 
 
 class FetchThread(QThread):
@@ -78,35 +97,69 @@ class FetchThread(QThread):
         self.succeeded.emit(report)
 
 
-class _StatTile(CardWidget):
-    """一个统计小块：大字数值 + 下面一行说明。"""
+class _BigStat(QWidget):
+    """一个大数字 + 下面一行小字（工坊顶部那排）。"""
 
-    def __init__(self, title: str, value: str = "—", note: str = "",
-                 parent=None):
+    def __init__(self, value: str = "—", caption: str = "", parent=None,
+                 color: str | None = None):
         super().__init__(parent)
         box = QVBoxLayout(self)
-        box.setContentsMargins(16, 12, 16, 12)
-        box.setSpacing(2)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(0)
 
         self.value_label = StrongBodyLabel(value, self)
+        font = self.value_label.font()
+        font.setPointSize(max(font.pointSize() + 8, 20))
+        font.setBold(True)
+        self.value_label.setFont(font)
+        if color:
+            self.value_label.setTextColor(color, color)
         box.addWidget(self.value_label)
 
-        name = CaptionLabel(title, self)
-        name.setTextColor(*MUTED)
-        box.addWidget(name)
+        self.caption_label = CaptionLabel(caption, self)
+        self.caption_label.setTextColor(*MUTED)
+        box.addWidget(self.caption_label)
 
-        self.note_label = CaptionLabel(note, self)
-        self.note_label.setTextColor(*MUTED)
-        self.note_label.setWordWrap(True)
-        box.addWidget(self.note_label)
-
-    def set_value(self, value: str, note: str = "") -> None:
+    def set(self, value: str, caption: str = "", color: str | None = None):
         self.value_label.setText(value)
-        self.note_label.setText(note)
+        self.caption_label.setText(caption)
+        if color:
+            self.value_label.setTextColor(color, color)
+
+
+class _SpanBar(QWidget):
+    """一条抽数条（带颜色 + 数值）。
+
+    工坊那条列表的核心视觉：绿=欧、黄=正常、红=非。
+    """
+
+    def __init__(self, span: int, parent=None):
+        super().__init__(parent)
+        self._span = max(0, int(span))
+        self.setFixedHeight(BAR_HEIGHT)
+        width = min(BAR_MAX, max(28, self._span * BAR_UNIT))
+        self.setFixedWidth(width + 44)      # bar + 文字
+
+    def paintEvent(self, event):  # noqa: N802 - Qt 回调
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        color = QColor(gacha.span_color(self._span))
+        width = min(BAR_MAX, max(28, self._span * BAR_UNIT))
+
+        painter.setBrush(color)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(0, 0, width, BAR_HEIGHT - 4, 4, 4)
+
+        painter.setPen(QColor("#ffffff"))
+        font = painter.font()
+        font.setPointSize(max(font.pointSize() - 1, 7))
+        painter.setFont(font)
+        painter.drawText(6, BAR_HEIGHT - 9, f"{self._span}抽")
+        painter.end()
 
 
 class GachaWidget(ScrollArea):
-    """唤取记录分析页面。"""
+    """抽卡记录分析页面。"""
 
     def __init__(self, meta=None, parent=None):
         super().__init__(parent)
@@ -120,7 +173,7 @@ class GachaWidget(ScrollArea):
         view.setObjectName("gachaView")
         self.root = QVBoxLayout(view)
         self.root.setContentsMargins(*PAGE_MARGIN)
-        self.root.setSpacing(12)
+        self.root.setSpacing(14)
 
         self._build(view)
 
@@ -132,7 +185,7 @@ class GachaWidget(ScrollArea):
 
     # ---------------------------------------------------------------- 构建
     def _build(self, view: QWidget) -> None:
-        self.root.addWidget(TitleLabel("唤取记录分析", view))
+        self.root.addWidget(TitleLabel("抽卡记录分析", view))
 
         note = CaptionLabel(
             "从游戏里复制「唤取记录」链接粘到下面，点「读取」即可统计。\n"
@@ -160,51 +213,65 @@ class GachaWidget(ScrollArea):
         row.addWidget(self.fetch_button)
         self.root.addWidget(link_row)
 
-        # ---- 状态 / 日志 ----
         self.status = CaptionLabel("", view)
         self.status.setTextColor(*MUTED)
         self.status.setWordWrap(True)
         self.root.addWidget(self.status)
 
-        # ---- 总览 ----
-        self.summary_title = StrongBodyLabel("总览", view)
+        # ---- 总览卡（工坊顶部那块）----
+        self.overview_card = CardWidget(view)
+        ov = QVBoxLayout(self.overview_card)
+        ov.setContentsMargins(20, 16, 20, 16)
+        ov.setSpacing(10)
+
+        self.luck_label = SubtitleLabel("—", self.overview_card)
+        ov.addWidget(self.luck_label)
+
+        # 第一排：总抽数 / 平均出金
+        row1 = QHBoxLayout()
+        row1.setSpacing(40)
+        self.stat_total = _BigStat("—", "总抽卡数", self.overview_card)
+        self.stat_avg = _BigStat("—", "平均出金", self.overview_card)
+        row1.addWidget(self.stat_total)
+        row1.addWidget(self.stat_avg)
+        row1.addStretch(1)
+        ov.addLayout(row1)
+
+        # 第二排：不歪率 / 五星数 / 每UP角色 / 每UP武器（工坊那排小字）
+        row2 = QHBoxLayout()
+        row2.setSpacing(28)
+        self.stat_not_up = _BigStat("—", "小保底不歪", self.overview_card)
+        self.stat_fives = _BigStat("—", "五星数", self.overview_card)
+        self.stat_up_char = _BigStat("—", "每UP角色需", self.overview_card)
+        self.stat_up_weapon = _BigStat("—", "每UP武器需", self.overview_card)
+        for w in (self.stat_not_up, self.stat_fives,
+                  self.stat_up_char, self.stat_up_weapon):
+            row2.addWidget(w)
+        row2.addStretch(1)
+        ov.addLayout(row2)
+        self.root.addWidget(self.overview_card)
+
+        # ---- 抽卡总结（卡片墙）----
+        self.summary_title = StrongBodyLabel("抽卡总结", view)
         self.root.addWidget(self.summary_title)
-        self.summary_host = QWidget(view)
-        self.summary_grid = QGridLayout(self.summary_host)
-        self.summary_grid.setContentsMargins(0, 0, 0, 0)
-        self.summary_grid.setSpacing(10)
-        self.root.addWidget(self.summary_host)
+        self.summary_note = CaptionLabel("", view)
+        self.summary_note.setTextColor(*MUTED)
+        self.summary_note.setWordWrap(True)
+        self.root.addWidget(self.summary_note)
+        self.cards_host = QWidget(view)
+        self.cards_grid = QGridLayout(self.cards_host)
+        self.cards_grid.setContentsMargins(0, 0, 0, 0)
+        self.cards_grid.setSpacing(6)
+        self.root.addWidget(self.cards_host)
 
-        self.tiles: dict[str, _StatTile] = {}
-        for index, (key, title) in enumerate((
-            ("total", "总抽数"),
-            ("five", "五星数量"),
-            ("rate", "五星出货率"),
-            ("average", "平均出货抽数"),
-            ("four", "四星数量"),
-            ("luck", "欧非评价"),
-        )):
-            tile = _StatTile(title, parent=self.summary_host)
-            self.tiles[key] = tile
-            self.summary_grid.addWidget(tile, index // 3, index % 3)
-
-        # ---- 分池 ----
-        self.pools_title = StrongBodyLabel("分卡池统计", view)
+        # ---- 分卡池明细 ----
+        self.pools_title = StrongBodyLabel("分卡池记录", view)
         self.root.addWidget(self.pools_title)
         self.pools_host = QWidget(view)
         self.pools_box = QVBoxLayout(self.pools_host)
         self.pools_box.setContentsMargins(0, 0, 0, 0)
         self.pools_box.setSpacing(8)
         self.root.addWidget(self.pools_host)
-
-        # ---- 五星记录 ----
-        self.fives_title = StrongBodyLabel("五星记录", view)
-        self.root.addWidget(self.fives_title)
-        self.fives_host = QWidget(view)
-        self.fives_box = QVBoxLayout(self.fives_host)
-        self.fives_box.setContentsMargins(0, 0, 0, 0)
-        self.fives_box.setSpacing(6)
-        self.root.addWidget(self.fives_host)
 
         self.root.addStretch(1)
         self._show_empty_hint()
@@ -235,7 +302,7 @@ class GachaWidget(ScrollArea):
         self.fetch_button.setEnabled(True)
         if not report.total:
             self.status.setText(
-                "读取成功，但这个账号没有任何唤取记录（或者记录已过期清空）。")
+                "读取成功，但这个账号没有任何抽卡记录（或者记录已过期清空）。")
             return
         self.status.setText(f"读取完成：共 {report.total} 抽。")
         self.render(report)
@@ -256,11 +323,10 @@ class GachaWidget(ScrollArea):
 
     def _clear_results(self) -> None:
         self._clear_layout(self.pools_box)
-        self._clear_layout(self.fives_box)
+        self._clear_layout(self.cards_grid)
 
     def _show_empty_hint(self) -> None:
-        hint = CaptionLabel(
-            "还没有数据 —— 粘贴链接后点「读取」。", self.pools_host)
+        hint = CaptionLabel("还没有数据 —— 粘贴链接后点「读取」。", self.pools_host)
         hint.setTextColor(*MUTED)
         self.pools_box.addWidget(hint)
 
@@ -269,91 +335,143 @@ class GachaWidget(ScrollArea):
         self._clear_results()
 
         # ---- 总览 ----
-        self.tiles["total"].set_value(str(report.total))
-        self.tiles["five"].set_value(str(report.five_count))
-        self.tiles["four"].set_value(str(report.four_count))
-        self.tiles["rate"].set_value(f"{report.rate():.2f}%")
+        self.stat_total.set(str(report.total), "总抽卡数")
         average = report.average()
-        self.tiles["average"].set_value(
-            f"{average:.1f}" if average else "—")
-        luck = report.luck()
-        self.tiles["luck"].set_value(luck[0] if luck else "—")
-        if luck:
-            self.tiles["luck"].value_label.setTextColor(luck[1], luck[1])
+        self.stat_avg.set(f"{average:.0f}" if average else "—", "平均出金")
+        self.stat_fives.set(str(report.five_count), "五星数")
 
-        # ---- 分池 ----
+        not_up = report.not_up_rate()
+        self.stat_not_up.set(
+            f"{not_up:.1f}%" if not_up is not None else "—", "小保底不歪")
+
+        up_char = report.average_per_up("角色")
+        up_weapon = report.average_per_up("武器")
+        self.stat_up_char.set(
+            f"{up_char:.1f}" if up_char else "—", "每UP角色需")
+        self.stat_up_weapon.set(
+            f"{up_weapon:.1f}" if up_weapon else "—", "每UP武器需")
+
+        luck = report.luck()
+        if luck:
+            self.luck_label.setText(luck[0])
+            self.luck_label.setTextColor(luck[1], luck[1])
+        else:
+            self.luck_label.setText("—")
+
+        # ---- 抽卡总结（卡片墙）----
+        limited = report.limited_fives()
+        permanent = report.permanent_fives()
+        self.summary_note.setText(
+            f"共获得限定五星 {len(limited)} 个，常驻五星 {len(permanent)} 个。"
+            + (f"（常驻：{'、'.join(permanent)}）" if permanent else "")
+        )
+        self._render_cards(report)
+
+        # ---- 分卡池 ----
         for pool in report.active_pools():
-            self.pools_box.addWidget(self._pool_row(pool))
+            self.pools_box.addWidget(self._pool_block(pool))
         if not report.active_pools():
             self._show_empty_hint()
 
-        # ---- 五星记录 ----
-        fives = report.all_five_stars()
+    def _render_cards(self, report) -> None:
+        """五星卡片墙：每张显示名字 + "抽了几次"角标。
+
+        ⚠ 工坊那里是**头像图**；我们没有干员的抽卡头像素材（那是游戏素材，
+        不入库），所以这里用**名字卡片**代替 —— 信息量一样（谁、抽到几次、
+        是不是歪出来的），只是没图。
+        """
+        fives = report.all_fives_analysis()
         if not fives:
-            empty = CaptionLabel("这个账号还没有出过五星。", self.fives_host)
-            empty.setTextColor(*MUTED)
-            self.fives_box.addWidget(empty)
             return
+        # 统计每个名字出现的次数
+        counts: dict[str, int] = {}
+        for f in fives:
+            if f.name:
+                counts[f.name] = counts.get(f.name, 0) + 1
 
-        # 每个五星标注"第几抽出" —— 用模型给的映射，**别在界面里重算**
-        # （重算一遍就等于把"方向"这套逻辑抄了两份，抄错会静默显示错的数字）
-        span_by_pull: dict[int, int] = {}
-        for pool in report.pools:
-            for pull, span in pool.five_star_spans():
-                span_by_pull[id(pull)] = span
+        columns = 10
+        for index, (name, count) in enumerate(
+                sorted(counts.items(), key=lambda kv: -kv[1])):
+            card = CardWidget(self.cards_host)
+            card.setFixedSize(64, 64)
+            box = QVBoxLayout(card)
+            box.setContentsMargins(2, 4, 2, 4)
+            box.setSpacing(0)
 
-        for pull in fives[:200]:
-            self.fives_box.addWidget(self._five_row(pull, span_by_pull))
+            label = BodyLabel(name[:4], card)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setWordWrap(True)
+            box.addWidget(label, 1)
 
-    def _pool_row(self, pool) -> QWidget:
+            if count > 1:
+                badge = CaptionLabel(f"×{count}", card)
+                badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                badge.setTextColor("#d4a017", "#d4a017")
+                box.addWidget(badge)
+
+            self.cards_grid.addWidget(card, index // columns, index % columns)
+
+    def _pool_block(self, pool) -> QWidget:
+        """一个卡池一块：标题 + 每行一个五星（名字 + 抽数条 + 歪标）。"""
         card = CardWidget(self.pools_host)
-        row = QHBoxLayout(card)
-        row.setContentsMargins(16, 10, 16, 10)
-        row.setSpacing(16)
+        box = QVBoxLayout(card)
+        box.setContentsMargins(16, 12, 16, 12)
+        box.setSpacing(6)
 
-        name = BodyLabel(pool.name, card)
-        name.setFixedWidth(200)
-        row.addWidget(name)
+        # 标题行：池名 + 概要
+        head = QHBoxLayout()
+        head.setSpacing(14)
+        title = BodyLabel(pool.name, card)
+        title.setFixedWidth(170)
+        head.addWidget(title)
 
-        for text in (
-            f"{pool.total} 抽",
-            f"五星 {pool.five_count}",
-            f"出货率 {pool.rate():.2f}%",
-            f"平均 {pool.average():.1f}" if pool.average() else "平均 —",
-            f"已垫 {pool.current_pity()} 抽",
-        ):
-            row.addWidget(CaptionLabel(text, card))
-        row.addStretch(1)
+        parts = [f"{pool.total} 抽", f"五星 {pool.five_count}",
+                 f"出货率 {pool.rate():.1f}%"]
+        if pool.total:
+            parts.append(f"已垫 {pool.current_pity()} 抽")
+        for text in parts:
+            head.addWidget(CaptionLabel(text, card))
+        head.addStretch(1)
+
         luck = pool.luck()
         if luck:
             tag = CaptionLabel(luck[0], card)
             tag.setTextColor(luck[1], luck[1])
-            row.addWidget(tag)
+            head.addWidget(tag)
+        box.addLayout(head)
+
+        # 每条五星：时间倒序（最新在最上）
+        for five in reversed(pool.fives_analysis()):
+            box.addWidget(self._five_row(five, card))
         return card
 
-    def _five_row(self, pull, span_by_pull) -> QWidget:
-        card = CardWidget(self.fives_host)
-        row = QHBoxLayout(card)
-        row.setContentsMargins(16, 8, 16, 8)
-        row.setSpacing(12)
+    def _five_row(self, five, parent) -> QWidget:
+        row_widget = QWidget(parent)
+        row = QHBoxLayout(row_widget)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
 
-        name = BodyLabel(pull.name or "（未收录）", card)
-        name.setFixedWidth(180)
+        name = BodyLabel(five.name or "（未收录）", row_widget)
+        name.setFixedWidth(150)
         row.addWidget(name)
 
-        row.addWidget(CaptionLabel(pull.pool, card))
-        span = span_by_pull.get(id(pull))
-        row.addWidget(CaptionLabel(
-            f"第 {span} 抽" if span else "—", card))
+        # 抽数条（带颜色）。列表里显示的是 **span**（这个金花了几抽），
+        # 不是 cumulative（那是大保底口径，见 gacha.FiveStar 的说明）
+        row.addWidget(_SpanBar(five.span, row_widget))
+
         row.addStretch(1)
-        row.addWidget(CaptionLabel(pull.time, card))
-        return card
+        if five.is_lost:
+            lost = CaptionLabel("歪", row_widget)
+            lost.setTextColor("#c0392b", "#e07070")
+            row.addWidget(lost)
+        row.addWidget(CaptionLabel(five.time, row_widget))
+        return row_widget
 
 
 @registry.register(
     category=ToolCategory.GAME,
-    name="唤取记录分析",
-    description="粘贴唤取记录链接，统计抽卡出货率 / 保底进度 / 五星记录",
+    name="抽卡记录分析",
+    description="粘贴抽卡记录链接，统计出货率 / 保底进度 / 歪没歪 / 五星记录",
     icon_name="HISTORY",
     coming_soon=False,
 )
