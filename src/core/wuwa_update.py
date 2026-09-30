@@ -42,6 +42,10 @@ from .game_data import DATA_ROOT
 
 BWIKI_API = "https://wiki.biligame.com/wutheringwaves/api.php"
 KUROBBS_PAGE = "https://api.kurobbs.com/wiki/core/catalogue/item/getPage"
+#: 条目**详情**（套装效果原文 / 声骸技能说明都在这里）。
+#: ⚠ ``getPage`` 只给列表骨架，文字全在这个接口里 —— 见 :func:`_kuro_entry_detail`。
+KUROBBS_ENTRY_DETAIL = (
+    "https://api.kurobbs.com/wiki/core/catalogue/item/getEntryDetail")
 SETS_PAGE = "声骸合鸣"
 ECHO_ASK = "[[分类:声骸]]|?名称|?COST花费|?所属套装|limit=500"
 #: 角色（共鸣者）SMW 反查 —— 「属性 / 武器」wiki 上有结构化字段，稀有度没有。
@@ -82,6 +86,10 @@ class RemoteSnapshot:
     characters: dict[str, dict] = field(default_factory=dict)
     #: 同上，来自 bwiki 分类:共鸣者（**兜底**，只在主源缺这个角色时用）
     characters_bwiki: dict[str, dict] = field(default_factory=dict)
+    #: ``{套装名: [{pieces, text}, ...]}`` —— 库街区详情（**主源**）
+    set_effects: dict[str, list[dict]] = field(default_factory=dict)
+    #: ``{声骸名: {skill, cooldown}}`` —— 库街区详情（**主源**）
+    echo_skills: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 def fetch_remote(log=lambda _msg: None) -> RemoteSnapshot:
@@ -118,7 +126,15 @@ def fetch_remote(log=lambda _msg: None) -> RemoteSnapshot:
     snapshot.icon_urls = icon_urls
     snapshot.characters = _fetch_kurobbs_characters(log)
 
-    # ---- 兜底：bwiki（只补库街区确实没有的那两项）----
+    # ★ 套装效果原文 + 声骸技能说明：**库街区也能拿**（走 getEntryDetail）。
+    #   我原先以为这两项"只有 bwiki 有" —— 那是把 getPage 的**空 textList**
+    #   当成了全部（列表接口只给骨架，文字在详情里）。
+    #   用户 2026-09-30 给了页面链接纠正："库街区也有套装效果"。
+    snapshot.set_effects = _fetch_kurobbs_set_effects(log)
+    snapshot.echo_skills = _fetch_kurobbs_echo_skills(
+        log, snapshot.echoes_kuro)
+
+    # ---- 兜底：bwiki（只补库街区确实没有的）----
     snapshot.sets = _fetch_bwiki_sets(log)
     snapshot.echoes_bwiki = _fetch_bwiki_echo_index(log)
     snapshot.characters_bwiki = _fetch_bwiki_characters(log)
@@ -312,6 +328,170 @@ def _normalize_character_name(name: str) -> str:
     return _KURO_NAME_ALIASES.get(name, name)
 
 
+def _kuro_entry_detail(entry_id: str) -> dict:
+    """拉库街区某个条目的**详情**（``getEntryDetail``）。
+
+    ## ★ 为什么需要它（2026-09-30，我判断错过一次）
+
+    我原先以为"套装效果原文 / 声骸技能说明**只有 bwiki 有**" ——
+    因为 ``getPage`` 列表接口返回的 ``textList`` 是**空模板**::
+
+        {"content": "", "placeholder": "请输入小标题"}
+
+    用户当场指出："库街区也有套装效果"，并给了页面链接。
+    去核之后发现：**文字在详情接口里**，``getPage`` 只是列表页的骨架。
+
+    取法：列表记录的 ``content.linkId``（声骸）或 ``linkUrl``（套装）
+    就是详情 id，见 :func:`_entry_id_from_record`。
+
+    ⚠ **不需要 token** —— 实测直接可调（其它几个 wiki 接口会回
+    ``code=220 访问令牌不能为空``，这个不会）。
+
+    返回 ``data``（含 ``name`` / ``content.modules``）。
+    详情正文是 **HTML 表格**，要 :func:`_html_table_cells` 拆。
+    """
+    body = urllib.parse.urlencode({"id": str(entry_id)}).encode()
+    headers = {
+        "User-Agent": _UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "wiki_type": "9",
+    }
+    data = _get_json(KUROBBS_ENTRY_DETAIL, headers, body)
+    return data.get("data") or {}
+
+
+def _html_table_cells(raw: str) -> list[str]:
+    """把详情里的 HTML 表格/段落拆成一行行纯文本。
+
+    实测结构是 ``<table><tr><td>名称</td><td>文本</td></tr>…`` ——
+    单元格用 ``|`` 分隔、行用换行，这样"套件数"和"效果文字"能对上位置。
+    """
+    if not raw:
+        return []
+    text = re.sub(r"<br\s*/?>", "\n", raw)
+    text = re.sub(r"</t[dh]>", "|", text)
+    text = re.sub(r"</tr>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = htmllib.unescape(text).replace("\xa0", " ")
+    lines: list[str] = []
+    for line in text.split("\n"):
+        cleaned = re.sub(r"[ \t]+", " ", line).strip().strip("|").strip()
+        if cleaned:
+            lines.append(cleaned)
+    return lines
+
+
+def _kuro_component_texts(detail: dict, module_title: str,
+                          component_title: str) -> list[str]:
+    """取详情里某个「模块 / 组件」的文本行。
+
+    ⚠ **按组件名找，模块名只当"优先匹配"** —— 不强制两个都对上。
+
+    原因：模块名是库街区自己起的（实测是「基本信息」，写错一个字
+    —— 比如「基础信息」—— 就一条都取不到，而且**不报错，只是返回空**）。
+    组件名（「合鸣效果」/「声骸技能」）才是稳定的那个。
+
+    所以策略是：先找"模块名也对上"的；找不到就退化成**只按组件名**找。
+    这样官方改个模块标题也不会把整条链路悄无声息地打断。
+    """
+    content = detail.get("content") or {}
+    modules = content.get("modules", []) or []
+
+    # 第一轮：模块名 + 组件名都要对上（最精确）
+    if module_title:
+        for module in modules:
+            if str(module.get("title") or "") != module_title:
+                continue
+            for component in module.get("components", []) or []:
+                if str(component.get("title") or "") == component_title:
+                    return _html_table_cells(component.get("content") or "")
+
+    # 第二轮：只按组件名找（模块标题改过 / 我记错了都能兜住）
+    for module in modules:
+        for component in module.get("components", []) or []:
+            if str(component.get("title") or "") == component_title:
+                return _html_table_cells(component.get("content") or "")
+    return []
+
+
+def _entry_id_from_record(record: dict) -> str:
+    """列表记录 → 详情 id。
+
+    ⚠ 两个字段名不一样，别只认一个：
+
+    * 声骸（1107）：``content.linkId``
+    * 套装（1219）：``content.linkUrl``（``.../mc/item/<id>``）——
+      它**没有** ``linkId``（实测：只认 linkId 的话套装一条都取不到）。
+    """
+    content = record.get("content") or {}
+    link_id = str(content.get("linkId") or "").strip()
+    if link_id.isdigit():
+        return link_id
+    link_url = str(content.get("linkUrl") or "").strip()
+    if link_url:
+        tail = link_url.rstrip("/").split("/")[-1].split("?")[0]
+        if tail.isdigit():
+            return tail
+    return ""
+
+
+def _parse_set_effects(lines: list[str]) -> list[dict]:
+    """把「合鸣效果」那几行文本解析成 ``[{pieces, text}, ...]``。
+
+    实测形状（每个套件占三行）::
+
+        茜染怀想之花
+        (2件套)
+        治疗效果提升10%。
+
+    ⚠ 按 ``(N件套)`` **定位**、取它后面一行当正文 ——
+    比"固定每隔 3 行取一次"稳（有的格式没有名字行）。
+    """
+    effects: list[dict] = []
+    for index, line in enumerate(lines):
+        matched = re.match(r"^[（(]?\s*(\d+)\s*件套\s*[)）]?$", line.strip())
+        if not matched:
+            continue
+        pieces = int(matched.group(1))
+        text = lines[index + 1].strip() if index + 1 < len(lines) else ""
+        if text and not text.startswith("("):
+            effects.append({"pieces": pieces, "text": text})
+    return effects
+
+
+def _parse_echo_skill(lines: list[str]) -> dict[str, str]:
+    """把声骸详情的「声骸技能」文本解析成 ``{skill, cooldown}``。
+
+    实测形状::
+
+        5★
+        技能描述
+        使用声骸技能，召唤玉冥蛇，连续发射火球…随后造成64.80%的热熔伤害。
+        冷却时间：8秒
+
+    ⚠ **只要 5★ 那一段**：库街区把 2★~5★ 各写一遍（技能数值不同），
+    本地一直只存 5 星数据（bwiki 那边也只有 5 星），
+    全塞进去会让技能说明变成四段重复文字。
+    """
+    skill_lines: list[str] = []
+    cooldown = ""
+    in_five_star = False
+    for line in lines:
+        star_match = re.match(r"^(\d)★$", line.strip())
+        if star_match:
+            in_five_star = star_match.group(1) == "5"
+            continue
+        if not in_five_star:
+            continue
+        if line.startswith("冷却时间"):
+            cooldown = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+            continue
+        if line in ("技能描述",):
+            continue
+        skill_lines.append(line)
+    return {"skill": "\n".join(skill_lines).strip(), "cooldown": cooldown}
+
+
 def _parse_stars(value: str) -> int:
     """把 ``"五星"`` / ``"5星"`` / ``"5"`` 都解析成 ``5``。"""
     text = str(value or "").strip().replace("星", "").strip()
@@ -383,6 +563,112 @@ def _fetch_kurobbs_characters(log) -> dict[str, dict]:
 def _info_score(info: dict) -> int:
     """一条角色信息"有多全"—— 用来在归一化撞车时挑更好的那条。"""
     return sum(bool(info.get(f)) for f in ("rarity", "element", "weapon"))
+
+
+def _fetch_kurobbs_set_effects(log) -> dict[str, list[dict]]:
+    """套装效果原文（**主源：库街区详情**）。
+
+    每个套装一次 ``getEntryDetail``（37 套 = 37 个请求），串行 + 间隔 ——
+    比 bwiki 慢，但它是**官方**数据、且和游戏内一致（用户给的就是这个页面）。
+
+    ⚠ 单套失败不影响其余的（可能只是那个条目还没建全）。
+    """
+    log("拉取套装效果原文（库街区 1219 详情）…")
+    try:
+        records, _ = _kuro_page("1219", log)
+    except Exception as exc:  # noqa: BLE001 - 主源失败还有 bwiki 兜底
+        log(f"  库街区套装列表拉取失败（{exc}）—— 稍后用 bwiki 兜底")
+        return {}
+
+    effects_by_set: dict[str, list[dict]] = {}
+    failed = 0
+    for record in records:
+        name = str(record.get("name", "")).strip()
+        if not name:
+            continue
+        entry_id = _entry_id_from_record(record)
+        if not entry_id:
+            failed += 1
+            continue
+        try:
+            detail = _kuro_entry_detail(entry_id)
+            lines = _kuro_component_texts(detail, "基础信息", "合鸣效果")
+            effects = _parse_set_effects(lines)
+        except Exception:  # noqa: BLE001 - 单套失败不影响其余
+            failed += 1
+            continue
+        if effects:
+            effects_by_set[name] = effects
+        time.sleep(DELAY)
+
+    done = sum(1 for e in effects_by_set.values() if e)
+    log(f"  套装效果：{done}/{len(records)} 套拿到"
+        + (f"（{failed} 套失败）" if failed else ""))
+    return effects_by_set
+
+
+def _fetch_kurobbs_echo_skills(log, echoes_kuro: dict) -> dict[str, dict]:
+    """声骸技能说明（**主源：库街区详情**）。
+
+    只拉``echoes_kuro`` 里出现过的声骸（205 个），一次一个请求。
+    ⚠ 这是一个**慢**操作（两百个请求），所以：
+    * 已经在本地的（``wuwa_echo_skills.json``）**不重复拉**；
+    * 中途可以 ``log`` 出进度，界面上能看到在动。
+    """
+    log("拉取声骸技能说明（库街区 1107 详情）…")
+    try:
+        records, _ = _kuro_page("1107", log)
+    except Exception as exc:  # noqa: BLE001
+        log(f"  库街区声骸列表拉取失败（{exc}）—— 稍后用 bwiki 兜底")
+        return {}
+
+    # 只拉**真的还缺**的：⚠ 不能只看"名字在不在" ——
+    # 本地那 187 条大多是 ``{"skill": "", "cooldown": ""}`` 的空壳
+    # （只有名字、没有正文）。按名字跳过的话一个都补不上
+    # （实测：第一次跑就是这么"0 个拿到"的）。**要看有没有 skill 正文**。
+    existing: set[str] = set()
+    if SKILLS_FILE.exists():
+        try:
+            for name, info in (json.loads(
+                    SKILLS_FILE.read_text(encoding="utf-8")).get("echoes") or {}).items():
+                if isinstance(info, dict) and str(info.get("skill") or "").strip():
+                    existing.add(str(name))
+        except (OSError, json.JSONDecodeError):
+            existing = set()
+
+    skills: dict[str, dict] = {}
+    wanted = [r for r in records
+              if str(r.get("name", "")).strip()
+              and str(r.get("name", "")).strip() not in existing]
+    log(f"  需要补 {len(wanted)} 个（本地已有正文的 {len(existing)} 个，不重复拉）")
+
+    no_module = 0        # 详情里根本没有「声骸技能」模块
+    for index, record in enumerate(wanted, 1):
+        name = str(record.get("name", "")).strip()
+        entry_id = _entry_id_from_record(record)
+        if not entry_id:
+            continue
+        try:
+            detail = _kuro_entry_detail(entry_id)
+            lines = _kuro_component_texts(detail, "声骸技能", "声骸技能")
+            info = _parse_echo_skill(lines)
+        except Exception:  # noqa: BLE001 - 单个失败不影响其余
+            continue
+        if info.get("skill"):
+            skills[name] = info
+        else:
+            # ⚠ 不是"失败" —— 有些声骸（活动/装饰类）**本来就没有技能**，
+            #   库街区详情里连「声骸技能」模块都没有。把它和"抓失败"分开数，
+            #   否则日志显示"0 个拿到"会让人以为整条路走不通
+            #   （实测 18 个要补的里，**全部**都是这种）。
+            no_module += 1
+        if index % 20 == 0:
+            log(f"  … {index}/{len(wanted)}")
+        time.sleep(DELAY)
+
+    log(f"  声骸技能：{len(skills)} 个拿到"
+        + (f"（{no_module} 个本来就无技能说明）" if no_module else ""))
+    return skills
 
 
 def _kuro_page(catalogue_id: str, log) -> tuple[list[dict], dict]:
@@ -633,21 +919,38 @@ def _merge_sets_data(local_sets: dict, snapshot: RemoteSnapshot) -> bool:
     by_name = {item.get("name"): item for item in sets}
     changed = False
 
-    # 套装：新增追加到末尾（游戏数据加载时自己按版本排序），效果变化整表替换
+    # ★ 套装效果：**库街区优先**（2026-09-30），bwiki 只补库街区没有的。
+    #
+    #   我原先以为效果原文"只有 bwiki 有" —— 那是被 getPage 的**空 textList**
+    #   骗了（列表接口只给骨架，文字在 getEntryDetail 详情里）。
+    #   用户给了库街区的页面链接纠正："库街区也有套装效果"。
+    #   现在两边都有时**以库街区为准**（官方数据，且和游戏内一致）。
+    for name, effects in snapshot.set_effects.items():
+        local = by_name.get(name)
+        if local is None:
+            by_name[name] = {"name": name, "effects": effects}
+            sets.append(by_name[name])
+            changed = True
+        elif effects and local.get("effects") != effects:
+            local["effects"] = effects
+            changed = True
+
+    # 兜底：bwiki 的效果原文（只在库街区没给出这一套时才写）
     for name, effects in snapshot.sets.items():
         local = by_name.get(name)
         if local is None:
             by_name[name] = {"name": name, "effects": effects}
             sets.append(by_name[name])
             changed = True
-        elif local.get("effects") != effects and effects:
+        elif (not local.get("effects")) and effects:
+            # ⚠ 只在本地**没有**效果时才拿 bwiki 填空 ——
+            #   已有内容（无论来自库街区还是手工补录）都不覆盖
             local["effects"] = effects
             changed = True
 
     # ★ 库街区独有的套装（bwiki 还没收录的）也要建出来 —— 否则它带的声骸
     #   会被 _union_echoes 因为"找不到这个套装"而**整批丢掉**（那正是新套装
-    #   的声骸一条都进不来的原因）。效果文字这里留空：bwiki 才是效果文字的
-    #   来源，库街区只给名单 + 声骸归属；空缺由手工补录兜底（见 set_effects）。
+    #   的声骸一条都进不来的原因）。效果文字由上面的库街区详情补。
     for name in snapshot.echoes_kuro:
         if name not in by_name:
             by_name[name] = {"name": name, "effects": []}
@@ -835,33 +1138,53 @@ def apply_updates(
     elif snapshot.characters:
         done.append("角色名单没有变化")
 
-    # 2) 技能说明 + 图标 URL：只补缺的（新声骸），老数据不动
+    # 2) 技能说明 + 图标 URL
     skills = json.loads(SKILLS_FILE.read_text(encoding="utf-8")) if SKILLS_FILE.exists() else {}
     skills.setdefault("echoes", {})
     if snapshot.icon_urls:
         skills["icon_urls"] = dict(snapshot.icon_urls)
-        skills["_source"] = (
-            "声骸技能/冷却来自 bwiki 每个声骸页的『声骸技能』段落（bwiki 标注仅收录 5 星数据）；"
-            "icon_urls 来自库街区官方 wiki（api.kurobbs.com getPage，catalogueId=1107）。"
-        )
         skills["_fetched"] = time.strftime("%Y-%m-%d")
         done.append(f"图标 URL 已刷新（{len(snapshot.icon_urls)} 个）")
 
-    new_names = [item.split("（")[0] for item in report.new_echoes]
-    if new_names:
-        log(f"补抓 {len(new_names)} 个新声骸的技能说明（一页一个请求，稍等）…")
+    # 2a) ★ 声骸技能：**库街区优先**（2026-09-30）
+    #     同样是被 getPage 的空 textList 骗过 —— 技能说明在详情接口里。
+    if snapshot.echo_skills:
+        added = 0
+        for name, info in snapshot.echo_skills.items():
+            entry = skills["echoes"].setdefault(name, {})
+            # 库街区是主源：有值就更新（数值会随版本调整）
+            if info.get("skill") and entry.get("skill") != info["skill"]:
+                entry["skill"] = info["skill"]
+                entry["cooldown"] = info.get("cooldown", "")
+                added += 1
+        if added:
+            done.append(f"声骸技能说明已更新（库街区：{added} 条）")
+
+    # 2b) 兜底：bwiki（只补库里**还没有**技能说明的声骸）
+    missing = [item.split("（")[0] for item in report.new_echoes]
+    missing = [name for name in missing
+               if not (skills["echoes"].get(name) or {}).get("skill")]
+    if missing:
+        log(f"补抓 {len(missing)} 个声骸的技能说明（兜底源 bwiki，一页一个请求）…")
         got = 0
-        for index, name in enumerate(sorted(new_names), 1):
+        for index, name in enumerate(sorted(missing), 1):
             info = _fetch_skill(name)
-            skills["echoes"].setdefault(name, {}).update(info)
-            if info["skill"]:
+            entry = skills["echoes"].setdefault(name, {})
+            if info.get("skill") and not entry.get("skill"):
+                entry.update(info)
                 got += 1
             time.sleep(DELAY)
             if index % 10 == 0:
-                log(f"  … {index}/{len(new_names)}")
-        done.append(f"新声骸技能说明：{got}/{len(new_names)} 个抓到（其余 bwiki 还没建页）")
+                log(f"  … {index}/{len(missing)}")
+        if got:
+            done.append(f"声骸技能说明（bwiki 兜底）：{got} 条")
 
     if skills.get("echoes") or snapshot.icon_urls:
+        skills["_source"] = (
+            "声骸技能/冷却：**优先库街区**官方 wiki（getEntryDetail 详情的"
+            "『声骸技能』模块，取 5★ 那一段），缺的用 bwiki 兜底；"
+            "icon_urls 来自库街区（getPage，catalogueId 1105/1106/1107/1219）。"
+        )
         SKILLS_FILE.write_text(
             json.dumps(skills, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
