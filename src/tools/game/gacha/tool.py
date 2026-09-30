@@ -34,6 +34,7 @@ from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
+    QLabel,
     QVBoxLayout,
     QWidget,
 )
@@ -45,6 +46,7 @@ from qfluentwidgets import (
     InfoBar,
     LineEdit,
     PrimaryPushButton,
+    PushButton,
     ScrollArea,
     StrongBodyLabel,
     SubtitleLabel,
@@ -69,6 +71,30 @@ BAR_MAX = 260
 BAR_HEIGHT = 18
 #: 星级角标颜色
 STAR_COLORS = {5: "#d4a017", 4: "#9b59b6", 3: "#5a8fd4"}
+
+
+class GrabLinkThread(QThread):
+    """后台从游戏日志里读抽卡链接。
+
+    ⚠ 必须后台跑：找不到游戏目录时会**全盘扫**（实测几十秒），
+    在 UI 线程里跑界面会整个冻住。
+    """
+
+    succeeded = Signal(str)
+    failed = Signal(str)
+
+    def run(self) -> None:  # noqa: D102 - QThread 接口
+        try:
+            from ....core.gacha_link import GrabError, grab_link
+
+            url = grab_link()
+        except GrabError as exc:
+            self.failed.emit(str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - 线程里抛异常必须带出来
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.succeeded.emit(url)
 
 
 class FetchThread(QThread):
@@ -98,33 +124,50 @@ class FetchThread(QThread):
 
 
 class _BigStat(QWidget):
-    """一个大数字 + 下面一行小字（工坊顶部那排）。"""
+    """一个大数字 + 下面一行小字（工坊顶部那排）。
+
+    ⚠ 两个实机踩过的坑（第一版显示成一堆小横杠就是这两个）：
+
+    1. **``setFont() 之后又 setTextColor() 会把字体覆盖回去** ——
+       qfluentwidgets 的 ``setTextColor`` 内部重设了样式表/字体，
+       所以大字号要在**最后**设，或者改用 ``setStyleSheet``。
+       这里干脆用 QLabel + 显式 stylesheet，不跟它的字体机制打架。
+    2. **必须设最小宽度**：放进 QHBoxLayout 时控件会被压到最小尺寸，
+       大数字挤不下就只剩一条横杠。
+    """
+
+    #: 每个统计块的最小宽度（够放「总抽卡数」这种标签 + 4 位数字）
+    MIN_WIDTH = 110
 
     def __init__(self, value: str = "—", caption: str = "", parent=None,
                  color: str | None = None):
         super().__init__(parent)
+        self.setMinimumWidth(self.MIN_WIDTH)
+
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(0)
+        box.setSpacing(2)
 
-        self.value_label = StrongBodyLabel(value, self)
-        font = self.value_label.font()
-        font.setPointSize(max(font.pointSize() + 8, 20))
-        font.setBold(True)
-        self.value_label.setFont(font)
-        if color:
-            self.value_label.setTextColor(color, color)
+        # 用 QLabel + stylesheet：字号/颜色一次写清，不会被别的方法覆盖
+        self.value_label = QLabel(value, self)
+        self._apply_value_style(color)
         box.addWidget(self.value_label)
 
         self.caption_label = CaptionLabel(caption, self)
         self.caption_label.setTextColor(*MUTED)
         box.addWidget(self.caption_label)
 
+    def _apply_value_style(self, color: str | None) -> None:
+        """大数字的样式。字号走 stylesheet（比 setFont 稳）。"""
+        tint = color or "#1a1a1a"
+        self.value_label.setStyleSheet(
+            f"color: {tint}; font-size: 30px; font-weight: 700;"
+            " background: transparent;")
+
     def set(self, value: str, caption: str = "", color: str | None = None):
         self.value_label.setText(value)
         self.caption_label.setText(caption)
-        if color:
-            self.value_label.setTextColor(color, color)
+        self._apply_value_style(color)
 
 
 class _SpanBar(QWidget):
@@ -167,6 +210,7 @@ class GachaWidget(ScrollArea):
         self.setObjectName("GachaWidget")
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._thread: FetchThread | None = None
+        self._grab_thread: GrabLinkThread | None = None
         self._report: gacha.GachaReport | None = None
 
         view = QWidget(self)
@@ -188,41 +232,36 @@ class GachaWidget(ScrollArea):
         self.root.addWidget(TitleLabel("抽卡记录分析", view))
 
         note = CaptionLabel(
-            "自己在游戏里取链接 → 粘到下面 → 点「读取」，本工具负责分析。\n"
-            "它不读游戏文件、不模拟操作，只把你给的链接发给库洛官方接口。\n"
-            "需要联网（会把链接里的玩家参数发给库洛服务器）。",
+            "点「获取抽卡记录」自动读取本机游戏记录的链接，也可以自己粘贴。\n"
+            "拿到链接后发给库洛官方接口做分析（需要联网）。",
             view,
         )
         note.setTextColor(*MUTED)
         note.setWordWrap(True)
         self.root.addWidget(note)
 
-        # ---- 怎么取链接（★ 这一步最容易卡住）----
+        # ---- 取链接行：自动获取（主）+ 手动粘贴（兜底）----
         # ⚠ 这里**不能写 Markdown 星号** —— Qt 的 QLabel 不解析 markdown，
         #   写了会原样显示成「**xxx**」（实测踩过）。
-        howto = CaptionLabel(
-            "怎么取链接：游戏里　唤取 → 唤取记录 → 打开页面后多翻几页"
-            "（让游戏把记录写出来）→ 复制页面链接。\n"
-            "⚠ 链接有时效：取完尽快粘过来；放久了会提示"
-            "「请求游戏获取日志异常」，那时回游戏重新打开一次唤取记录页再复制即可。",
-            view,
-        )
-        howto.setTextColor(*MUTED)
-        howto.setWordWrap(True)
-        self.root.addWidget(howto)
-
-        # ---- 链接行 ----
         link_row = QWidget(view)
         row = QHBoxLayout(link_row)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
+
+        self.grab_button = PrimaryPushButton(
+            FluentIcon.SEARCH, "获取抽卡记录", link_row)
+        self.grab_button.setToolTip(
+            "从本机游戏的日志里读出抽卡记录链接（需要先在本机登录过游戏）")
+        self.grab_button.clicked.connect(self.grab_link)
+        row.addWidget(self.grab_button)
+
         self.link_edit = LineEdit(link_row)
         self.link_edit.setPlaceholderText(
-            "粘贴唤取记录链接（游戏 → 唤取 → 唤取记录 → 复制链接）")
+            "抽卡记录链接（点左边按钮自动获取，也可手动粘贴）")
         self.link_edit.setClearButtonEnabled(True)
         row.addWidget(self.link_edit, 1)
 
-        self.fetch_button = PrimaryPushButton(FluentIcon.SYNC, "读取", link_row)
+        self.fetch_button = PushButton(FluentIcon.SYNC, "分析", link_row)
         self.fetch_button.clicked.connect(self.start_fetch)
         row.addWidget(self.fetch_button)
         self.root.addWidget(link_row)
@@ -291,6 +330,34 @@ class GachaWidget(ScrollArea):
         self._show_empty_hint()
 
     # ---------------------------------------------------------------- 动作
+    def grab_link(self) -> None:
+        """点「获取抽卡记录」：从本机日志里读出链接并**自动填充**。
+
+        用户 2026-09-30 要求："上面加个获取抽卡记录按钮，获取到后自动填充"。
+
+        ⚠ 读文件 + 可能全盘扫，**放在后台线程**里跑（全盘扫要几十秒，
+        在 UI 线程里跑会把界面冻住）。
+        """
+        if self._grab_thread is not None and self._grab_thread.isRunning():
+            return
+        self.grab_button.setEnabled(False)
+        self.status.setText("正在从游戏日志里读取抽卡记录链接…")
+        self._grab_thread = GrabLinkThread(self)
+        self._grab_thread.succeeded.connect(self._on_grabbed)
+        self._grab_thread.failed.connect(self._on_grab_failed)
+        self._grab_thread.start()
+
+    def _on_grabbed(self, url: str) -> None:
+        self.grab_button.setEnabled(True)
+        self.link_edit.setText(url)
+        self.status.setText("已获取链接 —— 点「分析」开始统计。")
+
+    def _on_grab_failed(self, message: str) -> None:
+        self.grab_button.setEnabled(True)
+        self.status.setText(message.splitlines()[0])
+        InfoBar.warning("没能自动获取", message, duration=8000,
+                        parent=self.window())
+
     def start_fetch(self) -> None:
         if self._thread is not None and self._thread.isRunning():
             return

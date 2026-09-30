@@ -548,14 +548,35 @@ class TestWidgetRender(unittest.TestCase):
         ]
         self.assertEqual(offenders, [], f"界面文案里有 Markdown 星号：{offenders}")
 
-    def test_page_explains_how_to_get_link(self):
-        """页面要说清"怎么取链接"（用户是手动获取，这一步最容易卡）。"""
-        from qfluentwidgets import CaptionLabel
+    def test_page_has_grab_button_and_hint(self):
+        """页面要有「获取抽卡记录」按钮 + 手动粘贴的兜底入口。
 
+        用户 2026-09-30 要求："上面加个获取抽卡记录按钮，获取到后自动填充"。
+        """
         widget = self._widget()
-        texts = " ".join(lb.text() for lb in widget.findChildren(CaptionLabel))
-        self.assertIn("唤取记录", texts)
-        self.assertIn("怎么取链接", texts)
+        self.assertTrue(hasattr(widget, "grab_button"), "少了「获取抽卡记录」按钮")
+        self.assertIn("获取", widget.grab_button.text())
+        # 手动粘贴那条路仍在（自动获取失败时的兜底）
+        self.assertTrue(hasattr(widget, "link_edit"))
+        self.assertTrue(hasattr(widget, "fetch_button"))
+
+    def test_grab_success_fills_link_edit(self):
+        """★ 获取到的链接要**自动填充**到输入框。"""
+        widget = self._widget()
+        sample = ("https://aki-gm-resources.aki-game.com/aki/gacha/"
+                  "index.html#/record?svr_id=S&player_id=P&record_id=R"
+                  "&resources_id=Q&platform=PC")
+        widget._on_grabbed(sample)
+        self.assertEqual(widget.link_edit.text(), sample)
+        self.assertTrue(widget.grab_button.isEnabled(), "按钮要恢复可用")
+
+    def test_grab_failure_keeps_manual_path(self):
+        """自动获取失败 → 出提示，且输入框仍可用（走手动粘贴）。"""
+        widget = self._widget()
+        widget._on_grab_failed("没找到游戏日志")
+        self.app.processEvents()
+        self.assertTrue(widget.link_edit.isEnabled())
+        self.assertTrue(widget.grab_button.isEnabled())
 
     def test_tool_is_not_coming_soon(self):
         """★ 别忘关 coming_soon —— 默认 True 会让它显示成"即将到来"占位页。"""
