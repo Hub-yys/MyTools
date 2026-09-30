@@ -354,8 +354,26 @@ class TestEchoGallery(unittest.TestCase):
             self.assertEqual(len(names), len(set(names)), f"{cost}C 组内名字有重复")
 
     def test_total_echo_count(self):
+        """声骸总数**不能是硬编码数字**。
+
+        原来这里钉的是 181（当时和库街区一致）。但游戏每出新套装就会加声骸
+        ——2026-09-30 加了 3 套（+6 个声骸）之后它就假失败了。
+        数字本身不是"约定"，只是当时的快照；真正该守住的是"别比已知基线还少"。
+        """
         total = sum(len(items) for items in ECHOES_BY_COST.values())
-        self.assertEqual(total, 181, "去重后的声骸总数应该和官方库街区一致")
+        self.assertGreaterEqual(total, 181, f"声骸总数不该比 3.6 时（181）还少：{total}")
+
+    def test_new_sets_have_echoes(self):
+        """★ 3.7 新增的 3 套必须**带着声骸**（2026-09-30 用户报"没看到新套装"）。
+
+        它们的效果文字是手工补的、声骸池来自库街区；这里钉住"补完是完整的"。
+        """
+        for name in ("衔梦照世之心", "镜影流电之瞬", "茜染怀想之花"):
+            with self.subTest(name=name):
+                info = find_echo_set(name)
+                self.assertIsNotNone(info, f"{name} 不在数据集里")
+                self.assertTrue(info.effects, f"{name} 没有套装效果")
+                self.assertTrue(info.echoes, f"{name} 一个声骸都没有")
 
     def test_skill_fields_loaded(self):
         # bwiki 只给老声骸建了页，43 个新声骸没技能是已知现状（见 fetch_wuwa_echo_skills.py）

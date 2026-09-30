@@ -383,6 +383,16 @@ def check_updates(snapshot: RemoteSnapshot, local_sets: dict | None = None,
         elif local.get("effects") != effects:
             report.effect_changed.append(name)
 
+    # ★ 库街区也带了套装名单（tagTree 的「套装」分组），而且**比 bwiki 全**。
+    #   2026-09-30 实测：3.7 的「衔梦照世之心 / 镜影流电之瞬 / 茜染怀想之花」
+    #   库街区**已经有**（37 套），bwiki 还停在上个版本（34 套）。
+    #   以前只拿 bwiki 的套装修名单，于是"库街区明明同步了"却报「套装没有变化」
+    #   —— 用户就是这么发现漏掉的（"现在更新了 3 套新的声骸套装，我怎么没看到呢"）。
+    #   这里把库街区独有的套装也算进来；效果文字由用户手工补（见 _manual_effects）。
+    for name in snapshot.echoes_kuro:
+        if name not in local_by_name and name not in report.new_sets:
+            report.new_sets.append(name)
+
     seen_new: set[str] = set()
     for source_label, remote in (("bwiki", snapshot.echoes_bwiki), ("库街区", snapshot.echoes_kuro)):
         for set_name, by_cost in remote.items():
@@ -425,6 +435,16 @@ def _merge_sets_data(local_sets: dict, snapshot: RemoteSnapshot) -> bool:
             changed = True
         elif local.get("effects") != effects and effects:
             local["effects"] = effects
+            changed = True
+
+    # ★ 库街区独有的套装（bwiki 还没收录的）也要建出来 —— 否则它带的声骸
+    #   会被 _union_echoes 因为"找不到这个套装"而**整批丢掉**（那正是新套装
+    #   的声骸一条都进不来的原因）。效果文字这里留空：bwiki 才是效果文字的
+    #   来源，库街区只给名单 + 声骸归属；空缺由手工补录兜底（见 set_effects）。
+    for name in snapshot.echoes_kuro:
+        if name not in by_name:
+            by_name[name] = {"name": name, "effects": []}
+            sets.append(by_name[name])
             changed = True
 
     # 声骸掉落池：bwiki ∪ 库街区，对本地取并集（只加不减）

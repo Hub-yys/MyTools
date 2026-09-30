@@ -89,6 +89,63 @@ class TestCheckUpdates(unittest.TestCase):
         self.assertTrue(any(n.startswith("新声骸乙") for n in report.new_echoes))
 
 
+class TestKuroOnlySets(unittest.TestCase):
+    """★ 库街区独有的套装（bwiki 还没收录的）必须也能被发现并建出来。
+
+    2026-09-30 用户报："现在更新了 3 套新的声骸套装，我怎么没看到呢"。
+    实测：3.7 的「衔梦照世之心 / 镜影流电之瞬 / 茜染怀想之花」库街区
+    **已经有**（37 套），bwiki 还停在上个版本（34 套）。
+    而代码**只拿 bwiki 的『声骸合鸣』页当套装名单** → 报「套装没有变化」，
+    库街区明明带回了这些套装及其声骸，却整批被忽略。
+
+    这组用例把"库街区也是套装名单的来源"钉住。
+    """
+
+    def test_check_reports_kuro_only_set(self):
+        snapshot = RemoteSnapshot()
+        snapshot.sets = {"凝夜白霜": _local()["sets"][0]["effects"]}   # bwiki 只有老套装
+        snapshot.echoes_kuro = {"新套装甲": {4: ["某声骸"]}}            # 库街区有新的
+        report = check_updates(snapshot, local_sets=_local())
+        self.assertIn("新套装甲", report.new_sets)
+        self.assertTrue(report.has_updates)
+
+    def test_merge_creates_kuro_only_set(self):
+        """★ 关键：库街区独有的套装要被**建出来**。
+
+        不建的话，它带的声骸会在 _union_echoes 里因为"找不到这个套装"
+        而**整批丢掉** —— 那正是新套装的声骸一条都进不来的原因。
+        """
+        local = _local()
+        snapshot = RemoteSnapshot()
+        snapshot.echoes_kuro = {"新套装甲": {4: ["某4C"], 1: ["某1C"]}}
+        self.assertTrue(_merge_sets_data(local, snapshot))
+
+        entry = next((s for s in local["sets"] if s["name"] == "新套装甲"), None)
+        self.assertIsNotNone(entry, "库街区独有的套装必须被建出来")
+        names = {e["name"] for e in entry["echoes"]}
+        self.assertLessEqual({"某4C", "某1C"}, names, "它的声骸也要一起进来")
+        # 效果文字留空（bwiki 才是效果来源），由手工补录兜底
+        self.assertEqual(entry["effects"], [])
+
+    def test_existing_set_effects_untouched(self):
+        """已有套装被库街区提到时，效果文字不能被清空。"""
+        local = _local()
+        snapshot = RemoteSnapshot()
+        snapshot.echoes_kuro = {"凝夜白霜": {1: ["新声骸甲"]}}
+        _merge_sets_data(local, snapshot)
+        first = local["sets"][0]
+        self.assertEqual(first["effects"], [{"pieces": 2, "text": "冷凝伤害提升10%"}])
+        self.assertIn("新声骸甲", {e["name"] for e in first["echoes"]})
+
+    def test_duplicate_not_reported_twice(self):
+        """同一个套装 bwiki 和库街区都有 → 只报一次（别在摘要里重复）。"""
+        snapshot = RemoteSnapshot()
+        snapshot.sets = {"新套装甲": [{"pieces": 2, "text": "x"}]}
+        snapshot.echoes_kuro = {"新套装甲": {4: ["某声骸"]}}
+        report = check_updates(snapshot, local_sets=_local())
+        self.assertEqual(report.new_sets, ["新套装甲"])
+
+
 class TestMergeSetsData(unittest.TestCase):
     def test_append_new_set(self):
         local = _local()

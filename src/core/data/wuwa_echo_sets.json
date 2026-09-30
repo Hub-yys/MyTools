@@ -1,7 +1,7 @@
 {
   "_source": "https://wiki.biligame.com/wutheringwaves/声骸合鸣",
-  "_fetched": "2026-09-21",
-  "_game_version": "3.6",
+  "_fetched": "2026-09-30",
+  "_game_version": "3.7",
   "_note": "套装名称与效果文字整理自 bwiki 声骸合鸣页（游戏内原文）。游戏更新后可能过期，重跑 tools/refresh_wuwa_data.py 可刷新。",
   "_icons": "图标为程序生成的占位图。把游戏图标按 assets/game/echo_sets/<套装名>.png 覆盖同名文件即可。",
   "_echoes_source": "声骸明细 = bwiki（SemanticMediaWiki ask 反查）∪ 库街区官方 wiki（api.kurobbs.com getPage，catalogueId=1107，wiki_type=9），原始数据存 kurobbs_echoes_raw.json。官方侧覆盖了 bwiki 缺的 2.2~3.3 套装掉落池。",
@@ -1910,6 +1910,91 @@
         {
           "name": "魔术先生",
           "cost": 1
+        }
+      ]
+    },
+    {
+      "name": "衔梦照世之心",
+      "effects": [
+        {
+          "pieces": 2,
+          "text": "导电伤害提升10%"
+        },
+        {
+          "pieces": 5,
+          "text": "角色为敌人添加【电磁效应】时，或自身获得同奏、响应同奏时，自身暴击提升15%，导电伤害提升22.5%，持续30秒。"
+        }
+      ],
+      "echoes": [
+        {
+          "name": "共鸣回响·天演溯心",
+          "cost": 4
+        },
+        {
+          "name": "解形煞",
+          "cost": 3
+        },
+        {
+          "name": "绝息魄",
+          "cost": 3
+        },
+        {
+          "name": "玉冥蛇",
+          "cost": 1
+        },
+        {
+          "name": "奇绽傀",
+          "cost": 1
+        }
+      ]
+    },
+    {
+      "name": "镜影流电之瞬",
+      "effects": [
+        {
+          "pieces": 2,
+          "text": "导电伤害提升10%"
+        },
+        {
+          "pieces": 5,
+          "text": "角色为敌人添加【电磁效应】时，自身获得下述效果：导电伤害提升10%，持续15秒。持续期间内施放延奏技能后，下一个变奏技能登场的角色导电伤害提升25%，持续15秒。"
+        }
+      ],
+      "echoes": [
+        {
+          "name": "共鸣回响·天演溯心",
+          "cost": 4
+        },
+        {
+          "name": "绝息魄",
+          "cost": 3
+        },
+        {
+          "name": "巡宵枪卫",
+          "cost": 3
+        }
+      ]
+    },
+    {
+      "name": "茜染怀想之花",
+      "effects": [
+        {
+          "pieces": 2,
+          "text": "治疗效果提升10%"
+        },
+        {
+          "pieces": 5,
+          "text": "为队伍中角色提供治疗时，队伍中角色攻击提升10%，持续30秒，同名效果之间不可叠加。上述效果持续期间，若角色获得同奏、响应同奏，攻击额外提升15%。"
+        }
+      ],
+      "echoes": [
+        {
+          "name": "解形煞",
+          "cost": 3
+        },
+        {
+          "name": "巡宵枪卫",
+          "cost": 3
         }
       ]
     }
