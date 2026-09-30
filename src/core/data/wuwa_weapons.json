@@ -1,0 +1,748 @@
+{
+  "_source": [
+    "https://wiki.kurobbs.com/mc/catalogue/list?fid=1099（库街区官方 wiki，catalogueId=1106 武器）"
+  ],
+  "_fetched": "2026-09-30",
+  "_game_version": "3.7",
+  "_note": "武器名单与「类型 / 主词条 / 星级」整理自库街区官方 wiki。图标按 assets/game/weapons/<武器名>.png 放（用 tools/fetch_wuwa_assets.py 的 weapons 类别下载）。",
+  "weapons": [
+    {
+      "name": "万物持存的注释",
+      "type": "臂铠",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "不屈命定之冠",
+      "type": "迅刀",
+      "stat": "生命",
+      "rarity": 5
+    },
+    {
+      "name": "不归孤军",
+      "type": "迅刀",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "不灭航路",
+      "type": "迅刀",
+      "stat": "共鸣效率",
+      "rarity": 5
+    },
+    {
+      "name": "东落",
+      "type": "长刃",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "云琅",
+      "type": "迅刀",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "今州守望",
+      "type": "音感仪",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "停驻之烟",
+      "type": "佩枪",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "光影双生",
+      "type": "佩枪",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "凋亡频移",
+      "type": "长刃",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "凌空",
+      "type": "臂铠",
+      "stat": "暴击伤害",
+      "rarity": 4
+    },
+    {
+      "name": "千古洑流",
+      "type": "迅刀",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "千般渡",
+      "type": "长刃",
+      "stat": "生命",
+      "rarity": 5
+    },
+    {
+      "name": "华彩乐段",
+      "type": "佩枪",
+      "stat": "共鸣效率",
+      "rarity": 4
+    },
+    {
+      "name": "原初佩枪·穿林",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 2
+    },
+    {
+      "name": "原初臂铠·磐岩",
+      "type": "臂铠",
+      "stat": "攻击",
+      "rarity": 2
+    },
+    {
+      "name": "原初迅刀·鸣雨",
+      "type": "迅刀",
+      "stat": "攻击",
+      "rarity": 2
+    },
+    {
+      "name": "原初长刃·朴石",
+      "type": "长刃",
+      "stat": "攻击",
+      "rarity": 2
+    },
+    {
+      "name": "原初音感仪·听浪",
+      "type": "音感仪",
+      "stat": "攻击",
+      "rarity": 2
+    },
+    {
+      "name": "叙别的罗曼史",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "呼啸重音",
+      "type": "臂铠",
+      "stat": "共鸣效率",
+      "rarity": 4
+    },
+    {
+      "name": "和光回唱",
+      "type": "音感仪",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "大海的馈赠",
+      "type": "音感仪",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "天之苍苍",
+      "type": "迅刀",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "奇幻变奏",
+      "type": "音感仪",
+      "stat": "共鸣效率",
+      "rarity": 4
+    },
+    {
+      "name": "奔雷",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "存帧",
+      "type": "音感仪",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "宙算仪轨",
+      "type": "长刃",
+      "stat": "共鸣效率",
+      "rarity": 5
+    },
+    {
+      "name": "容赦的沉思录",
+      "type": "长刃",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "尘云旋臂",
+      "type": "臂铠",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "幽冥的忘忧章",
+      "type": "音感仪",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "异响空灵",
+      "type": "长刃",
+      "stat": "共鸣效率",
+      "rarity": 4
+    },
+    {
+      "name": "异度",
+      "type": "音感仪",
+      "stat": "生命",
+      "rarity": 4
+    },
+    {
+      "name": "心之锚",
+      "type": "迅刀",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "悖论喷流",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "悲喜剧",
+      "type": "臂铠",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "戍关佩枪·平云",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "戍关臂铠·拔山",
+      "type": "臂铠",
+      "stat": "防御",
+      "rarity": 3
+    },
+    {
+      "name": "戍关迅刀·镇海",
+      "type": "迅刀",
+      "stat": "生命",
+      "rarity": 3
+    },
+    {
+      "name": "戍关长刃·定军",
+      "type": "长刃",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "戍关音感仪·留光",
+      "type": "音感仪",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "掣傀之手",
+      "type": "音感仪",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "擎渊怒涛",
+      "type": "臂铠",
+      "stat": "攻击",
+      "rarity": 5
+    },
+    {
+      "name": "教学佩枪",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 1
+    },
+    {
+      "name": "教学臂铠",
+      "type": "臂铠",
+      "stat": "攻击",
+      "rarity": 1
+    },
+    {
+      "name": "教学迅刀",
+      "type": "迅刀",
+      "stat": "攻击",
+      "rarity": 1
+    },
+    {
+      "name": "教学长刃",
+      "type": "长刃",
+      "stat": "攻击",
+      "rarity": 1
+    },
+    {
+      "name": "教学音感仪",
+      "type": "音感仪",
+      "stat": "攻击",
+      "rarity": 1
+    },
+    {
+      "name": "无眠烈火",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "时和岁稔",
+      "type": "长刃",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "昙切",
+      "type": "长刃",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "星序协响",
+      "type": "音感仪",
+      "stat": "共鸣效率",
+      "rarity": 5
+    },
+    {
+      "name": "昭日译注",
+      "type": "臂铠",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "暗夜佩枪·暗星",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "暗夜矩阵·暝光",
+      "type": "音感仪",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "暗夜臂铠·夜芒",
+      "type": "臂铠",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "暗夜迅刀·黑闪",
+      "type": "迅刀",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "暗夜长刃·玄明",
+      "type": "长刃",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "曜光",
+      "type": "音感仪",
+      "stat": "暴击伤害",
+      "rarity": 4
+    },
+    {
+      "name": "林间的咏叹调",
+      "type": "佩枪",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "栖霞饮露",
+      "type": "音感仪",
+      "stat": "共鸣效率",
+      "rarity": 5
+    },
+    {
+      "name": "核熔星盘",
+      "type": "音感仪",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "死与舞",
+      "type": "佩枪",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "永夜长明",
+      "type": "长刃",
+      "stat": "防御",
+      "rarity": 4
+    },
+    {
+      "name": "永续坍缩",
+      "type": "迅刀",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "永远的启明星",
+      "type": "迅刀",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "浩境粼光",
+      "type": "长刃",
+      "stat": "攻击",
+      "rarity": 5
+    },
+    {
+      "name": "海的呢喃",
+      "type": "音感仪",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "清音",
+      "type": "音感仪",
+      "stat": "暴击率",
+      "rarity": 4
+    },
+    {
+      "name": "渊海回声",
+      "type": "音感仪",
+      "stat": "共鸣效率",
+      "rarity": 4
+    },
+    {
+      "name": "源能佩枪·测叁",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "源能机锋",
+      "type": "长刃",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "源能臂铠·测肆",
+      "type": "臂铠",
+      "stat": "暴击伤害",
+      "rarity": 3
+    },
+    {
+      "name": "源能迅刀·测贰",
+      "type": "迅刀",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "源能长刃·测壹",
+      "type": "长刃",
+      "stat": "防御",
+      "rarity": 3
+    },
+    {
+      "name": "源能音感仪·测五",
+      "type": "音感仪",
+      "stat": "生命",
+      "rarity": 3
+    },
+    {
+      "name": "溢彩荧辉",
+      "type": "佩枪",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "漪澜浮录",
+      "type": "音感仪",
+      "stat": "攻击",
+      "rarity": 5
+    },
+    {
+      "name": "灼霜",
+      "type": "迅刀",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "焰光裁定",
+      "type": "臂铠",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "焰痕",
+      "type": "长刃",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "玉阙玄华",
+      "type": "音感仪",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "玻色星仪",
+      "type": "音感仪",
+      "stat": "共鸣效率",
+      "rarity": 5
+    },
+    {
+      "name": "琼枝冰绡",
+      "type": "音感仪",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "白昼之脊",
+      "type": "臂铠",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "相位涟漪",
+      "type": "佩枪",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "瞬斩刀-18型",
+      "type": "迅刀",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "碎骨",
+      "type": "佩枪",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "穿击枪-26型",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "纹秋",
+      "type": "长刃",
+      "stat": "暴击率",
+      "rarity": 4
+    },
+    {
+      "name": "翼锋",
+      "type": "迅刀",
+      "stat": "暴击率",
+      "rarity": 4
+    },
+    {
+      "name": "脉冲协臂",
+      "type": "臂铠",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "苍鳞千嶂",
+      "type": "长刃",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "虚饰的华尔兹",
+      "type": "音感仪",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "蜃影",
+      "type": "佩枪",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "血誓盟约",
+      "type": "迅刀",
+      "stat": "共鸣效率",
+      "rarity": 5
+    },
+    {
+      "name": "行进序曲",
+      "type": "迅刀",
+      "stat": "共鸣效率",
+      "rarity": 4
+    },
+    {
+      "name": "袍泽之固",
+      "type": "臂铠",
+      "stat": "防御",
+      "rarity": 4
+    },
+    {
+      "name": "裁春",
+      "type": "迅刀",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "裁竹",
+      "type": "迅刀",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "西升",
+      "type": "迅刀",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "诸方玄枢",
+      "type": "臂铠",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "赝作的矮星",
+      "type": "音感仪",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "赫奕流明",
+      "type": "迅刀",
+      "stat": "暴击伤害",
+      "rarity": 5
+    },
+    {
+      "name": "远行者佩枪·洞察",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "远行者矩阵·探幽",
+      "type": "音感仪",
+      "stat": "共鸣效率",
+      "rarity": 3
+    },
+    {
+      "name": "远行者臂铠·破障",
+      "type": "臂铠",
+      "stat": "防御",
+      "rarity": 3
+    },
+    {
+      "name": "远行者迅刀·旅迹",
+      "type": "迅刀",
+      "stat": "共鸣效率",
+      "rarity": 3
+    },
+    {
+      "name": "远行者长刃·辟路",
+      "type": "长刃",
+      "stat": "共鸣效率",
+      "rarity": 3
+    },
+    {
+      "name": "酩酊的英雄志",
+      "type": "臂铠",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "重破刃-41型",
+      "type": "长刃",
+      "stat": "共鸣效率",
+      "rarity": 4
+    },
+    {
+      "name": "金掌",
+      "type": "臂铠",
+      "stat": "暴击率",
+      "rarity": 4
+    },
+    {
+      "name": "金穹",
+      "type": "长刃",
+      "stat": "暴击伤害",
+      "rarity": 4
+    },
+    {
+      "name": "钢影拳-21丁型",
+      "type": "臂铠",
+      "stat": "共鸣效率",
+      "rarity": 4
+    },
+    {
+      "name": "钧天正音",
+      "type": "长刃",
+      "stat": "攻击",
+      "rarity": 3
+    },
+    {
+      "name": "镭射切变",
+      "type": "迅刀",
+      "stat": "共鸣效率",
+      "rarity": 5
+    },
+    {
+      "name": "阳焰",
+      "type": "佩枪",
+      "stat": "暴击率",
+      "rarity": 4
+    },
+    {
+      "name": "风流的寓言诗",
+      "type": "迅刀",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "飞景",
+      "type": "迅刀",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "飞逝",
+      "type": "佩枪",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "驭冕铸雷之权",
+      "type": "长刃",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "骇行",
+      "type": "臂铠",
+      "stat": "攻击",
+      "rarity": 4
+    },
+    {
+      "name": "鸣动仪-25型",
+      "type": "音感仪",
+      "stat": "共鸣效率",
+      "rarity": 4
+    }
+  ]
+}

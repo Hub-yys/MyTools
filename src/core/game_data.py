@@ -184,6 +184,34 @@ class CharacterInfo:
         return " · ".join(parts)
 
 
+@dataclass(frozen=True)
+class WeaponInfo:
+    """一把武器。图标路径按名字推导（``weapons/<名字>.png``）。"""
+
+    name: str
+    type: str = ""     # 迅刀 / 长刃 / 佩枪 / 臂铠 / 音感仪
+    stat: str = ""     # 主词条：攻击 / 生命 / 防御 / 共鸣效率 / 暴击率 / 暴击伤害
+    rarity: int = 0    # 0 表示未知
+
+    @property
+    def icon(self) -> str:
+        """图标相对路径。⚠ 推导而不是存进数据文件 —— 文件名就是武器名，
+        存两份迟早对不上（角色那边也是这么处理的）。"""
+        return f"weapons/{self.name}.png"
+
+    @property
+    def tagline(self) -> str:
+        """卡片/列表下面那行小字，例如 ``"5星 · 迅刀 · 暴击率"``。"""
+        parts = []
+        if self.rarity:
+            parts.append(f"{self.rarity}星")
+        if self.type:
+            parts.append(self.type)
+        if self.stat:
+            parts.append(self.stat)
+        return " · ".join(parts)
+
+
 # --------------------------------------------------------------------- 加载
 
 def _load_json(filename: str) -> dict:
@@ -216,6 +244,34 @@ def _build_characters(raw: dict) -> tuple[CharacterInfo, ...]:
                 rarity=int(item.get("rarity", 0) or 0),
                 element=str(item.get("element", "") or ""),
                 weapon=str(item.get("weapon", "") or ""),
+            )
+        )
+    return tuple(result)
+
+
+def _build_weapons(raw: dict) -> tuple[WeaponInfo, ...]:
+    """``wuwa_weapons.json`` → 武器元组。
+
+    ⚠ 图标**不存进数据文件**（:attr:`WeaponInfo.icon` 按名字推导）——
+    文件名就是武器名，存两份迟早对不上。
+    """
+    result: list[WeaponInfo] = []
+    for item in raw.get("weapons", []) or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name:
+            continue
+        try:
+            rarity = int(item.get("rarity", 0) or 0)
+        except (TypeError, ValueError):
+            rarity = 0
+        result.append(
+            WeaponInfo(
+                name=name,
+                type=str(item.get("type", "") or ""),
+                stat=str(item.get("stat", "") or ""),
+                rarity=rarity,
             )
         )
     return tuple(result)
@@ -276,6 +332,7 @@ _CHARACTER_DATA: dict = {}
 _ECHO_SET_DATA: dict = {}
 _SET_VERSION_DATA: dict = {}
 _SKILL_DATA: dict = {}
+_WEAPON_DATA: dict = {}
 
 #: 声骸名 → ``{"skill": 技能说明, "cooldown": 冷却}``。抓取见 tools/fetch_wuwa_echo_skills.py。
 ECHO_SKILLS: dict[str, dict[str, str]] = {}
@@ -292,6 +349,10 @@ SET_VERSIONS: dict[str, str] = {}
 #   2. :func:`reload_data` 只能**就地改内容**（``CHARACTERS[:] = ...`` / ``dict.clear()``），
 #      **绝不能重新赋值**（那样只是换掉本模块自己的名字，别人手里还是旧对象）。
 CHARACTERS: list[CharacterInfo] = []
+
+#: 全部武器（图鉴页用）。和 ``CHARACTERS`` 一样是**公用可变清单**，
+#: ``reload_data`` 只能就地改内容（``WEAPONS[:] = ...``）。
+WEAPONS: list[WeaponInfo] = []
 
 
 def _sorted_newest_first(items: tuple[EchoSetInfo, ...]) -> tuple[EchoSetInfo, ...]:
@@ -346,11 +407,13 @@ def _load_into_memory(version: int) -> None:
     后者让更新完的数据立刻生效（不必重启）。
     """
     global _CHARACTER_DATA, _ECHO_SET_DATA, _SET_VERSION_DATA, _SKILL_DATA, DATA_VERSION
+    global _WEAPON_DATA
 
     _CHARACTER_DATA = _load_json("wuwa_characters.json")
     _ECHO_SET_DATA = _load_json("wuwa_echo_sets.json")
     _SET_VERSION_DATA = _load_json("wuwa_set_versions.json")
     _SKILL_DATA = _load_json("wuwa_echo_skills.json")
+    _WEAPON_DATA = _load_json("wuwa_weapons.json")
 
     # 技能 / 版本要先更新：_build_echo_sets 会去查这两个表
     ECHO_SKILLS.clear()
@@ -370,6 +433,7 @@ def _load_into_memory(version: int) -> None:
     })
 
     CHARACTERS[:] = _build_characters(_CHARACTER_DATA)
+    WEAPONS[:] = _build_weapons(_WEAPON_DATA)
     ECHO_SETS[:] = _sorted_newest_first(_build_echo_sets(_ECHO_SET_DATA))
     CONFIGURABLE_ECHO_SETS[:] = [s for s in ECHO_SETS if s.is_configurable]
 

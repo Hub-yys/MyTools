@@ -52,6 +52,7 @@ REQUIRED_DATA = [
     "assets/icons/auto_combat.png",
     "data/loadouts.json",
     "src/core/data/wuwa_echo_sets.json",
+    "src/core/data/wuwa_weapons.json",         # 武器图鉴（2026-09-30 新增）
     "src/tools/game/echo_enhance/tool.py",     # 给 walk_packages 扫的源码副本
     "src/tools/game/auto_combat/tool.py",
     "onnxocr/models/ppocrv5/det/det.onnx",

@@ -141,12 +141,21 @@ python -m venv .venv
 
 ## 资源库
 
-侧栏「资源库」分组，下面挂各个游戏的资料页；目前只有 **鸣潮资源库**，分两块：
+侧栏「资源库」分组，下面挂各个游戏的资料页；目前只有 **鸣潮资源库**，分四块：
 
 - **角色头像**：圆形头像 + 角色名，网格铺开（游戏里的角色头像本身就是圆的，
   所以方形素材会自动裁圆）。
 - **声骸套装**：每套一张卡片 —— 套装图标 + 名称 + **套装效果说明** +
   该套装下 4C/3C/1C 各有几个声骸。
+- **声骸图鉴**：按 4C/3C/1C 分组，每行一条声骸（图标 + COST + 技能说明）。
+- **武器图鉴**（2026-09-30 新增）：按**武器类型**分组（长刃 / 迅刀 / 佩枪 /
+  臂铠 / 音感仪），每行一把武器 —— 图标 + 名字 + 「星级 · 类型 · 主词条」。
+  组内按星级倒序、同星级按名字。
+
+武器数据在 `src/core/data/wuwa_weapons.json`（123 把，来自库街区
+catalogue 1106 的 tagTree），加载进 `game_data.WEAPONS`。
+⚠ **图标路径按名字推导**（`weapons/<名字>.png`），**不存进数据文件** ——
+存两份迟早对不上（角色那边也是这么处理的）。
 
 ### 资料从哪来
 
@@ -261,16 +270,22 @@ POST form + header `wiki_type: 9`）：
 **图标不随代码走** —— 它们是库洛的美术素材，用脚本从公开 wiki 拉到本地：
 
 ```powershell
-.venv\Scripts\python tools\fetch_wuwa_assets.py                 # 三类都下
+.venv\Scripts\python tools\fetch_wuwa_assets.py                 # 四类都下
 .venv\Scripts\python tools\fetch_wuwa_assets.py --list          # 只看有什么，不下载
 .venv\Scripts\python tools\fetch_wuwa_assets.py --only avatars  # 只下角色头像
+.venv\Scripts\python tools\fetch_wuwa_assets.py --only weapons  # 只下武器图
 ```
 
 | 类别 | 存到哪 | 张数 | 备注 |
 |---|---|---|---|
-| 角色头像 | `assets/game/avatars/<角色名>.png` | 58 | 方形图会自动裁圆 |
-| 套装图标 | `assets/game/echo_sets/<套装名>.png` | 34 | |
-| 声骸图标 | `assets/game/echoes/<声骸名>.png` | 125 | |
+| 角色头像 | `assets/game/avatars/<角色名>.png` | 60 | 方形图会自动裁圆 |
+| 套装图标 | `assets/game/echo_sets/<套装名>.png` | 37 | |
+| 声骸图标 | `assets/game/echoes/<声骸名>.png` | 187 | |
+| 武器图标 | `assets/game/weapons/<武器名>.png` | 123 | 2026-09-30 新增 |
+
+> ⚠ **角色 / 武器图走库街区**（catalogue 1105 / 1106），bwiki 那两份不全。
+> 武器清单**直接问 1106**，不从 `icon_urls` 里猜 —— 那份混在一起
+> （角色 / 武器 / 声骸都在），分不出哪个是武器。
 
 **换成自己的图**：直接覆盖同名文件，代码不用改。
 
@@ -1002,6 +1017,9 @@ class DiceTool(BaseTool):
 .venv\Scripts\python tests\test_echo_stats.py       # 判定引擎 + 报告文本往返解析
 .venv\Scripts\python tests\test_run_report.py       # 运行报告：本轮合计 + 累计持久化
 .venv\Scripts\python tests\test_flow_name.py        # 任务流程名的自动后缀（含存量名兼容）
+.venv\Scripts\python tests\test_weapons.py          # 武器图鉴：数据 + 资源库分区
+.venv\Scripts\python tests\test_gacha.py            # 抽卡记录分析：统计口径 + 界面
+.venv\Scripts\python tests\test_gacha_link.py       # 从游戏日志读抽卡链接
 .venv\Scripts\python tests\smoke_echo_reader.py     # 合成图 → OCR → 判定
 .venv\Scripts\python tests\smoke_echo_runner.py     # 强化流程状态机（假窗口）
 .venv\Scripts\python tests\check_settings_gui.py    # 工具页配置存盘/回填 + 资源库页重建（带截图）

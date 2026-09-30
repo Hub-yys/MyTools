@@ -31,6 +31,7 @@ from ..core.game_data import (
     DATA_META,
     ECHOES_BY_COST,
     ECHO_SETS,
+    WEAPONS,
     icon_path,
 )
 from .compat import CaptionLabel, StrongBodyLabel, TitleLabel, resolve_icon
@@ -212,6 +213,43 @@ class _EchoRow(CardWidget):
         self.setFixedHeight(self.layout().totalSizeHint().height())
 
 
+class _WeaponRow(CardWidget):
+    """一条武器：左边图标，右边名字 + 「星级 · 类型 · 主词条」。
+
+    和 :class:`_EchoRow` 同一套排版（图鉴区的最小单元），
+    只是第二行换成武器的属性。
+    """
+
+    def __init__(self, weapon, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.weapon = weapon
+        self.setFixedWidth(SET_CARD_WIDTH)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(16, 14, 16, 14)
+        row.setSpacing(14)
+
+        icon = load_icon(weapon.icon)
+        view: QWidget = IconWidget(icon, self) if not icon.isNull() else QWidget(self)
+        view.setFixedSize(QSize(SET_ICON_SIZE, SET_ICON_SIZE))
+        row.addWidget(view, 0, Qt.AlignmentFlag.AlignTop)
+
+        text_box = QWidget(self)
+        column = QVBoxLayout(text_box)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(3)
+        column.addWidget(StrongBodyLabel(weapon.name, text_box))
+
+        meta = CaptionLabel(weapon.tagline or "（属性未收录）", text_box)
+        meta.setTextColor(*MUTED)
+        column.addWidget(meta)
+        column.addStretch(1)
+        row.addWidget(text_box, 1)
+
+        # ⚠ 高度钉死 —— 同 _EchoRow：QBoxLayout 不传 heightForWidth。
+        self.setFixedHeight(self.layout().totalSizeHint().height())
+
+
 class WuwaLibraryInterface(ScrollArea):
     """侧栏「资源库 → 鸣潮资源库」对应的页面。"""
 
@@ -258,6 +296,8 @@ class WuwaLibraryInterface(ScrollArea):
         layout.addWidget(self._build_echo_set_section(view))
         layout.addSpacing(6)
         layout.addWidget(self._build_echo_section(view))
+        layout.addSpacing(6)
+        layout.addWidget(self._build_weapon_section(view))
         layout.addStretch(1)
 
     def rebuild(self) -> None:
@@ -299,6 +339,7 @@ class WuwaLibraryInterface(ScrollArea):
         version = DATA_META.get("game_version") or "未知"
         source = CaptionLabel(
             f"角色 {len(CHARACTERS)} 个 · 声骸套装 {len(ECHO_SETS)} 套"
+            f" · 武器 {len(WEAPONS)} 把"
             f"　|　资料整理自公开 wiki，抓取于 {fetched}（游戏版本 {version}）",
             holder,
         )
@@ -365,6 +406,37 @@ class WuwaLibraryInterface(ScrollArea):
             card.add(group_title)
             for echo in items:
                 card.add(_EchoRow(echo, card))
+        return card
+
+    def _build_weapon_section(self, parent: QWidget) -> QWidget:
+        """武器图鉴（2026-09-30 新增）：**按武器类型**分组，每行一把武器。
+
+        用户要求："把武器图也放到资源库，资源库新增分类，武器图鉴"。
+
+        分组跟着游戏里的武器类型来（长刃 / 迅刀 / 佩枪 / 臂铠 / 音感仪），
+        组内按名字排 —— 和声骸图鉴按 4C/3C/1C 分组是同一个思路。
+        """
+        if not WEAPONS:
+            return QWidget(parent)      # 没数据就不摆空卡片
+
+        card = CollapsibleCard(f"武器图鉴（{len(WEAPONS)}）", expanded=True,
+                               parent=parent)
+
+        # 按类型分组；顺序用**固定表**，别用 set 的随机序
+        order = ("长刃", "迅刀", "佩枪", "臂铠", "音感仪")
+        by_type: dict[str, list] = {name: [] for name in order}
+        for weapon in WEAPONS:
+            by_type.setdefault(weapon.type or "其它", []).append(weapon)
+
+        for type_name in (*order, "其它"):
+            items = by_type.get(type_name) or []
+            if not items:
+                continue
+            group_title = CaptionLabel(f"{type_name}（{len(items)}）", card)
+            group_title.setTextColor(*MUTED)
+            card.add(group_title)
+            for weapon in sorted(items, key=lambda w: (-w.rarity, w.name)):
+                card.add(_WeaponRow(weapon, card))
         return card
 
     # ---------------------------------------------------------------- 其它
