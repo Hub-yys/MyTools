@@ -30,8 +30,9 @@ from qfluentwidgets import (
 from ..core.echo_profile import EchoProfileStore
 from ..core.loadout import Loadout, LoadoutStore
 from ..core.registry import logger
-from .compat import CaptionLabel, ElidedLabel, TitleLabel, resolve_icon
+from .compat import CaptionLabel, ElidedLabel, SearchLineEdit, TitleLabel, resolve_icon
 from .config_names import KIND_ECHO_PROFILE, KIND_LOADOUT
+from .pickers import matches_keyword, pinyin_keys
 from .echo_profile_ui import (
     TYPE_ECHO_PROFILE,
     TYPE_LOADOUT,
@@ -223,6 +224,22 @@ class ConfigInterface(ScrollArea):
         row.addStretch(1)
         self.root_layout.addWidget(header)
 
+        # ---- 搜索框（用户 2026-09-30："加上搜索，和前面下拉列表搜索一样的"）----
+        # "和下拉列表一样" = 复用 FilterComboBox 那套匹配：中文子串 +
+        # **拼音全拼/首字母**都认（见 pickers.pinyin_keys / matches_keyword）。
+        # ⚠ 这里不用 FilterComboBox（那是下拉框），只用它的匹配函数。
+        self.search_edit = SearchLineEdit(self.view)
+        self.search_edit.setPlaceholderText(
+            "搜索角色名（支持拼音，如 feixue / fx）")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setFixedWidth(280)
+        self.search_edit.textChanged.connect(self._on_search_changed)
+        search_row = QHBoxLayout()
+        search_row.setContentsMargins(0, 0, 0, 0)
+        search_row.addWidget(self.search_edit)
+        search_row.addStretch(1)
+        self.root_layout.addLayout(search_row)
+
         self.subtitle = CaptionLabel("", self.view)
         self.subtitle.setTextColor("#8A8F98", "#7C7C7C")
         self.root_layout.addWidget(self.subtitle)
@@ -236,6 +253,24 @@ class ConfigInterface(ScrollArea):
         self.root_layout.addStretch(1)
         self.reload()
 
+    def _on_search_changed(self, _text: str) -> None:
+        """搜索词变了 → 只重建列表（不动存储）。
+
+        ⚠ 走 ``reload()`` 而不是"就地隐藏行"：列表本来就是**按数据重建**的
+        （增删改之后也走同一条路），保持一致、少一处状态要同步。
+        """
+        self.reload()
+
+    def _keyword(self) -> str:
+        return (self.search_edit.text() or "").strip()
+
+    def _matches_search(self, name: str) -> bool:
+        """这一条的角色名是否命中搜索词（空搜索词 = 全命中）。"""
+        key = self._keyword()
+        if not key:
+            return True
+        return matches_keyword(pinyin_keys(name), name, key)
+
     # ---------------------------------------------------------------- 列表
     def _clear_list(self) -> None:
         while self.list_layout.count():
@@ -246,22 +281,25 @@ class ConfigInterface(ScrollArea):
                 widget.deleteLater()
 
     def reload(self) -> None:
-        """按存储里的内容重建列表（增删改之后都调它）。"""
+        """按存储里的内容重建列表（增删改之后都调它）。
+
+        ★ 搜索也在这一步生效（2026-09-30）：**过滤只影响显示，不动存储** ——
+        行还是照常从存储里读出来的，只是不命中的不摆上来。
+        """
         self._clear_list()
 
-        loadouts = self.store.all()
-        profiles = self.profiles.all()
-        self.subtitle.setText(
-            "共 " + " · ".join((
-                _type_count(len(profiles), TYPE_ECHO_PROFILE),
-                _type_count(len(loadouts), TYPE_LOADOUT),
-            )))
+        all_loadouts = self.store.all()
+        all_profiles = self.profiles.all()
+        keyword = self._keyword()
+        loadouts = [x for x in all_loadouts if self._matches_search(x.character)]
+        profiles = [x for x in all_profiles if self._matches_search(x.name)]
+
+        self.subtitle.setText(self._subtitle_text(
+            loadouts, profiles, all_loadouts, all_profiles, keyword))
         self.subtitle.setVisible(True)
 
-        if not profiles and not loadouts:
-            empty = CaptionLabel("还没有配置，点上面的「新增」建一条。", self.list_host)
-            empty.setTextColor("#8A8F98", "#7C7C7C")
-            self.list_layout.addWidget(empty)
+        if not loadouts and not profiles:
+            self.list_layout.addWidget(self._empty_hint(keyword))
             return
 
         # ---- 角色声骸强化（判定条件，和强化工具自己的设置互不影响）----
@@ -288,6 +326,35 @@ class ConfigInterface(ScrollArea):
         # 新行都是默认宽度建的，这里按当前视口重算一次（顺带定好行高）
         self._last_row_width = -1
         self._apply_row_width()
+
+    def _subtitle_text(self, loadouts, profiles, all_loadouts, all_profiles,
+                       keyword: str) -> str:
+        """副标题：搜索时显示"命中多少 / 共多少"，没搜索就显示总数。
+
+        ⚠ 搜索时**必须带上总数** —— 否则用户看到"共 1 条"会以为配置被删了。
+        """
+        if not keyword:
+            return "共 " + " · ".join((
+                _type_count(len(all_profiles), TYPE_ECHO_PROFILE),
+                _type_count(len(all_loadouts), TYPE_LOADOUT),
+            ))
+        hit = len(profiles) + len(loadouts)
+        total = len(all_profiles) + len(all_loadouts)
+        return f"搜索「{keyword}」：命中 {hit} / 共 {total} 条"
+
+    def _empty_hint(self, keyword: str) -> QWidget:
+        """空列表提示 —— 分"一条都没有"和"搜不到"两种情况。
+
+        两者原因完全不同（一个是没建、一个是搜索词不对），
+        提示混在一起会让用户白找半天。
+        """
+        if keyword:
+            text = f"没有匹配「{keyword}」的配置。换个词试试（支持拼音）。"
+        else:
+            text = "还没有配置，点上面的「新增」建一条。"
+        empty = CaptionLabel(text, self.list_host)
+        empty.setTextColor("#8A8F98", "#7C7C7C")
+        return empty
 
     def _section(self, text: str) -> QWidget:
         """两类配置之间的小标题。"""

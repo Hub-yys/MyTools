@@ -61,6 +61,38 @@ def pinyin_keys(text: str) -> tuple[str, str]:
     return keep_alnum(full), keep_alnum(initial)
 
 
+def matches_keyword(keys: tuple[str, str], text: str, keyword: str) -> bool:
+    """``text`` 是否命中 ``keyword`` —— **全项目共用的搜索匹配规则**。
+
+    * 空关键词（含**纯空白**）= 全命中；
+    * 中文走**子串**；
+    * **纯字母** additionally 走拼音（全拼或首字母都行）。
+
+    只在纯字母输入时试拼音：打中文时子串匹配已经够用，而且中文 key 跟
+    拼音串不可能互相包含 —— 加进去只会白算。
+
+    ⚠ 抽成模块级函数是为了**别处也能用同一套规则**（2026-09-30：
+    配置页要"和下拉列表搜索一样的"搜索框）。逻辑只有这一份，
+    改规则时下拉框和搜索框一起变，不会两边不一致。
+
+    ⚠ **自己 ``strip()``**：调用方忘了去空格时，"   " 会被当成关键词，
+    结果一条都搜不到（看起来像"搜索坏了"）。下拉框那边是在
+    ``_fill_items`` 里先 strip 的，这里再兜一次，两边都不会踩。
+
+    ``keys`` 是 :func:`pinyin_keys` 的返回值 ``(全拼, 首字母)``。
+    """
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return True
+    if keyword in text:
+        return True
+    if not (keyword.isascii() and keyword.isalpha()):
+        return False
+    lowered = keyword.lower()
+    full, initial = keys
+    return lowered in full or lowered in initial
+
+
 def load_icon(relative: str) -> QIcon:
     """加载图标：数据集里的相对路径、或用户自选的绝对路径都吃。
 
@@ -226,21 +258,8 @@ class FilterComboBox(EditableComboBox):
                 self.items.append(_make_item(text, icon))
 
     def _matches(self, text: str, key: str) -> bool:
-        """空关键词全留；中文走子串；**纯字母走拼音**（全拼或首字母都行）。
-
-        只在纯字母输入时试拼音：打中文时子串匹配已经够用，而且中文 key 跟
-        拼音串不可能互相包含 —— 加进去只会白算。
-        """
-        if not key:
-            return True
-        if key in text:
-            return True
-        if not (key.isascii() and key.isalpha()):
-            return False
-
-        lowered = key.lower()
-        full, initial = self._pinyin.get(text, ("", ""))
-        return lowered in full or lowered in initial
+        """匹配规则见模块级 :func:`matches_keyword`（全项目共用一份）。"""
+        return matches_keyword(self._pinyin.get(text, ("", "")), text, key)
 
     # ------------------------------------------------------------ 交互
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 回调
