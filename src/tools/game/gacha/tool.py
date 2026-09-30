@@ -29,6 +29,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QSize, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
@@ -45,6 +47,7 @@ from qfluentwidgets import (
     FluentIcon,
     InfoBar,
     LineEdit,
+    MessageBox,
     PrimaryPushButton,
     PushButton,
     ScrollArea,
@@ -57,6 +60,15 @@ from ....core import gacha, paths
 from ....core.categories import ToolCategory
 from ....core.registry import registry
 from ....core.tool_base import BaseTool
+
+logger = logging.getLogger(__name__)
+
+
+def _now() -> str:
+    """当前时间（历史记录的时间点），和项目其它地方同一个格式。"""
+    from datetime import datetime
+
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 #: 说明文字颜色（(浅色, 深色)）—— 和其它页同一套灰
 MUTED = ("#8A8F98", "#7C7C7C")
@@ -78,6 +90,8 @@ BAR_HEIGHT = 34
 def bar_width(span: int) -> int:
     """抽数 → 条的像素宽度（夹在 :data:`BAR_MIN` ~ :data:`BAR_MAX` 之间）。"""
     return int(min(BAR_MAX, max(BAR_MIN, max(0, int(span)) * BAR_UNIT)))
+
+
 #: 星级角标颜色
 STAR_COLORS = {5: "#d4a017", 4: "#9b59b6", 3: "#5a8fd4"}
 
@@ -113,20 +127,30 @@ class GrabLinkThread(QThread):
 
 
 class FetchThread(QThread):
-    """后台拉取全部卡池。"""
+    """后台拉取全部卡池，**并合并进本地历史**。
+
+    ★ 合并这一步在这里（线程里）做，而不是主线程：
+    写盘 + 合并上千条记录有开销，放主线程会把界面卡一下。
+
+    信号带回 ``GachaReport`` —— 那是**合并后**的累计统计（不是这一次拉到的），
+    因为接口只给最近一段，只有累计才代表账号的真实全貌。
+    """
 
     message = Signal(str)
-    succeeded = Signal(object)      # GachaReport
+    succeeded = Signal(object, object)   # (GachaReport, 新增条数报告 dict)
     failed = Signal(str)
 
-    def __init__(self, params: dict, parent=None):
+    def __init__(self, params: dict, store=None, parent=None):
         super().__init__(parent)
         self._params = params
+        self._store = store
 
     def run(self) -> None:  # noqa: D102 - QThread 接口
+        from ....core import gacha_store
+
         try:
-            report = gacha.fetch_report(
-                self._params, log=lambda m: self.message.emit(m))
+            raw = gacha.fetch_raw(self._params,
+                                  log=lambda m: self.message.emit(m))
         except gacha.GachaError as exc:
             # 这类消息是**写给用户看的**（"记录过期，请打开唤取记录页"），
             # 不加异常类名前缀
@@ -135,7 +159,35 @@ class FetchThread(QThread):
         except Exception as exc:  # noqa: BLE001 - 线程里抛异常必须带出来
             self.failed.emit(f"{type(exc).__name__}: {exc}")
             return
-        self.succeeded.emit(report)
+
+        # 合并进历史（按身份去重），再落盘
+        try:
+            store = self._store or gacha_store.GachaHistoryStore()
+            history = store.load()
+            before = len(history)
+            added = 0
+            for pool_type, display in gacha.POOLS:
+                added += history.merge(
+                    raw.get(pool_type, []), pool_type=pool_type,
+                    pool_name=display,
+                    at=self._params.get("_fetched_at", ""))
+            report = gacha.report_from_records(
+                history.all_records(),
+                player_id=self._params.get("playerId", ""))
+            history.add_snapshot(gacha_store.PullSnapshot(
+                at=self._params.get("_fetched_at", "") or "",
+                total=report.total, five=report.five_count, added=added))
+            store.save(history)
+        except Exception as exc:  # noqa: BLE001 - 存历史失败不该让"分析"白跑
+            logger.warning("抽卡历史合并/保存失败", exc_info=True)
+            self.message.emit(f"⚠ 历史记录保存失败（{exc}），本次只显示接口返回的部分")
+            report = gacha.report_from_raw(
+                raw, player_id=self._params.get("playerId", ""))
+            added, before = 0, 0
+
+        self.succeeded.emit(report, {"added": added,
+                                     "before": before,
+                                     "stored": len(history)})
 
 
 class _BigStat(QWidget):
@@ -239,6 +291,8 @@ class GachaWidget(ScrollArea):
         self._thread: FetchThread | None = None
         self._grab_thread: GrabLinkThread | None = None
         self._report: gacha.GachaReport | None = None
+        #: 历史存储（懒建 —— 测试可以换成临时目录）
+        self._store = None
 
         view = QWidget(self)
         view.setObjectName("gachaView")
@@ -353,8 +407,100 @@ class GachaWidget(ScrollArea):
         self.pools_box.setSpacing(8)
         self.root.addWidget(self.pools_host)
 
+        # ---- 历史记录（拉取时间点）----
+        # 用户 2026-09-30 要求"按时间保存为一个历史记录"。
+        # 底层是**合并累积**（接口只给最近一段，不累积就永远看不全），
+        # 这里列的是"每次拉取时累计到了多少"。
+        history_row = QHBoxLayout()
+        history_row.setContentsMargins(0, 0, 0, 0)
+        self.history_title = StrongBodyLabel("历史记录", view)
+        history_row.addWidget(self.history_title)
+        history_row.addStretch(1)
+        self.clear_history_button = PushButton("清空历史", view)
+        self.clear_history_button.setFixedWidth(96)
+        self.clear_history_button.setToolTip(
+            "删掉本地累积的全部抽卡记录（不可撤销）")
+        self.clear_history_button.clicked.connect(self.clear_history)
+        history_row.addWidget(self.clear_history_button)
+        self.root.addLayout(history_row)
+
+        self.history_host = QWidget(view)
+        self.history_box = QVBoxLayout(self.history_host)
+        self.history_box.setContentsMargins(0, 0, 0, 0)
+        self.history_box.setSpacing(4)
+        self.root.addWidget(self.history_host)
+
         self.root.addStretch(1)
         self._show_empty_hint()
+        self.reload_history()
+
+    # ---------------------------------------------------------------- 历史
+    def _get_store(self):
+        from ....core.gacha_store import GachaHistoryStore
+
+        if self._store is None:
+            self._store = GachaHistoryStore()
+        return self._store
+
+    def reload_history(self) -> None:
+        """把历史（拉取时间点）铺到界面上；没有就提示一句。
+
+        ⚠ 历史是**每次拉取时累计到了多少**，不是"每次单独的结果" ——
+        因为接口只返回最近一段，只有累计才代表账号全貌。
+        """
+        while self.history_box.count():
+            item = self.history_box.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        try:
+            history = self._get_store().load()
+        except Exception:  # noqa: BLE001 - 历史坏了不该把页面带崩
+            history = None
+
+        if history is None or not history.snapshots:
+            hint = CaptionLabel(
+                "还没有历史 —— 点「分析」后会按时间记下来。", self.history_host)
+            hint.setTextColor(*MUTED)
+            self.history_box.addWidget(hint)
+            return
+
+        total = len(history)
+        note = CaptionLabel(
+            f"本地已累积 {total} 条记录（每分析一次就把新记录并进来，"
+            "所以数字会随时间变多）。", self.history_host)
+        note.setTextColor(*MUTED)
+        note.setWordWrap(True)
+        self.history_box.addWidget(note)
+
+        for snapshot in history.snapshots[:20]:      # 只列最近 20 次，够看
+            row = CaptionLabel("· " + snapshot.describe(), self.history_host)
+            row.setTextColor(*MUTED)
+            self.history_box.addWidget(row)
+
+    def clear_history(self) -> None:
+        """清空本地累积记录（用户要求能重置）。"""
+        box = MessageBox(
+            "清空抽卡历史",
+            "删掉本地累积的全部抽卡记录？\n"
+            "下次「分析」会重新从接口拉最近一段，之前的累积就没了。",
+            self.window())
+        box.yesButton.setText("清空")
+        box.cancelButton.setText("取消")
+        if not box.exec():
+            return
+        try:
+            from ....core.gacha_store import GachaHistory
+
+            self._get_store().save(GachaHistory())
+        except Exception:  # noqa: BLE001
+            logger.warning("清空抽卡历史失败", exc_info=True)
+        self._report = None
+        self._clear_results()
+        self.status.setText("历史已清空。")
+        self.reload_history()
 
     # ---------------------------------------------------------------- 动作
     def grab_link(self) -> None:
@@ -399,20 +545,33 @@ class GachaWidget(ScrollArea):
         self.fetch_button.setEnabled(False)
         self.status.setText("正在读取…")
         self._clear_results()
-        self._thread = FetchThread(params, self)
+        # 拉取时刻写进参数，线程合并历史时用它当时间点
+        params = dict(params)
+        params["_fetched_at"] = _now()
+        self._thread = FetchThread(params, self._get_store(), self)
         self._thread.message.connect(self.status.setText)
         self._thread.succeeded.connect(self._on_ok)
         self._thread.failed.connect(self._on_fail)
         self._thread.start()
 
-    def _on_ok(self, report) -> None:
+    def _on_ok(self, report, info) -> None:
         self._report = report
         self.fetch_button.setEnabled(True)
+        self.reload_history()
         if not report.total:
             self.status.setText(
                 "读取成功，但这个账号没有任何抽卡记录（或者记录已过期清空）。")
             return
-        self.status.setText(f"读取完成：共 {report.total} 抽。")
+        added = int((info or {}).get("added") or 0)
+        stored = int((info or {}).get("stored") or report.total)
+        if added:
+            self.status.setText(
+                f"读取完成：本地累计 {stored} 抽（本次新增 {added} 条）。")
+        else:
+            # 接口给的那一段和已有的完全重叠 —— 说明没出新记录，不是出错
+            self.status.setText(
+                f"读取完成：本地累计 {stored} 抽（本次没有新记录，"
+                "和已有的完全重合）。")
         self.render(report)
 
     def _on_fail(self, message: str) -> None:

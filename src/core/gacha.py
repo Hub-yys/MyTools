@@ -649,18 +649,75 @@ def fetch_pool(params: dict[str, str], pool_type: str,
     return list(data) if isinstance(data, list) else []
 
 
-def fetch_report(params: dict[str, str], log=lambda _m: None) -> GachaReport:
-    """拉全部卡池并汇总成报告。
+def report_from_records(records: list[dict], *,
+                        player_id: str = "") -> GachaReport:
+    """用**存下来的记录**重建报告（历史累积那条路走这里）。
 
-    ⚠ 一个池拉失败就**整体失败**（抛 :class:`GachaError`）—— 半份报告会
-    让统计数字对不上，比直接报错更糟。
+    ``records`` 是合并后的原始记录字典（见 :mod:`src.core.gacha_store`），
+    每条自带 ``pool_type`` / ``pool``。
+
+    ⚠ 池子**按 :data:`POOLS` 的顺序**建全 7 个（哪怕某个池一条都没有）——
+    这样"池编号 → 统计"的对应关系和实时拉取那条路完全一致，
+    界面上不会出现"这次有角色池、上次没有"的错位。
     """
-    report = GachaReport(player_id=params.get("playerId", ""))
+    by_pool: dict[str, list[dict]] = {pool_type: [] for pool_type, _ in POOLS}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        pool_type = str(record.get("pool_type") or "")
+        if pool_type in by_pool:
+            by_pool[pool_type].append(record)
+
+    report = GachaReport(player_id=player_id)
+    for pool_type, display in POOLS:
+        stats = PoolStats(name=display, pool_type=pool_type)
+        rows = by_pool[pool_type]
+        # 接口顺序是"最新在前"，存的时候也保持那个方向
+        rows.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
+        stats.pulls = [Pull.from_record(r, display) for r in rows]
+        report.pools.append(stats)
+    return report
+
+
+def report_from_raw(raw: dict[str, list[dict]], *,
+                    player_id: str = "") -> GachaReport:
+    """用**一次拉取的原始结果**建报告（``{pool_type: [记录]}``）。
+
+    ⚠ 池子按 :data:`POOLS` 建全 7 个 —— 和 :func:`report_from_records`
+    保持一致的"池编号 → 统计"对应关系。
+    """
+    report = GachaReport(player_id=player_id)
+    for pool_type, display in POOLS:
+        stats = PoolStats(name=display, pool_type=pool_type)
+        stats.pulls = [Pull.from_record(r, display)
+                       for r in (raw.get(pool_type) or [])]
+        report.pools.append(stats)
+    return report
+
+
+def fetch_raw(params: dict[str, str],
+              log=lambda _m: None) -> dict[str, list[dict]]:
+    """拉全部卡池的**原始记录**：``{pool_type: [记录, ...]}``。
+
+    ⚠ 一个池拉失败就**整体失败**（抛 :class:`GachaError`）—— 半份结果会
+    让统计数字对不上，比直接报错更糟。
+
+    返回原始记录（不转 Pull），是因为「抽卡记录分析」要先把它们
+    **合并进本地历史**再统计 —— 接口只给最近一段，累计才算数。
+    """
+    result: dict[str, list[dict]] = {}
     for pool_type, display in POOLS:
         log(f"拉取「{display}」…")
         records = fetch_pool(params, pool_type)
-        stats = PoolStats(name=display, pool_type=pool_type)
-        stats.pulls = [Pull.from_record(r, display) for r in records]
-        report.pools.append(stats)
-        log(f"  {display}：{stats.total} 抽")
-    return report
+        result[pool_type] = records
+        log(f"  {display}：{len(records)} 抽")
+    return result
+
+
+def fetch_report(params: dict[str, str], log=lambda _m: None) -> GachaReport:
+    """拉全部卡池并汇总成报告（**不做累计合并**，只统计这一次拉到的）。
+
+    要累计历史请用 :func:`fetch_raw` + :mod:`src.core.gacha_store`。
+    """
+    return report_from_raw(fetch_raw(params, log=log),
+                           player_id=params.get("playerId", ""))

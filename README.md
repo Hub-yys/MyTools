@@ -779,6 +779,35 @@ Body(JSON): {serverId, playerId, languageCode, recordId, cardPoolId, cardPoolTyp
 **7 个卡池**逐个请求（接口一次只返回一个池）：角色活动 / 武器活动 / 角色常驻 /
 武器常驻 / 新手 / 新手自选 / 新手自选（感恩定向）。
 
+### ★ 历史记录（本地累积）—— 数字为什么会随时间变多
+
+用户 2026-09-30 要求："这里怎么没有做持久化，按照时间保存为一个历史记录"。
+
+**库洛接口只返回最近一段记录**（实测角色池给到 590 抽 / 约 3 周）。
+所以每次「分析」都会把结果**合并进本地历史**（`gacha_history.json`），
+数字随之变大 —— 鸣潮工坊能显示 4393 抽，就是这个道理。
+
+**去重的身份键**（`:func:`gacha_store.record_key``）：
+
+    身份 = (卡池类型, 物品名, 时间, resourceId)
+
+> ⚠ **必须带 `resourceId`**：同一秒十连出两个**同名**物品时，
+> 前三个字段会撞车，光靠它们会把其中一条当重复丢掉 —— 少一条抽数。
+>
+> ⚠ **不能用"时间 > 上次最新时间"过滤**：十连里 10 条时间戳完全相同，
+> 严格大于会把同一次十连的后半截丢掉。
+
+页面上「历史记录」列的是**每次拉取时累计到了多少**（含"本次新增 N"），
+另有「清空历史」可以重置。
+
+| 文件 | 内容 |
+|---|---|
+| `<用户数据目录>/gacha_history.json` | `records`（按身份键存全部记录）+ `snapshots`（拉取时间点） |
+
+> 存盘用**临时文件 + 原子替换**：写一半断电也不会毁掉旧文件。
+> 历史读写失败**不让工具不可用**（读不出来当空的、写不进去只记日志）——
+> 历史是锦上添花，不该把工具页搞崩。
+
 ### 统计口径（★ 最容易算错的地方）
 
 界面上的指标（对齐鸣潮工坊）：
@@ -1039,6 +1068,7 @@ class DiceTool(BaseTool):
 .venv\Scripts\python tests\test_flow_name.py        # 任务流程名的自动后缀（含存量名兼容）
 .venv\Scripts\python tests\test_weapons.py          # 武器图鉴：数据 + 资源库分区
 .venv\Scripts\python tests\test_gacha.py            # 抽卡记录分析：统计口径 + 界面
+.venv\Scripts\python tests\test_gacha_store.py      # 抽卡历史：合并去重 + 持久化
 .venv\Scripts\python tests\test_gacha_link.py       # 从游戏日志读抽卡链接
 .venv\Scripts\python tests\smoke_echo_reader.py     # 合成图 → OCR → 判定
 .venv\Scripts\python tests\smoke_echo_runner.py     # 强化流程状态机（假窗口）
