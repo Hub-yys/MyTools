@@ -13,7 +13,21 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.core.wuwa_update import RemoteSnapshot, _merge_sets_data, check_updates
+from src.core.wuwa_update import (
+    RemoteSnapshot,
+    _merge_characters_data,
+    _merge_sets_data,
+    check_updates,
+)
+
+
+def _local_chars() -> dict:
+    return {
+        "characters": [
+            {"name": "景燃", "rarity": 5, "element": "热熔", "weapon": "长刃"},
+            {"name": "绯雪", "rarity": 5, "element": "冷凝", "weapon": "迅刀"},
+        ],
+    }
 
 
 def _local() -> dict:
@@ -112,6 +126,136 @@ class TestMergeSetsData(unittest.TestCase):
         snapshot = RemoteSnapshot()
         _merge_sets_data(local, snapshot)
         self.assertTrue(local.get("_fetched"), "合并后应该刷新 _fetched 日期")
+
+
+class TestCheckUpdatesCharacters(unittest.TestCase):
+    """★ 新角色检测（用户 2026-09-28："新角色的数据（能选到新角色）"）。"""
+
+    def test_new_character_detected(self):
+        snapshot = RemoteSnapshot()
+        snapshot.sets = {"凝夜白霜": _local()["sets"][0]["effects"]}
+        snapshot.characters = {"景燃": {}, "新角色甲": {}, "新角色乙": {}}
+        report = check_updates(snapshot, local_sets=_local(),
+                               local_characters=_local_chars())
+        self.assertEqual(report.new_characters, ["新角色甲", "新角色乙"])
+        self.assertTrue(report.has_updates, "有新角色就算有更新")
+        self.assertIn("新角色", report.summary())
+
+    def test_no_new_character(self):
+        snapshot = RemoteSnapshot()
+        snapshot.sets = {"凝夜白霜": _local()["sets"][0]["effects"]}
+        snapshot.characters = {"景燃": {}, "绯雪": {}}
+        report = check_updates(snapshot, local_sets=_local(),
+                               local_characters=_local_chars())
+        self.assertEqual(report.new_characters, [])
+        self.assertFalse(report.has_updates)
+
+    def test_characters_alone_count_as_remote_data(self):
+        """★ 只有角色拉到、其它全空时**不算** remote_empty。
+
+        否则"wiki 声骸页挂了但角色页正常"会被误报成"什么都没取到"。
+        """
+        snapshot = RemoteSnapshot()
+        snapshot.characters = {"景燃": {"element": "热熔"}}
+        report = check_updates(snapshot, local_sets=_local(),
+                               local_characters=_local_chars())
+        self.assertFalse(report.remote_empty)
+
+    def test_truly_empty_remote_still_reported(self):
+        report = check_updates(RemoteSnapshot(), local_sets=_local(),
+                               local_characters=_local_chars())
+        self.assertTrue(report.remote_empty)
+
+
+class TestMergeCharactersData(unittest.TestCase):
+    """角色合并：**只增不减**，且不拿空值覆盖本地已有信息。"""
+
+    def test_appends_new_character(self):
+        local = _local_chars()
+        snapshot = RemoteSnapshot()
+        snapshot.characters = {"新角色甲": {"rarity": 0, "element": "衍射",
+                                            "weapon": "长刃"}}
+        self.assertTrue(_merge_characters_data(local, snapshot))
+        names = [c["name"] for c in local["characters"]]
+        self.assertIn("新角色甲", names)
+        self.assertEqual(len(names), 3)
+
+    def test_keeps_existing_characters(self):
+        """★ 远端漏了某个已有角色时**不能删** —— 删了用户已存的配置会指向不存在的角色。"""
+        local = _local_chars()
+        snapshot = RemoteSnapshot()
+        snapshot.characters = {"景燃": {"element": "热熔", "weapon": "长刃"}}
+        _merge_characters_data(local, snapshot)
+        names = [c["name"] for c in local["characters"]]
+        self.assertIn("绯雪", names, "远端没返回的角色必须保留")
+
+    def test_empty_remote_field_does_not_erase_local(self):
+        """远端 field 为空串时保留本地的 —— 别把已有信息清掉。"""
+        local = _local_chars()
+        snapshot = RemoteSnapshot()
+        snapshot.characters = {"绯雪": {"element": "", "weapon": ""}}
+        _merge_characters_data(local, snapshot)
+        fx = next(c for c in local["characters"] if c["name"] == "绯雪")
+        self.assertEqual(fx["element"], "冷凝")
+        self.assertEqual(fx["weapon"], "迅刀")
+
+    def test_rarity_zero_does_not_overwrite_known(self):
+        """★ wiki 的稀有度常返回 0 —— 绝不能拿 0 覆盖本地已知星级。"""
+        local = _local_chars()
+        snapshot = RemoteSnapshot()
+        snapshot.characters = {"景燃": {"rarity": 0, "element": "热熔",
+                                        "weapon": "长刃"}}
+        _merge_characters_data(local, snapshot)
+        jr = next(c for c in local["characters"] if c["name"] == "景燃")
+        self.assertEqual(jr["rarity"], 5, "0 星不能覆盖已知的 5 星")
+
+    def test_rarity_fills_when_local_unknown(self):
+        local = {"characters": [{"name": "甲", "rarity": 0,
+                                 "element": "", "weapon": ""}]}
+        snapshot = RemoteSnapshot()
+        snapshot.characters = {"甲": {"rarity": 4, "element": "气动",
+                                      "weapon": "臂铠"}}
+        _merge_characters_data(local, snapshot)
+        self.assertEqual(local["characters"][0]["rarity"], 4)
+
+    def test_non_empty_change_updates_value(self):
+        """远端给了**不同且非空**的武器 → 以远端为准（wiki 修正过）。"""
+        local = _local_chars()
+        snapshot = RemoteSnapshot()
+        snapshot.characters = {"景燃": {"element": "热熔", "weapon": "佩枪"}}
+        _merge_characters_data(local, snapshot)
+        jr = next(c for c in local["characters"] if c["name"] == "景燃")
+        self.assertEqual(jr["weapon"], "佩枪")
+
+    def test_idempotent(self):
+        """跑两次不该有变化（否则每次检查都报"有更新"）。"""
+        local = _local_chars()
+        snapshot = RemoteSnapshot()
+        snapshot.characters = {"新角色甲": {"element": "衍射", "weapon": "长刃"}}
+        self.assertTrue(_merge_characters_data(local, snapshot))
+        self.assertFalse(_merge_characters_data(local, snapshot))
+
+    def test_empty_snapshot_is_noop(self):
+        local = _local_chars()
+        before = len(local["characters"])
+        self.assertFalse(_merge_characters_data(local, RemoteSnapshot()))
+        self.assertEqual(len(local["characters"]), before)
+
+    def test_marks_fetched_when_added(self):
+        local = _local_chars()
+        snapshot = RemoteSnapshot()
+        snapshot.characters = {"新角色甲": {"element": "衍射", "weapon": "长刃"}}
+        _merge_characters_data(local, snapshot)
+        self.assertTrue(local.get("_fetched"))
+
+    def test_handles_broken_entries(self):
+        """名单里混进非 dict（手改坏了）也不该炸。"""
+        local = {"characters": [{"name": "景燃", "rarity": 5}, "坏数据", None]}
+        snapshot = RemoteSnapshot()
+        snapshot.characters = {"新角色甲": {"element": "衍射", "weapon": "长刃"}}
+        _merge_characters_data(local, snapshot)
+        names = [c["name"] for c in local["characters"] if isinstance(c, dict)]
+        self.assertIn("新角色甲", names)
 
 
 if __name__ == "__main__":

@@ -11,10 +11,12 @@
 |---|---|---|---|
 | 套装效果 | bwiki「声骸合鸣」主页（1 个请求） | ✅ | ✅ 效果文字替换 / 新套装追加 |
 | 声骸掉落池 | bwiki SMW 反查（1~2 个请求）∪ 库街区 getPage（1 个请求） | ✅ | ✅ 并集合并（不删已有） |
+| 角色名单 | bwiki SMW 反查（``分类:共鸣者``，1~2 个请求） | ✅ | ✅ 新角色追加（不删已有） |
 | 声骸技能说明 | bwiki 每个声骸页（一页一请求，慢） | ❌ 太重，不逐页查 | ✅ 只补**新增声骸**的页面 |
 
 **并集**是刻意的：bwiki 的掉落池比库街区残缺，两边合并取并集才最全，
 而且任何一边刷新都不能冲掉另一边补进来的条目（2026-09-22 踩过反向的坑）。
+角色名单同理**只增不减** —— wiki 偶尔漏页，删掉会让用户已存的配置指向不存在的角色。
 
 本模块和 ``tools/refresh_wuwa_data.py`` / ``tools/fetch_wuwa_echo_skills.py``
 解析逻辑同源 —— 那两个是手动单跑的脚本，本模块给自动更新工具用。
@@ -42,9 +44,13 @@ BWIKI_API = "https://wiki.biligame.com/wutheringwaves/api.php"
 KUROBBS_PAGE = "https://api.kurobbs.com/wiki/core/catalogue/item/getPage"
 SETS_PAGE = "声骸合鸣"
 ECHO_ASK = "[[分类:声骸]]|?名称|?COST花费|?所属套装|limit=500"
+#: 角色（共鸣者）SMW 反查 —— 「属性 / 武器」wiki 上有结构化字段，稀有度没有。
+#: 稀有度本地若已有就保留（见 :func:`_merge_characters_data`），不拿 0 覆盖。
+CHARACTER_ASK = "[[分类:共鸣者]]|?名称|?稀有度|?属性|?武器|limit=500"
 
 SETS_FILE = DATA_ROOT / "wuwa_echo_sets.json"
 SKILLS_FILE = DATA_ROOT / "wuwa_echo_skills.json"
+CHARACTERS_FILE = DATA_ROOT / "wuwa_characters.json"
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -72,6 +78,8 @@ class RemoteSnapshot:
     echoes_kuro: dict[str, dict[int, list[str]]] = field(default_factory=dict)
     #: ``{声骸名: 官方图床 URL}`` —— 库街区
     icon_urls: dict[str, str] = field(default_factory=dict)
+    #: ``{角色名: {rarity, element, weapon}}`` —— bwiki 分类:共鸣者
+    characters: dict[str, dict] = field(default_factory=dict)
 
 
 def fetch_remote(log=lambda _msg: None) -> RemoteSnapshot:
@@ -79,6 +87,7 @@ def fetch_remote(log=lambda _msg: None) -> RemoteSnapshot:
     snapshot = RemoteSnapshot()
     snapshot.sets = _fetch_bwiki_sets(log)
     snapshot.echoes_bwiki = _fetch_bwiki_echo_index(log)
+    snapshot.characters = _fetch_bwiki_characters(log)
     kuro_sets, icon_urls = _fetch_kurobbs(log)
     snapshot.echoes_kuro = kuro_sets
     snapshot.icon_urls = icon_urls
@@ -173,6 +182,66 @@ def _fetch_bwiki_echo_index(log) -> dict[str, dict[int, list[str]]]:
     return by_set
 
 
+def _fetch_bwiki_characters(log) -> dict[str, dict]:
+    """拉角色名单（共鸣者）—— :data:`CHARACTER_ASK`  SMW 反查。
+
+    用户 2026-09-28 要求："新角色的数据（能选到新角色）"。
+
+    返回 ``{角色名: {"rarity": int, "element": str, "weapon": str}}``。
+
+    ## 两个必须处理的坑（都是实测踩出来的）
+
+    1. **同一角色有两个页面前缀**：wiki 上既有 ``共鸣者/景燃`` 也有 ``角色/景燃``，
+       直接按「分类:共鸣者」反查会**同一个名字回来两次**。
+       不合并的话名单里会出现重复项（下拉框里两个"景燃"）。
+       这里按名字合并，字段取非空的那个。
+    2. **``鸣潮:共鸣者预设``不是角色**，是模板页 —— 得跳过，
+       否则名单里会混进一个叫「鸣潮:共鸣者预设」的假角色。
+
+    稀有度 wiki 上**没有结构化字段**（返回空），所以这里可能是 0；
+    合并时不会拿 0 覆盖本地已有的星级（见 :func:`_merge_characters_data`）。
+    """
+    log("拉取角色名单（bwiki 分类:共鸣者）…")
+    merged: dict[str, dict] = {}
+    offset = 0
+    for _round in range(20):  # 防呆上限：正常 1~2 轮到底
+        data = _bwiki(action="ask", query=CHARACTER_ASK, offset=offset)
+        for key, item in data.get("query", {}).get("results", {}).items():
+            if key.startswith("鸣潮:"):        # 模板页，不是角色
+                continue
+            out = item.get("printouts", {})
+            name = (out.get("名称") or [""])[0] or key.split("/", 1)[-1]
+            name = _clean(str(name))
+            if not name or "/" in name:        # 名字里还带斜杠 → 不是角色条目
+                continue
+            info = {
+                "rarity": _to_int((out.get("稀有度") or [0])[0]),
+                "element": _clean(str((out.get("属性") or [""])[0])),
+                "weapon": _clean(str((out.get("武器") or [""])[0])),
+            }
+            known = merged.get(name)
+            if known is None:
+                merged[name] = info
+            else:
+                # 同名（两个前缀）→ 字段取非空的，别让空值盖掉有值的
+                for field_name, value in info.items():
+                    if value and not known.get(field_name):
+                        known[field_name] = value
+        next_offset = data.get("query-continue-offset")
+        if not next_offset:
+            break
+        offset = next_offset
+    log(f"  角色名单：{len(merged)} 个")
+    return merged
+
+
+def _to_int(value) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _fetch_kurobbs(log) -> tuple[dict[str, dict[int, list[str]]], dict[str, str]]:
     log("拉取库街区官方数据（getPage）…")
     body = urllib.parse.urlencode({"catalogueId": "1107", "page": "1", "limit": "1000"}).encode()
@@ -238,16 +307,19 @@ class UpdateReport:
     effect_changed: list[str] = field(default_factory=list)
     #: 新声骸（远端有、本地掉落池里没有），含来源标注 ``名字（来源）``
     new_echoes: list[str] = field(default_factory=list)
+    #: 新角色（远端有、本地名单里没有）—— 「能选到新角色」就是靠它
+    new_characters: list[str] = field(default_factory=list)
     #: 远端**一个数据都没返回**（网络挂了 / wiki 页面结构变了）。
     #: 这时"没有更新"这个结论**不成立**，不能报"已是最新"。
     remote_empty: bool = False
     #: 本地数据文件是空的（没播种 / 被删 / 写坏）
     local_empty: bool = False
 
-    #: 上面三项是否全空
+    #: 上面几项是否全空
     @property
     def has_updates(self) -> bool:
-        return bool(self.new_sets or self.effect_changed or self.new_echoes)
+        return bool(self.new_sets or self.effect_changed or self.new_echoes
+                    or self.new_characters)
 
     def summary(self) -> str:
         """给人看的变更摘要（界面 / 日志用）。"""
@@ -271,13 +343,24 @@ class UpdateReport:
             shown = "、".join(self.new_echoes[:12])
             more = f" …等 {len(self.new_echoes)} 个" if len(self.new_echoes) > 12 else ""
             lines.append(f"新声骸 {len(self.new_echoes)} 个：{shown}{more}")
+        if self.new_characters:
+            lines.append(
+                f"新角色 {len(self.new_characters)} 个："
+                f"{'、'.join(self.new_characters)}"
+            )
         return "\n".join(lines) if lines else "数据已是最新。"
 
 
-def check_updates(snapshot: RemoteSnapshot, local_sets: dict | None = None) -> UpdateReport:
-    """对比远端快照和本地数据文件（``local_sets`` 传了就用它，方便测试）。"""
+def check_updates(snapshot: RemoteSnapshot, local_sets: dict | None = None,
+                  local_characters: dict | None = None) -> UpdateReport:
+    """对比远端快照和本地数据文件（``local_sets`` / ``local_characters`` 传了就用，方便测试）。"""
     if local_sets is None:
         local_sets = json.loads(SETS_FILE.read_text(encoding="utf-8")) if SETS_FILE.exists() else {}
+    if local_characters is None:
+        local_characters = (
+            json.loads(CHARACTERS_FILE.read_text(encoding="utf-8"))
+            if CHARACTERS_FILE.exists() else {}
+        )
     local_by_name = {item.get("name"): item for item in local_sets.get("sets", [])}
     local_echo_names = {
         entry.get("name") for item in local_sets.get("sets", []) for entry in item.get("echoes", [])
@@ -286,7 +369,9 @@ def check_updates(snapshot: RemoteSnapshot, local_sets: dict | None = None) -> U
     report = UpdateReport()
     # 远端一条都没拉到 → 结论不成立。以前这里的表现是"安静地报数据已是最新"，
     # 明明什么都没查到却说没事，是**误导**。
-    if not snapshot.sets and not snapshot.echoes_bwiki and not snapshot.echoes_kuro:
+    # ⚠ 角色也算一路数据源：只拉到角色、其它全挂时，仍应认为"取到了东西"。
+    if (not snapshot.sets and not snapshot.echoes_bwiki
+            and not snapshot.echoes_kuro and not snapshot.characters):
         report.remote_empty = True
         return report
     report.local_empty = not local_by_name
@@ -307,6 +392,16 @@ def check_updates(snapshot: RemoteSnapshot, local_sets: dict | None = None) -> U
                         continue
                     seen_new.add(echo_name)
                     report.new_echoes.append(f"{echo_name}（{source_label}）")
+
+    # 角色：远端有、本地名单里没有 → 新角色（用户 2026-09-28 要求能选到）
+    local_names = {
+        str(item.get("name", "")).strip()
+        for item in local_characters.get("characters", []) or []
+        if isinstance(item, dict)
+    }
+    for name in snapshot.characters:
+        if name not in local_names:
+            report.new_characters.append(name)
     return report
 
 
@@ -344,6 +439,60 @@ def _merge_sets_data(local_sets: dict, snapshot: RemoteSnapshot) -> bool:
         merged_names.add(set_name)
 
     local_sets["_fetched"] = time.strftime("%Y-%m-%d")
+    return changed
+
+
+def _merge_characters_data(local_chars: dict, snapshot: RemoteSnapshot) -> bool:
+    """把远端角色名单并进 ``local_chars``（就地修改）。返回是否有变化。
+
+    纯数据操作，不碰磁盘 —— 单测可以直接喂 dict。
+
+    ## 规则（与套装一致的"只增不减"思路）
+
+    * **新角色追加**（这就是"能选到新角色"）；
+    * **已有角色不删**：wiki 偶尔漏页 / 改名，删掉会让用户已存的配置和任务
+      指向一个不存在的角色（``find_character`` 查不到 → 头像消失、名字报错）。
+      宁可留着过时的，也不要删；
+    * **属性 / 武器**：远端有值且和本地不同就更新（wiki 修正过的更可信）；
+      远端为空时**保留本地的** —— 别拿空串盖掉已有信息；
+    * **稀有度**：wiki 没有结构化字段（常返回 0），所以**只在本地为 0 时**才写入，
+      绝不拿 0 覆盖本地已知的星级。
+    """
+    chars: list[dict] = local_chars.setdefault("characters", [])
+    by_name = {
+        str(item.get("name", "")).strip(): item
+        for item in chars if isinstance(item, dict)
+    }
+    changed = False
+    added: list[str] = []
+
+    for name, info in snapshot.characters.items():
+        local = by_name.get(name)
+        if local is None:
+            entry = {
+                "name": name,
+                "rarity": _to_int(info.get("rarity")),
+                "element": str(info.get("element") or ""),
+                "weapon": str(info.get("weapon") or ""),
+            }
+            by_name[name] = entry
+            chars.append(entry)
+            added.append(name)
+            changed = True
+            continue
+        # 已有角色：只补空字段 / 更新非空且不同值
+        for field_name in ("element", "weapon"):
+            value = str(info.get(field_name) or "")
+            if value and local.get(field_name) != value:
+                local[field_name] = value
+                changed = True
+        rarity = _to_int(info.get("rarity"))
+        if rarity and _to_int(local.get("rarity")) == 0:
+            local["rarity"] = rarity
+            changed = True
+
+    if added:
+        local_chars["_fetched"] = time.strftime("%Y-%m-%d")
     return changed
 
 
@@ -431,6 +580,24 @@ def apply_updates(
         )
     else:
         done.append("套装/掉落池没有变化")
+
+    # 1.5) 角色名单（用户 2026-09-28："新角色的数据（能选到新角色）"）
+    #      只增不减：新角色追加，已有角色保留（wiki 漏页也不删）。
+    local_chars = (
+        json.loads(CHARACTERS_FILE.read_text(encoding="utf-8"))
+        if CHARACTERS_FILE.exists() else {}
+    )
+    if _merge_characters_data(local_chars, snapshot):
+        CHARACTERS_FILE.write_text(
+            json.dumps(local_chars, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        done.append(
+            f"角色名单已更新（新角色 {len(report.new_characters)} 个"
+            f"：{'、'.join(report.new_characters) if report.new_characters else '无'}）"
+        )
+    elif snapshot.characters:
+        done.append("角色名单没有变化")
 
     # 2) 技能说明 + 图标 URL：只补缺的（新声骸），老数据不动
     skills = json.loads(SKILLS_FILE.read_text(encoding="utf-8")) if SKILLS_FILE.exists() else {}

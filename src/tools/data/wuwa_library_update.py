@@ -40,7 +40,13 @@ class CheckThread(QThread):
     """后台检查更新：拉远端 + 对比本地。"""
 
     message = Signal(str)
-    succeeded = Signal(object)   # UpdateReport
+    #: ★ 参数是 ``(snapshot, report)`` 两个对象。
+    #: ⚠ 必须把 snapshot 一起带回来：拉取在这里做，而**应用**在
+    #:   ``ApplyThread`` 里做，那个线程只有拿到这份 snapshot 才能写盘。
+    #:   以前这里只发 report，面板的 ``self._snapshot`` 永远是 None ——
+    #:   于是点「获取最新数据」必然崩：
+    #:   ``AttributeError: 'NoneType' object has no attribute 'sets'``。
+    succeeded = Signal(object, object)
     failed = Signal(str)
 
     def run(self) -> None:  # noqa: D102 - QThread 接口
@@ -50,7 +56,7 @@ class CheckThread(QThread):
         except Exception as exc:  # noqa: BLE001 - 异常必须带回主线程，否则界面无感
             self.failed.emit(f"{type(exc).__name__}: {exc}")
             return
-        self.succeeded.emit(report)
+        self.succeeded.emit(snapshot, report)
 
 
 class ApplyThread(QThread):
@@ -94,8 +100,9 @@ class WuwaLibraryUpdatePanel(QWidget):
 
         root.addWidget(TitleLabel("资源库更新", self))
         note = CaptionLabel(
-            "数据来源：bwiki（套装效果 / 声骸掉落池 / 技能说明）+ 库街区官方 wiki"
-            "（声骸掉落池 / 图标）。检查只发 3~4 个轻量请求，不会写任何本地文件。",
+            "数据来源：bwiki（套装效果 / 声骸掉落池 / 角色名单 / 技能说明）+ 库街区官方 wiki"
+            "（声骸掉落池 / 图标）。检查只发 4~5 个轻量请求，不会写任何本地文件。\n"
+            "角色名单只增不减：新角色会加进来（配置页就能选到），已有的不会被删。",
             self,
         )
         note.setTextColor("#8A8F98", "#7C7C7C")
@@ -158,6 +165,12 @@ class WuwaLibraryUpdatePanel(QWidget):
     def start_apply(self) -> None:
         if self._report is None or not self._report.has_updates:
             return
+        # ★ 没有 snapshot 就没法写盘 —— 正常流程里 _on_checked 一定已经存好了，
+        #   这里只是兜底（比如检查失败后又点了应用）：报一句清楚的话，
+        #   而不是让 None 漏进 apply_updates 炸出 'NoneType' has no attribute 'sets'。
+        if self._snapshot is None:
+            self._on_failed("还没拿到远端数据，请先点「重新检查」")
+            return
         if self._apply_thread is not None and self._apply_thread.isRunning():
             return
         self._status_label.setText("正在获取最新数据…")
@@ -171,7 +184,10 @@ class WuwaLibraryUpdatePanel(QWidget):
         self._apply_thread.start()
 
     # ---------------------------------------------------------------- 回调
-    def _on_checked(self, report) -> None:
+    def _on_checked(self, snapshot, report) -> None:
+        # ★ snapshot 必须存下来 —— start_apply 拿它写盘（以前漏了这一步，
+        #   于是"获取最新数据"必然崩，见 CheckThread.succeeded 的说明）。
+        self._snapshot = snapshot
         self._report = report
         self._recheck_button.setEnabled(True)
         if report.remote_empty:
@@ -198,6 +214,13 @@ class WuwaLibraryUpdatePanel(QWidget):
         self._status_label.setText("检查 / 更新失败")
         self._summary.setPlainText(message)
         self._recheck_button.setEnabled(True)
+        self._apply_button.setEnabled(False)
+        # ★ 检查失败 → 作废这一轮的 snapshot / report：
+        #   留着旧 snapshot 配上新 report 是**错配**，点应用会把上一轮的数据
+        #   当成这一轮写进去（而且界面上的 report 已经对不上了）。
+        #   宁可让用户重新检查一次，也不要写错数据。
+        self._snapshot = None
+        self._report = None
         self._notify("失败了", message, error=True)
 
     def _append_log(self, message: str) -> None:
