@@ -23,6 +23,11 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VENDOR = ROOT / "vendor" / "okww"
 
+#: ⚠ 必须放在最前面 —— 本文件有些用例要 import ``src.*``（战斗报告），
+#: 而别的用例会 chdir 到 vendor。不先加这一条会 ModuleNotFoundError。
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 #: 给「心」加的东西
 XIN_LABELS = ("char_xin", "xin_red", "xin_red_idle", "xin_white", "xin_dominion")
 
@@ -66,6 +71,76 @@ class TestVendorFiles(unittest.TestCase):
         self.assertIn("def do_perform", text)
         # 攻略明确写"固定13秒" —— 常量写对没有
         self.assertIn("DOMINION_DURATION = 13.0", text)
+
+    def test_uses_generic_forte_detection(self):
+        """★★ 必须用 ok-ww 的**通用**强化重击检测，不要自造模板。
+
+        第一版用我自己裁的 `xin_red` 能量条模板判"能不能强化重击"，
+        实机**一直失败**（日志"应世心攒满超时"，表现是一直平A）。
+        原因：ok-ww 判这个用的是**所有角色共用**的通用检测
+        （``is_forte_full`` 量屏幕底部白色占比 / ``is_mouse_forte_full``
+        找 ``mouse_forte`` 模板），根本不看角色专属资源条。
+
+        ⚠ 这条护栏防的就是"又退回去用自造模板"。
+        ⚠ 也不能只查字符串 —— 还要**真的实例化**确认这些方法调得通
+        （只 grep 的话，把 ``self.is_mouse_forte_full()`` 改成
+        ``self.never_exists()`` 也能骗过去，实测漏过一次）。
+        """
+        text = (VENDOR / "okww" / "char" / "Xin.py").read_text(encoding="utf-8")
+        self.assertIn("is_mouse_forte_full", text,
+                      "没用通用强化重击检测 —— 会一直平A")
+        self.assertIn("is_forte_full", text)
+        # 不该再用自造的状态条模板判形态
+        for bad in ("find_one(Labels.xin_", "Labels.xin_red",
+                    "Labels.xin_white", "Labels.xin_dominion"):
+            with self.subTest(bad=bad):
+                self.assertNotIn(
+                    bad, text,
+                    f"又在用自造模板 {bad} 判形态了 —— 实机验证过那条路走不通")
+
+    def test_xin_methods_actually_exist(self):
+        """★ 实例化 Xin，确认它调用的**每个** ok-ww 方法都真实存在。
+
+        ⚠ 这条是补上一条的漏洞：光看源码字符串不够，
+        写成 ``self.never_exists()`` 一样能通过 grep。
+        这里直接对着 ``BaseChar`` 查方法有没有。
+        """
+        import ast
+
+        path = VENDOR / "okww" / "char" / "Xin.py"
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+
+        # 收集所有 self.xxx(...) 调用
+        called = set()
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "self"):
+                called.add(node.func.attr)
+
+        old = os.getcwd()
+        os.chdir(VENDOR)
+        sys.path.insert(0, str(VENDOR))
+        try:
+            from okww.char.BaseChar import BaseChar
+            from okww.char.Xin import Xin as _Xin  # noqa: F401
+        finally:
+            os.chdir(old)
+
+        # 自己定义的方法不算；其余必须在 BaseChar 上找得到
+        own = {"do_perform", "perform_red", "perform_white",
+               "perform_dominion", "perform_finish",
+               "forte_ready", "ultimate_ready", "skill_ready",
+               "press_heavy_forte"}
+        missing = sorted(
+            n for n in called
+            if n not in own and not hasattr(BaseChar, n)
+            and not hasattr(_Xin, n))
+        self.assertEqual(
+            missing, [],
+            f"Xin.py 调了 BaseChar 上不存在的方法：{missing} "
+            f"（实机就是一直平A，因为异常被吞了）")
 
     def test_templates_exist(self):
         coco = VENDOR / "ok_tasks" / "assets" / "coco_annotations.json"
@@ -274,6 +349,63 @@ class TestRecognizesXin(unittest.TestCase):
             mine.shape[1], biggest * 1.5,
             f"char_xin 宽 {mine.shape[1]}px，比 ok-ww 最大的原生认人模板"
             f"（{biggest}px）还大不少 —— 会匹配不准")
+
+
+class TestReportShowsAvatar(unittest.TestCase):
+    """★ 战斗报告里「心」要有名字 + 头像。
+
+    用户 2026-10-01 报："识别出来了，但是显示的不是头像"。
+
+    根因：报告的角色名走 ok-ww 的翻译文件（``i18n/zh_CN/.../ok.po``），
+    而**上游没有「心」** → po 里没有 ``msgid "Xin"`` → 名字保持英文 ``Xin``
+    → 数据集里查不到（数据集存的是中文「心」）→ 没有头像。
+    """
+
+    def test_xin_maps_to_chinese_name(self):
+        from src.tools.game.auto_combat import report
+
+        class _Fake:
+            pass
+
+        _Fake.__name__ = "Xin"
+        self.assertEqual(report.char_display_name(_Fake()), "心",
+                         "Xin 没映射到中文名 —— 报告里会没头像")
+
+    def test_local_char_names_table_exists(self):
+        from src.tools.game.auto_combat import report
+
+        self.assertIn("Xin", report.LOCAL_CHAR_NAMES)
+        self.assertEqual(report.LOCAL_CHAR_NAMES["Xin"], "心")
+
+    def test_avatar_resolves(self):
+        from src.core import game_data
+        from src.tools.game.auto_combat import report
+
+        game_data.ensure_loaded()
+
+        class _Fake:
+            pass
+
+        _Fake.__name__ = "Xin"
+        name = report.char_display_name(_Fake())
+        info = game_data.find_character(name)
+        self.assertIsNotNone(info, f"数据集里找不到「{name}」")
+        self.assertTrue(info.avatar, "心 没有头像路径")
+        self.assertTrue((ROOT / "assets" / "game" / info.avatar).exists()
+                        or info.avatar, "头像路径为空")
+
+    def test_upstream_characters_unaffected(self):
+        """加了 LOCAL_CHAR_NAMES 不该影响上游角色。"""
+        from src.tools.game.auto_combat import report
+
+        for cls, expect in (("ShoreKeeper", "守岸人"),
+                            ("Cantarella", "坎特蕾拉")):
+            with self.subTest(cls=cls):
+                class _Fake:
+                    pass
+
+                _Fake.__name__ = cls
+                self.assertEqual(report.char_display_name(_Fake()), expect)
 
 
 if __name__ == "__main__":

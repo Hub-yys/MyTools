@@ -54,6 +54,19 @@ MISMATCHED_NAMES = {
     "YangYangSp": "Yangyang: Xuanling",
 }
 
+#: ★ MyTools 自加角色的**中文名**（类名 → 中文）。
+#:
+#: 为什么需要这张表：报告里的角色名走的是 ok-ww 的翻译文件
+#: （``i18n/zh_CN/LC_MESSAGES/ok.po``）。**上游没有「心」**，
+#: 所以 po 里没有 ``msgid "Xin"`` → 名字保持英文 ``Xin`` →
+#: 数据集里查不到（数据集存的是中文「心」）→ **没有头像**（显示 ? 占位）。
+#: （用户 2026-10-01 报的"识别出来了，但是显示的不是头像"就是这个。）
+#:
+#: ⚠ 以后再加自写角色，除了 Labels/CharFactory/Xin.py，**这里也要加一行**。
+LOCAL_CHAR_NAMES = {
+    "Xin": "心",
+}
+
 _QUOTED = re.compile(r'^"(.*)"$', re.DOTALL)
 
 
@@ -131,7 +144,9 @@ def char_display_name(char) -> str:
     1. ``display_name``：ok-ww 自定义角色可以显式指定；
     2. ``type(char).__name__``（如 ``Jinhsi``）：**这才是 ``mismatched_names`` 的键**，
        也是 ``.po`` 里的 msgid；
-    3. ``char.name`` / ``char.char_name``：兜底（后者是模板图 id，如 ``char_jinhsi``）。
+    3. ★ :data:`LOCAL_CHAR_NAMES`：**MyTools 自己加的角色**（上游没有，
+       所以 .po 里查不到）—— 必须在这张表里，否则没有头像；
+    4. ``char.name`` / ``char.char_name``：兜底（后者是模板图 id，如 ``char_jinhsi``）。
     """
     if char is None:
         return ""
@@ -150,6 +165,9 @@ def char_display_name(char) -> str:
     for key in candidates:
         if key and key in table:
             return table[key]
+    # ★ 上游的翻译表里没有的自加角色，走我们自己的表
+    if cls_name in LOCAL_CHAR_NAMES:
+        return LOCAL_CHAR_NAMES[cls_name]
     return MISMATCHED_NAMES.get(cls_name) or cls_name
 
 
