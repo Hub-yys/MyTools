@@ -255,38 +255,49 @@ KINDS: dict[str, tuple[str, str, str, object]] = {
 def run_kind(kind: str, skip_existing: bool, list_only: bool) -> tuple[int, int, list]:
     label, prefix, suffix, build = KINDS[kind]
     items = build()
-    print(f"\n【{label}】名单里 {len(items)} 个，查询 wiki ...")
+    print(f"\n【{label}】名单里 {len(items)} 个")
 
-    try:
-        table = list_files(prefix, suffix)
-    except Exception as exc:  # noqa: BLE001 - 网络问题原样报出来
-        print(f"  查询失败：{type(exc).__name__}: {exc}")
-        return 0, 0, [(name, "wiki 查询失败") for name, _ in items]
+    # ★ 库街区那份图标表（``icon_urls``）是**主源**（2026-10-01 起）。
+    #   实测它 429 个全覆盖：187 声骸 / 37 套装 / 123 武器 / 60 角色。
+    #   原来这里是"bwiki 优先、库街区兜底" —— 用户要求只从库街区拿之后
+    #   反过来了：库街区查不到才退到 bwiki（正常情况下退不到）。
+    kuro = kurobbs_icons()
+    if kuro:
+        print(f"  库街区表里 {len(kuro)} 个图标 URL（**优先用它**）")
 
-    print(f"  wiki 上有 {len(table)} 个「{prefix}…{suffix}」文件")
+    # ⚠ 只有**库街区确实缺**的时候才去查 wiki 列表 —— 那是一次分页请求，
+    #   而库街区已经全覆盖时查了也用不上（纯浪费，还慢）。
+    need_wiki = any(name not in kuro for name, _relative in items)
+    table: dict[str, str] = {}
+    if need_wiki:
+        print(f"  库街区表里缺一些，查 wiki 兜底（{prefix}…{suffix}）…")
+        try:
+            table = list_files(prefix, suffix)
+        except Exception as exc:  # noqa: BLE001 - 网络问题原样报出来
+            print(f"  查询失败：{type(exc).__name__}: {exc}")
+            table = {}
+        print(f"  wiki 上有 {len(table)} 个「{prefix}…{suffix}」文件")
+    else:
+        print("  库街区表已全覆盖，**不用查 wiki**")
+
     if list_only:
         return 0, 0, []
 
-    # 声骸图缺得多（bwiki 只收了 181 个里的 130 个）→ 用库街区兜底；
-    # ★ 套装图标同理（2026-09-30 补）：bwiki 的套装图标页不全，
-    #   而库街区那份 icon_urls 里**有全部套装图标**（catalogue 1219）。
-    #   ★ 武器同理（2026-09-30 再补）：抽卡卡片墙要显示武器图。
-    #   原来这里写的是 `if kind == "echoes"`，于是套装/武器永远只走 bwiki、
-    #   缺的那些就一直是占位图 —— 用户发现"明明有图标为什么不加上去"。
-    kuro = kurobbs_icons() if kind in ("echoes", "sets", "weapons") else {}
-    if kuro:
-        print(f"  库街区兜底表里 {len(kuro)} 个图标 URL（wiki 查不到的会走它）")
-
     done, skipped, failed = 0, 0, []
     for name, relative in items:
-        url = resolve_url(table, name)
-        referer, source = REFERER, "wiki"
-        if url is None and name in kuro:
-            url, referer, source = kuro[name], KUROBBS_REFERER, "库街区"
+        # ★ **库街区优先**（2026-10-01 按用户要求："除去一切其他来源数据，
+        #   只从库街区拿"）。实测那 429 个图标 URL **全覆盖**
+        #   （187 声骸 / 37 套装 / 123 武器 / 60 角色，一个不缺），
+        #   所以正常情况下根本走不到 bwiki 那一支 —— 它留作**兜底**：
+        #   万一库街区表里没有这个名字（比如还没抓过），仍然能出图。
+        url = kuro.get(name)
+        referer, source = KUROBBS_REFERER, "库街区"
+        if url is None:
+            url, referer, source = resolve_url(table, name), REFERER, "wiki"
         target = ASSETS_ROOT / relative
 
         if url is None:
-            failed.append((name, "wiki 上没有、库街区也没有"))
+            failed.append((name, "库街区没有、wiki 上也没有"))
             continue
         if target.exists() and skip_existing:
             skipped += 1

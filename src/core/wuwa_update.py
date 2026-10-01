@@ -5,18 +5,27 @@
     .venv\\Scripts\\python -m src.core.wuwa_update          # 只检查（打印差异）
     .venv\\Scripts\\python -m src.core.wuwa_update --apply  # 检查 + 应用
 
-## 数据源与更新范围
+## 数据源：**只从库街区官方 wiki 拿**（2026-10-01 起）
 
-| 数据 | 来源 | 检查 | 应用 |
+用户明确要求："除去一切其他来源数据，只从库街区拿"。
+
+| 数据 | 来源（全部库街区） | 检查 | 应用 |
 |---|---|---|---|
-| 套装效果 | bwiki「声骸合鸣」主页（1 个请求） | ✅ | ✅ 效果文字替换 / 新套装追加 |
-| 声骸掉落池 | bwiki SMW 反查（1~2 个请求）∪ 库街区 getPage（1 个请求） | ✅ | ✅ 并集合并（不删已有） |
-| 角色名单 | bwiki SMW 反查（``分类:共鸣者``，1~2 个请求） | ✅ | ✅ 新角色追加（不删已有） |
-| 声骸技能说明 | bwiki 每个声骸页（一页一请求，慢） | ❌ 太重，不逐页查 | ✅ 只补**新增声骸**的页面 |
+| 声骸名单 + 套装归属 | ``getPage`` catalogueId=**1107** | ✅ | ✅ 并集合并（不删已有） |
+| 套装名单 + 图标 | ``getPage`` catalogueId=**1219** | ✅ | ✅ 新套装追加 |
+| 角色名单 + 属性 + 稀有度 | ``getPage`` catalogueId=**1105** | ✅ | ✅ 新角色追加（不删已有） |
+| 角色 / 武器图标 | ``getPage`` catalogueId=1105 / **1106** | ✅ | ✅ |
+| **套装效果原文** | ``getEntryDetail``（1219 条目的详情） | ✅ | ✅ 效果文字替换 |
+| **声骸技能说明** | ``getEntryDetail``（1107 条目的详情） | ✅ | ✅ 只补缺的 |
 
-**并集**是刻意的：bwiki 的掉落池比库街区残缺，两边合并取并集才最全，
-而且任何一边刷新都不能冲掉另一边补进来的条目（2026-09-22 踩过反向的坑）。
-角色名单同理**只增不减** —— wiki 偶尔漏页，删掉会让用户已存的配置指向不存在的角色。
+> ⚠ **bwiki 已经整个拿掉了**（``BWIKI_API`` / ``_fetch_bwiki_*`` / ``_fetch_skill``
+> 全部删除）。理由是实测它**没有独占数据**：库街区 37 套 / 205 声骸 / 60 角色，
+> bwiki 只有 34 / 255 条 / 58，**全是子集**；留着它只会因为两个源的**文字措辞
+> 不同**而永远报"效果更新 30 套"（用户报的假报就是这个）。
+> 顺带每次检查少打 3 个请求。
+
+**只增不减**是刻意的：数据源偶尔漏页 / 改名，删掉会让用户已存的配置和任务
+指向一个不存在的角色或套装。宁可留着过时的，也不要删。
 
 本模块和 ``tools/refresh_wuwa_data.py`` / ``tools/fetch_wuwa_echo_skills.py``
 解析逻辑同源 —— 那两个是手动单跑的脚本，本模块给自动更新工具用。
@@ -40,17 +49,14 @@ from .game_data import DATA_ROOT
 
 # --------------------------------------------------------------------- 常量
 
-BWIKI_API = "https://wiki.biligame.com/wutheringwaves/api.php"
+#: ★ 数据**只从这里拿**（用户 2026-10-01："除去一切其他来源数据，只从库街区拿"）。
+#: 原来的 ``BWIKI_API`` / ``SETS_PAGE`` / ``ECHO_ASK`` / ``CHARACTER_ASK``
+#: 已随 bwiki 一起删掉 —— 实测它**没有独占数据**，只会带来文字差异（假报根源）。
 KUROBBS_PAGE = "https://api.kurobbs.com/wiki/core/catalogue/item/getPage"
 #: 条目**详情**（套装效果原文 / 声骸技能说明都在这里）。
 #: ⚠ ``getPage`` 只给列表骨架，文字全在这个接口里 —— 见 :func:`_kuro_entry_detail`。
 KUROBBS_ENTRY_DETAIL = (
     "https://api.kurobbs.com/wiki/core/catalogue/item/getEntryDetail")
-SETS_PAGE = "声骸合鸣"
-ECHO_ASK = "[[分类:声骸]]|?名称|?COST花费|?所属套装|limit=500"
-#: 角色（共鸣者）SMW 反查 —— 「属性 / 武器」wiki 上有结构化字段，稀有度没有。
-#: 稀有度本地若已有就保留（见 :func:`_merge_characters_data`），不拿 0 覆盖。
-CHARACTER_ASK = "[[分类:共鸣者]]|?名称|?稀有度|?属性|?武器|limit=500"
 
 SETS_FILE = DATA_ROOT / "wuwa_echo_sets.json"
 SKILLS_FILE = DATA_ROOT / "wuwa_echo_skills.json"
@@ -60,7 +66,7 @@ _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 )
-#: 技能说明要逐页抓，对 bwiki 的礼貌间隔（秒）
+#: 详情要逐条抓，对库街区的礼貌间隔（秒）
 DELAY = 0.35
 
 
@@ -72,72 +78,64 @@ def _ssl() -> ssl.SSLContext:
 
 @dataclass
 class RemoteSnapshot:
-    """一次检查拉下来的全部远端数据（没拉到的字段是空容器，不报错）。"""
+    """一次检查拉下来的全部远端数据（没拉到的字段是空容器，不报错）。
 
-    #: ``{套装名: [{pieces, text}, ...]}`` —— bwiki 声骸合鸣表（效果原文**只有它有**）
-    sets: dict[str, list[dict]] = field(default_factory=dict)
-    #: ``{套装名: {4: [声骸名...]}}`` —— bwiki SMW 反查（兜底）
-    echoes_bwiki: dict[str, dict[int, list[str]]] = field(default_factory=dict)
-    #: ``{套装名: {4: [声骸名...]}}`` —— 库街区（**主源**，cost 键已转 int）
+    ★ 2026-10-01 起**只从库街区拿**（用户明确要求："除去一切其他来源数据，
+    只从库街区拿"）。原来还挂着 bwiki 兜底，但实测它**提供不了任何独占数据**
+    （37 套 / 205 声骸 / 60 角色，库街区全都覆盖且有富余），
+    留着只会带来两个源的文字差异（那正是"效果更新 30 套"假报的根源）。
+
+    ⚠ 这里**删掉了** ``sets`` / ``echoes_bwiki`` / ``characters_bwiki``
+    三个字段 —— 它们曾是 bwiki 的入口。以后要再加数据源，
+    请**新加字段**，不要复活这三个（旧的比对逻辑会跟着一起回来）。
+    """
+
+    #: ``{套装名: {4: [声骸名...]}}`` —— 库街区（成本键已转 int）
     echoes_kuro: dict[str, dict[int, list[str]]] = field(default_factory=dict)
     #: ``{声骸名: 官方图床 URL}`` —— 库街区
     icon_urls: dict[str, str] = field(default_factory=dict)
-    #: ``{角色名: {rarity, element, weapon}}`` —— 库街区 1105（**主源**）
+    #: ``{角色名: {rarity, element, weapon}}`` —— 库街区 1105
     characters: dict[str, dict] = field(default_factory=dict)
-    #: 同上，来自 bwiki 分类:共鸣者（**兜底**，只在主源缺这个角色时用）
-    characters_bwiki: dict[str, dict] = field(default_factory=dict)
-    #: ``{套装名: [{pieces, text}, ...]}`` —— 库街区详情（**主源**）
+    #: ``{套装名: [{pieces, text}, ...]}`` —— 库街区 1219 详情
     set_effects: dict[str, list[dict]] = field(default_factory=dict)
-    #: ``{声骸名: {skill, cooldown}}`` —— 库街区详情（**主源**）
+    #: ``{声骸名: {skill, cooldown}}`` —— 库街区 1107 详情
     echo_skills: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 def fetch_remote(log=lambda _msg: None) -> RemoteSnapshot:
-    """拉全部数据源。
+    """拉全部数据 —— **只从库街区官方 wiki 拿**。
 
-    ## ★ 库街区优先（2026-09-30 按用户要求改）
+    ==================  ==========================================
+    数据               来源（全部库街区）
+    ==================  ==========================================
+    声骸列表 + 套装归属   ``getPage`` catalogueId=1107
+    套装名单 + 图标       ``getPage`` catalogueId=1219
+    角色名单 + 属性       ``getPage`` catalogueId=1105
+    角色/武器图标        ``getPage`` catalogueId=1105 / 1106
+    套装效果原文         ``getEntryDetail``（1219 条目的详情）
+    声骸技能说明         ``getEntryDetail``（1107 条目的详情）
+    ==================  ==========================================
 
-    用户早就说过"这些数据以后**优先从库街区拿**"，但代码一直是
-    **bwiki 先拉、库街区只补缺** —— 界面上那几行日志顺序
-    （套装效果 → 掉落池 → 角色名单 → 库街区）就是这个问题的直接体现，
-    用户看到后当场指出来了。
+    ## 为什么把 bwiki 整个拿掉（2026-10-01）
 
-    现在改成：
+    用户的要求很直接："**除去一切其他来源数据，只从库街区拿**"。
+    我实测确认 bwiki **没有独占数据**：库街区 37 套 / 205 声骸 / 60 角色，
+    bwiki 只有 34 / 255 条 / 58，**全是子集**。
 
-    ==================  ==============  ========================================
-    数据                主源            兜底
-    ==================  ==============  ========================================
-    套装名单 + 图标      库街区 1219     bwiki
-    声骸名单 + 套装归属   库街区 1107     bwiki SMW 反查
-    角色名单            库街区 1105     bwiki 分类
-    角色/武器图标        库街区 1105/1106 ——（bwiki 没有武器图）
-    声骸技能说明         bwiki           ——（**只有它有**）
-    套装效果原文         bwiki           ——（**只有它有**）
-    ==================  ==============  ========================================
+    留着它的代价却很实在：两个源的**文字措辞不同**（bwiki 的套装效果多一句
+    "延奏技能伤害提升60%"之类），于是比对时永远"有差异"——
+    这就是用户看到的「效果更新 30 套」假报。
 
-    ⚠ 后两项**只能**靠 bwiki —— 库街区的 ``textList`` 是空模板
-    （实测：``{"content": "", "placeholder": "请输入小标题"}``），
-    所以那两条日志要写清"这是兜底来源"，别让用户以为又优先错了。
+    ⚠ 顺带把 3 个请求也省了（原来每次检查都要打 bwiki 三趟）。
     """
     snapshot = RemoteSnapshot()
-    # ---- 主源：库街区（先拉，后面的 bwiki 只补它没有的）----
     kuro_sets, icon_urls = _fetch_kurobbs(log)
     snapshot.echoes_kuro = kuro_sets
     snapshot.icon_urls = icon_urls
     snapshot.characters = _fetch_kurobbs_characters(log)
-
-    # ★ 套装效果原文 + 声骸技能说明：**库街区也能拿**（走 getEntryDetail）。
-    #   我原先以为这两项"只有 bwiki 有" —— 那是把 getPage 的**空 textList**
-    #   当成了全部（列表接口只给骨架，文字在详情里）。
-    #   用户 2026-09-30 给了页面链接纠正："库街区也有套装效果"。
     snapshot.set_effects = _fetch_kurobbs_set_effects(log)
     snapshot.echo_skills = _fetch_kurobbs_echo_skills(
         log, snapshot.echoes_kuro)
-
-    # ---- 兜底：bwiki（只补库街区确实没有的）----
-    snapshot.sets = _fetch_bwiki_sets(log)
-    snapshot.echoes_bwiki = _fetch_bwiki_echo_index(log)
-    snapshot.characters_bwiki = _fetch_bwiki_characters(log)
     return snapshot
 
 
@@ -145,144 +143,6 @@ def _get_json(url: str, headers: dict, data: bytes | None = None) -> dict:
     request = urllib.request.Request(url, data=data, headers=headers)
     with urllib.request.urlopen(request, timeout=45, context=_ssl()) as response:
         return json.loads(response.read().decode("utf-8"))
-
-
-def _bwiki(**params) -> dict:
-    params.setdefault("format", "json")  # 不加这个返回的是 HTML，json.loads 直接炸
-    url = f"{BWIKI_API}?{urllib.parse.urlencode(params)}"
-    return _get_json(url, {"User-Agent": _UA, "Referer": "https://wiki.biligame.com/"})
-
-
-def _clean(text: str) -> str:
-    text = htmllib.unescape(text).replace("\xa0", " ")
-    return re.sub(r"[ \t]+", " ", text).strip()
-
-
-def _block_to_text(block: str) -> str:
-    block = re.sub(r"<br\s*/?>", "\n", block)
-    block = re.sub(r"</p>", "\n", block)
-    block = re.sub(r"<[^>]+>", "", block)
-    block = htmllib.unescape(block).replace("\xa0", " ")
-    # wiki 模板没展开的 {11} → 11
-    return re.sub(r"\{\s*(\d+(?:\.\d+)?)\s*\}", r"\1", block)
-
-
-def _parse_effects(row_html: str) -> list[dict]:
-    cells = re.findall(r"<td>(.*?)</td>", row_html, re.S)
-    if not cells:
-        return []
-    effects: list[dict] = []
-    for line in _block_to_text(cells[-1]).split("\n"):
-        line = line.strip()
-        if not line:
-            continue
-        matched = re.match(r"^(\d+)\s*件套[：:]\s*(.+)$", line)
-        if matched:
-            effects.append({"pieces": int(matched.group(1)), "text": matched.group(2).strip()})
-        elif effects:
-            effects[-1]["text"] = f"{effects[-1]['text']}\n{line}"
-    return effects
-
-
-def _fetch_bwiki_sets(log) -> dict[str, list[dict]]:
-    # ⚠ 日志里标明"兜底"：用户看到"bwiki"排在最前面会以为又优先错了
-    #   （2026-09-30 就是这么被指出来的）。套装**效果原文**确实只有 bwiki 有，
-    #   但套装**名单**是以库街区为准的。
-    log(f"拉取套装效果原文（兜底源：bwiki {SETS_PAGE}）…")
-    data = _bwiki(action="parse", page=SETS_PAGE, prop="text")
-    parsed = data.get("parse")
-    if not parsed:
-        raise RuntimeError(f"bwiki 套装页解析失败：{data.get('error', {}).get('info', '')}")
-    page = parsed["text"]["*"]
-    result: dict[str, list[dict]] = {}
-    for row in re.findall(r'<tr class="list">(.*?)</tr>', page, re.S):
-        matched = re.search(r'title="声骸合鸣/([^"]+)"[^>]*>([^<]+)</a></center>', row)
-        if not matched:
-            continue
-        result[_clean(matched.group(2))] = _parse_effects(row)
-    log(f"  套装效果：{len(result)} 套")
-    return result
-
-
-def _fetch_bwiki_echo_index(log) -> dict[str, dict[int, list[str]]]:
-    log("拉取声骸掉落池（兜底源：bwiki SMW 反查）…")
-    by_set: dict[str, dict[int, list[str]]] = {}
-    offset = 0
-    for _round in range(20):  # 防呆上限：正常 1~2 轮到底
-        data = _bwiki(action="ask", query=ECHO_ASK, offset=offset)
-        for item in data.get("query", {}).get("results", {}).values():
-            out = item.get("printouts", {})
-            name = (out.get("名称") or [""])[0]
-            cost = str((out.get("COST花费") or [""])[0])
-            if not name or cost not in ("1", "3", "4"):
-                continue
-            raw_sets = (out.get("所属套装") or [""])[0]
-            for set_name in (part.strip() for part in raw_sets.split(",")):
-                if not set_name:
-                    continue
-                bucket = by_set.setdefault(set_name, {}).setdefault(int(cost), [])
-                if name not in bucket:
-                    bucket.append(name)
-        next_offset = data.get("query-continue-offset")
-        if not next_offset:
-            break
-        offset = next_offset
-    total = sum(len(names) for sets in by_set.values() for names in sets.values())
-    log(f"  bwiki 掉落池：{len(by_set)} 套 / {total} 条")
-    return by_set
-
-
-def _fetch_bwiki_characters(log) -> dict[str, dict]:
-    """拉角色名单（共鸣者）—— :data:`CHARACTER_ASK`  SMW 反查。
-
-    用户 2026-09-28 要求："新角色的数据（能选到新角色）"。
-
-    返回 ``{角色名: {"rarity": int, "element": str, "weapon": str}}``。
-
-    ## 两个必须处理的坑（都是实测踩出来的）
-
-    1. **同一角色有两个页面前缀**：wiki 上既有 ``共鸣者/景燃`` 也有 ``角色/景燃``，
-       直接按「分类:共鸣者」反查会**同一个名字回来两次**。
-       不合并的话名单里会出现重复项（下拉框里两个"景燃"）。
-       这里按名字合并，字段取非空的那个。
-    2. **``鸣潮:共鸣者预设``不是角色**，是模板页 —— 得跳过，
-       否则名单里会混进一个叫「鸣潮:共鸣者预设」的假角色。
-
-    稀有度 wiki 上**没有结构化字段**（返回空），所以这里可能是 0；
-    合并时不会拿 0 覆盖本地已有的星级（见 :func:`_merge_characters_data`）。
-    """
-    log("拉取角色名单（兜底源：bwiki 分类:共鸣者）…")
-    merged: dict[str, dict] = {}
-    offset = 0
-    for _round in range(20):  # 防呆上限：正常 1~2 轮到底
-        data = _bwiki(action="ask", query=CHARACTER_ASK, offset=offset)
-        for key, item in data.get("query", {}).get("results", {}).items():
-            if key.startswith("鸣潮:"):        # 模板页，不是角色
-                continue
-            out = item.get("printouts", {})
-            name = (out.get("名称") or [""])[0] or key.split("/", 1)[-1]
-            name = _clean(str(name))
-            if not name or "/" in name:        # 名字里还带斜杠 → 不是角色条目
-                continue
-            info = {
-                "rarity": _to_int((out.get("稀有度") or [0])[0]),
-                "element": _clean(str((out.get("属性") or [""])[0])),
-                "weapon": _clean(str((out.get("武器") or [""])[0])),
-            }
-            known = merged.get(name)
-            if known is None:
-                merged[name] = info
-            else:
-                # 同名（两个前缀）→ 字段取非空的，别让空值盖掉有值的
-                for field_name, value in info.items():
-                    if value and not known.get(field_name):
-                        known[field_name] = value
-        next_offset = data.get("query-continue-offset")
-        if not next_offset:
-            break
-        offset = next_offset
-    log(f"  角色名单：{len(merged)} 个")
-    return merged
 
 
 def _to_int(value) -> int:
@@ -470,7 +330,7 @@ def _parse_echo_skill(lines: list[str]) -> dict[str, str]:
         冷却时间：8秒
 
     ⚠ **只要 5★ 那一段**：库街区把 2★~5★ 各写一遍（技能数值不同），
-    本地一直只存 5 星数据（bwiki 那边也只有 5 星），
+    本地一直只存 5 星数据，
     全塞进去会让技能说明变成四段重复文字。
     """
     skill_lines: list[str] = []
@@ -503,14 +363,14 @@ def _parse_stars(value: str) -> int:
 
 
 def _fetch_kurobbs_characters(log) -> dict[str, dict]:
-    """拉库街区角色名单（catalogue 1105）—— **角色数据的主源**。
+    """拉库街区角色名单（catalogue 1105）—— **角色数据的唯一来源**。
 
-    比 bwiki 强的地方（这也是"优先从库街区拿"的理由）：
+    为什么以它为准（这也是"只从库街区拿"的理由）：
 
-    * **稀有度是结构化的** —— bwiki 那边 ``稀有度`` 字段返回 0，
-      所以长期靠手工补；库街区有「稀有度」标签组（值形如「五星」）；
-    * 角色数更全（实测 64 vs bwiki 58）；
-    * 更新更快（bwiki 要等社区编辑）。
+    * **稀有度是结构化的** —— tagTree 里有「稀有度」标签组（值形如「五星」），
+      以前靠 bwiki 那份没有这个字段、只能手工补；
+    * 角色数更全（实测 60 个）；
+    * 官方数据，和游戏内一致。
 
     ⚠ 数据在 ``content.relateTagIds`` 里，要拿 ``tagTree`` 反查才有名字 ——
     直接读 ``content`` 是读不到"五星/导电/迅刀"的。
@@ -518,8 +378,8 @@ def _fetch_kurobbs_characters(log) -> dict[str, dict]:
     log("拉取角色名单（库街区 1105）…")
     try:
         records, tag_tree = _kuro_page("1105", log)
-    except Exception as exc:  # noqa: BLE001 - 主源失败还有 bwiki 兜底
-        log(f"  库街区角色名单拉取失败（{exc}）—— 稍后用 bwiki 兜底")
+    except Exception as exc:  # noqa: BLE001 - 一路数据源失败不该让整次检查崩掉
+        log(f"  库街区角色名单拉取失败（{exc}）")
         return {}
 
     # tagTree → {tag_id: (分组, 值)}
@@ -566,7 +426,7 @@ def _info_score(info: dict) -> int:
 
 
 def _fetch_kurobbs_set_effects(log) -> dict[str, list[dict]]:
-    """套装效果原文（**主源：库街区详情**）。
+    """套装效果原文（库街区 1219 详情）—— **唯一来源**。
 
     每个套装一次 ``getEntryDetail``（37 套 = 37 个请求），串行 + 间隔 ——
     比 bwiki 慢，但它是**官方**数据、且和游戏内一致（用户给的就是这个页面）。
@@ -576,8 +436,8 @@ def _fetch_kurobbs_set_effects(log) -> dict[str, list[dict]]:
     log("拉取套装效果原文（库街区 1219 详情）…")
     try:
         records, _ = _kuro_page("1219", log)
-    except Exception as exc:  # noqa: BLE001 - 主源失败还有 bwiki 兜底
-        log(f"  库街区套装列表拉取失败（{exc}）—— 稍后用 bwiki 兜底")
+    except Exception as exc:  # noqa: BLE001 - 一路数据源失败不该让整次检查崩掉
+        log(f"  库街区套装列表拉取失败（{exc}）")
         return {}
 
     effects_by_set: dict[str, list[dict]] = {}
@@ -608,7 +468,7 @@ def _fetch_kurobbs_set_effects(log) -> dict[str, list[dict]]:
 
 
 def _fetch_kurobbs_echo_skills(log, echoes_kuro: dict) -> dict[str, dict]:
-    """声骸技能说明（**主源：库街区详情**）。
+    """声骸技能说明（库街区 1107 详情）—— **唯一来源**。
 
     只拉``echoes_kuro`` 里出现过的声骸（205 个），一次一个请求。
     ⚠ 这是一个**慢**操作（两百个请求），所以：
@@ -619,7 +479,7 @@ def _fetch_kurobbs_echo_skills(log, echoes_kuro: dict) -> dict[str, dict]:
     try:
         records, _ = _kuro_page("1107", log)
     except Exception as exc:  # noqa: BLE001
-        log(f"  库街区声骸列表拉取失败（{exc}）—— 稍后用 bwiki 兜底")
+        log(f"  库街区声骸列表拉取失败（{exc}）")
         return {}
 
     # 只拉**真的还缺**的。
@@ -847,7 +707,7 @@ class UpdateReport:
         if self.remote_empty:
             return (
                 "这次没从远端取到任何数据，所以无法判断有没有更新 —— "
-                "多半是网络不通，或者 bwiki / 库街区的页面结构变了。\n"
+                "多半是网络不通，或者库街区的接口 / 页面结构变了。\n"
                 "请稍后点「重新检查」再试。"
             )
         if self.local_empty:
@@ -890,25 +750,14 @@ def check_updates(snapshot: RemoteSnapshot, local_sets: dict | None = None,
     # 远端一条都没拉到 → 结论不成立。以前这里的表现是"安静地报数据已是最新"，
     # 明明什么都没查到却说没事，是**误导**。
     # ⚠ 角色也算一路数据源：只拉到角色、其它全挂时，仍应认为"取到了东西"。
-    # ⚠ **set_effects（库街区效果）也要算** —— 它是现在的主源，
-    #   漏掉的话"只拉到效果"会被误判成 remote_empty（2026-10-01 修）。
-    if (not snapshot.sets and not snapshot.set_effects
-            and not snapshot.echoes_bwiki
-            and not snapshot.echoes_kuro and not snapshot.characters):
+    if (not snapshot.set_effects and not snapshot.echoes_kuro
+            and not snapshot.characters):
         report.remote_empty = True
         return report
     report.local_empty = not local_by_name
 
-    # ★ 套装效果：要比就比**数据的实际来源**（库街区优先），别拿 bwiki 去比。
-    #
-    # ⚠ 2026-10-01 修的假报：原来这里只拿 ``snapshot.sets``（bwiki）跟本地比，
-    #   而本地效果**是从库街区写入的**（2026-09-30 改成库街区优先）。
-    #   两个源的文字**本来就有出入**（bwiki 多一句"延奏技能伤害提升60%"之类），
-    #   于是**每次检查都报"效果更新 30 套"** —— 用户当场指出：
-    #   "本来就有 你这是更新什么"。
-    #
-    #   规则：**哪个源写进去的，就跟哪个源比**（和 _merge_sets_data 一一对应）：
-    #   库街区有这套 → 比库街区的；没有 → 才退回比 bwiki 的。
+    # 套装效果：跟**数据的实际来源**比 —— 现在只有库街区一路，
+    # 所以这里比对的就是写进本地的那一份（不会再出现"跨源比文字"的假报）。
     for name, effects in snapshot.set_effects.items():
         local = local_by_name.get(name)
         if local is None:
@@ -916,40 +765,20 @@ def check_updates(snapshot: RemoteSnapshot, local_sets: dict | None = None,
         elif effects and local.get("effects") != effects:
             report.effect_changed.append(name)
 
-    # 库街区没给效果的套装，才拿 bwiki 的来比（合并时也是这个规则）
-    for name, effects in snapshot.sets.items():
-        if name in snapshot.set_effects:
-            continue                      # 上面已经比过库街区那份了
-        local = local_by_name.get(name)
-        if local is None:
-            if name not in report.new_sets:
-                report.new_sets.append(name)
-        elif effects and local.get("effects") != effects:
-            # ⚠ 只在本地**没有**效果（等着 bwiki 填）时才可能算变化 ——
-            #   本地已有内容（库街区写的 / 手工补的）不会被 bwiki 覆盖，
-            #   那就不该报"要更新"（报了也应用不上，是假报）。
-            if not local.get("effects"):
-                report.effect_changed.append(name)
-
-    # ★ 库街区也带了套装名单（tagTree 的「套装」分组），而且**比 bwiki 全**。
-    #   2026-09-30 实测：3.7 的「衔梦照世之心 / 镜影流电之瞬 / 茜染怀想之花」
-    #   库街区**已经有**（37 套），bwiki 还停在上个版本（34 套）。
-    #   以前只拿 bwiki 的套装修名单，于是"库街区明明同步了"却报「套装没有变化」
-    #   —— 用户就是这么发现漏掉的（"现在更新了 3 套新的声骸套装，我怎么没看到呢"）。
-    #   这里把库街区独有的套装也算进来；效果文字由用户手工补（见 _manual_effects）。
+    # 套装名单也来自库街区（tagTree 的「套装」分组）—— 效果里没覆盖到的
+    # 名字这里再兜一次（比如某套还没建详情页）。
     for name in snapshot.echoes_kuro:
         if name not in local_by_name and name not in report.new_sets:
             report.new_sets.append(name)
 
     seen_new: set[str] = set()
-    for source_label, remote in (("bwiki", snapshot.echoes_bwiki), ("库街区", snapshot.echoes_kuro)):
-        for set_name, by_cost in remote.items():
-            for _cost, names in by_cost.items():
-                for echo_name in names:
-                    if echo_name in local_echo_names or echo_name in seen_new:
-                        continue
-                    seen_new.add(echo_name)
-                    report.new_echoes.append(f"{echo_name}（{source_label}）")
+    for set_name, by_cost in snapshot.echoes_kuro.items():
+        for _cost, names in by_cost.items():
+            for echo_name in names:
+                if echo_name in local_echo_names or echo_name in seen_new:
+                    continue
+                seen_new.add(echo_name)
+                report.new_echoes.append(echo_name)
 
     # 角色：远端有、本地名单里没有 → 新角色（用户 2026-09-28 要求能选到）
     local_names = {
@@ -974,12 +803,7 @@ def _merge_sets_data(local_sets: dict, snapshot: RemoteSnapshot) -> bool:
     by_name = {item.get("name"): item for item in sets}
     changed = False
 
-    # ★ 套装效果：**库街区优先**（2026-09-30），bwiki 只补库街区没有的。
-    #
-    #   我原先以为效果原文"只有 bwiki 有" —— 那是被 getPage 的**空 textList**
-    #   骗了（列表接口只给骨架，文字在 getEntryDetail 详情里）。
-    #   用户给了库街区的页面链接纠正："库街区也有套装效果"。
-    #   现在两边都有时**以库街区为准**（官方数据，且和游戏内一致）。
+    # 套装效果（库街区 1219 详情）—— **唯一来源**
     for name, effects in snapshot.set_effects.items():
         local = by_name.get(name)
         if local is None:
@@ -990,40 +814,19 @@ def _merge_sets_data(local_sets: dict, snapshot: RemoteSnapshot) -> bool:
             local["effects"] = effects
             changed = True
 
-    # 兜底：bwiki 的效果原文（只在库街区没给出这一套时才写）
-    for name, effects in snapshot.sets.items():
-        local = by_name.get(name)
-        if local is None:
-            by_name[name] = {"name": name, "effects": effects}
-            sets.append(by_name[name])
-            changed = True
-        elif (not local.get("effects")) and effects:
-            # ⚠ 只在本地**没有**效果时才拿 bwiki 填空 ——
-            #   已有内容（无论来自库街区还是手工补录）都不覆盖
-            local["effects"] = effects
-            changed = True
-
-    # ★ 库街区独有的套装（bwiki 还没收录的）也要建出来 —— 否则它带的声骸
-    #   会被 _union_echoes 因为"找不到这个套装"而**整批丢掉**（那正是新套装
-    #   的声骸一条都进不来的原因）。效果文字由上面的库街区详情补。
+    # 套装名单里、效果还没覆盖到的（比如详情页还没建）也要建出来 ——
+    # 否则它带的声骸会被 _union_echoes 因为"找不到这个套装"而**整批丢掉**。
     for name in snapshot.echoes_kuro:
         if name not in by_name:
             by_name[name] = {"name": name, "effects": []}
             sets.append(by_name[name])
             changed = True
 
-    # 声骸掉落池：**库街区优先**（主源），bwiki 只补它没有的套装。
-    #
-    # ⚠ 顺序有意义：``_union_echoes`` 是**并集**（只加不减），
-    #   所以先并谁不影响最终名单；但它决定了"某个名字是靠谁进来的"。
-    #   先库街区 = 新套装的声骸先到位（bwiki 通常滞后几周）。
+    # 声骸掉落池（库街区 1107）—— **唯一来源**
     merged_names: set[str] = set()
     for set_name, by_cost in snapshot.echoes_kuro.items():
         # 库街区的 COST 档在 getPage 里拿不到（记录没有 cost 字段），
         # 它的条目按名字并进已有的档位；实在找不到的进 0 桶 → 跳过。
-        _union_echoes(by_name, set_name, by_cost)
-        merged_names.add(set_name)
-    for set_name, by_cost in snapshot.echoes_bwiki.items():
         _union_echoes(by_name, set_name, by_cost)
         merged_names.add(set_name)
 
@@ -1039,13 +842,13 @@ def _merge_characters_data(local_chars: dict, snapshot: RemoteSnapshot) -> bool:
     ## 规则（与套装一致的"只增不减"思路）
 
     * **新角色追加**（这就是"能选到新角色"）；
-    * **已有角色不删**：wiki 偶尔漏页 / 改名，删掉会让用户已存的配置和任务
+    * **已有角色不删**：数据源偶尔漏页 / 改名，删掉会让用户已存的配置和任务
       指向一个不存在的角色（``find_character`` 查不到 → 头像消失、名字报错）。
       宁可留着过时的，也不要删；
-    * **属性 / 武器**：远端有值且和本地不同就更新（wiki 修正过的更可信）；
+    * **属性 / 武器**：远端有值且和本地不同就更新（官方修正过的更可信）；
       远端为空时**保留本地的** —— 别拿空串盖掉已有信息；
-    * **稀有度**：wiki 没有结构化字段（常返回 0），所以**只在本地为 0 时**才写入，
-      绝不拿 0 覆盖本地已知的星级。
+    * **稀有度**：库街区有结构化的「稀有度」标签，所以正常都有值；
+      仍然**只在本地为 0 时**才写入，绝不拿 0 覆盖本地已知的星级。
     """
     chars: list[dict] = local_chars.setdefault("characters", [])
     by_name = {
@@ -1055,35 +858,30 @@ def _merge_characters_data(local_chars: dict, snapshot: RemoteSnapshot) -> bool:
     changed = False
     added: list[str] = []
 
-    # ★ 主源（库街区）先过，兜底（bwiki）后过 —— 同一个角色两边都有时，
-    #   主源先写进去，兜底那条再走一遍"只补空字段"的逻辑，不会覆盖主源的值。
-    #   ⚠ 反过来（bwiki 先）就会出现"库街区明明有稀有度，却被 bwiki 的 0 占住"
-    #   —— 这正是改之前的样子。
-    for source in (snapshot.characters, snapshot.characters_bwiki):
-        for name, info in source.items():
-            local = by_name.get(name)
-            if local is None:
-                entry = {
-                    "name": name,
-                    "rarity": _to_int(info.get("rarity")),
-                    "element": str(info.get("element") or ""),
-                    "weapon": str(info.get("weapon") or ""),
-                }
-                by_name[name] = entry
-                chars.append(entry)
-                added.append(name)
+    for name, info in snapshot.characters.items():
+        local = by_name.get(name)
+        if local is None:
+            entry = {
+                "name": name,
+                "rarity": _to_int(info.get("rarity")),
+                "element": str(info.get("element") or ""),
+                "weapon": str(info.get("weapon") or ""),
+            }
+            by_name[name] = entry
+            chars.append(entry)
+            added.append(name)
+            changed = True
+            continue
+        # 已有角色：只补空字段 / 更新非空且不同值
+        for field_name in ("element", "weapon"):
+            value = str(info.get(field_name) or "")
+            if value and local.get(field_name) != value:
+                local[field_name] = value
                 changed = True
-                continue
-            # 已有角色：只补空字段 / 更新非空且不同值
-            for field_name in ("element", "weapon"):
-                value = str(info.get(field_name) or "")
-                if value and local.get(field_name) != value:
-                    local[field_name] = value
-                    changed = True
-            rarity = _to_int(info.get("rarity"))
-            if rarity and _to_int(local.get("rarity")) == 0:
-                local["rarity"] = rarity
-                changed = True
+        rarity = _to_int(info.get("rarity"))
+        if rarity and _to_int(local.get("rarity")) == 0:
+            local["rarity"] = rarity
+            changed = True
 
     if added:
         local_chars["_fetched"] = time.strftime("%Y-%m-%d")
@@ -1124,32 +922,6 @@ def _find_cost(by_name: dict, echo_name: str) -> int:
             if entry.get("name") == echo_name:
                 return int(entry.get("cost", 4) or 4)
     return 4
-
-
-def _fetch_skill(name: str) -> dict[str, str]:
-    """抓一条声骸页的技能说明（拿不到返回空串，不抛异常）。"""
-    try:
-        title = f"声骸/{name}"
-        data = _bwiki(action="parse", page=title, prop="text")
-        page = data["parse"]["text"]["*"]
-    except Exception:  # noqa: BLE001 - 页面不存在是常态（新声骸 bwiki 还没建页）
-        return {"skill": "", "cooldown": ""}
-
-    def clean(block: str) -> str:
-        block = re.sub(r"<br\s*/?>", "\n", block)
-        block = re.sub(r"<[^>]+>", "", block)
-        return "\n".join(
-            line.strip() for line in htmllib.unescape(block).replace("\xa0", " ").split("\n")
-        ).strip(" \n")
-
-    result = {"skill": "", "cooldown": ""}
-    matched = re.search(r"声骸技能：.*?<p>(.*?)</p>", page, re.S)
-    if matched:
-        result["skill"] = clean(matched.group(1))
-    matched = re.search(r"技能冷却：</b>\s*([^<\r\n]+)", page)
-    if matched:
-        result["cooldown"] = htmllib.unescape(matched.group(1)).strip()
-    return result
 
 
 def apply_updates(
@@ -1208,7 +980,7 @@ def apply_updates(
         missing_marked = 0
         for name, info in snapshot.echo_skills.items():
             entry = skills["echoes"].setdefault(name, {})
-            # 库街区是主源：有值就更新（数值会随版本调整）
+            # 有值就更新（数值会随版本调整）
             if info.get("skill"):
                 if entry.get("skill") != info["skill"]:
                     entry["skill"] = info["skill"]
@@ -1229,37 +1001,11 @@ def apply_updates(
             done.append(f"确认 {missing_marked} 个声骸没有技能说明"
                         "（记下来，以后不再重复拉取）")
 
-    # 2b) 兜底：bwiki（只补库里**还没有**技能说明、且**没被确认过"确实没有"**的）
-    #
-    # ⚠ 也要排掉 ``_skill_missing`` 那些 —— 它们在库街区那边已经确认没有技能，
-    #   bwiki 那边同样不会有；不排掉的话**每次更新都要为它们发一轮请求**
-    #   （用户 2026-10-01 报的就是这个："这里为什么老是要拉取"）。
-    missing = [item.split("（")[0] for item in report.new_echoes]
-    missing = [
-        name for name in missing
-        if not (skills["echoes"].get(name) or {}).get("skill")
-        and not (skills["echoes"].get(name) or {}).get("_skill_missing")
-    ]
-    if missing:
-        log(f"补抓 {len(missing)} 个声骸的技能说明（兜底源 bwiki，一页一个请求）…")
-        got = 0
-        for index, name in enumerate(sorted(missing), 1):
-            info = _fetch_skill(name)
-            entry = skills["echoes"].setdefault(name, {})
-            if info.get("skill") and not entry.get("skill"):
-                entry.update(info)
-                got += 1
-            time.sleep(DELAY)
-            if index % 10 == 0:
-                log(f"  … {index}/{len(missing)}")
-        if got:
-            done.append(f"声骸技能说明（bwiki 兜底）：{got} 条")
-
     if skills.get("echoes") or snapshot.icon_urls:
         skills["_source"] = (
-            "声骸技能/冷却：**优先库街区**官方 wiki（getEntryDetail 详情的"
-            "『声骸技能』模块，取 5★ 那一段），缺的用 bwiki 兜底；"
-            "icon_urls 来自库街区（getPage，catalogueId 1105/1106/1107/1219）。"
+            "声骸技能/冷却、icon_urls 全部来自库街区官方 wiki —— "
+            "技能走 getEntryDetail 详情的『声骸技能』模块（取 5★ 那一段），"
+            "图标走 getPage（catalogueId 1105/1106/1107/1219）。"
         )
         SKILLS_FILE.write_text(
             json.dumps(skills, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

@@ -35,21 +35,33 @@ class TestKurobbsFallback(unittest.TestCase):
     def setUpClass(cls):
         cls.source = SCRIPT.read_text(encoding="utf-8")
 
-    def test_source_mentions_both_kinds(self):
-        """★ 接线检查：``kurobbs_icons()`` 的取用条件里必须同时含
-        ``echoes`` 和 ``sets``。
+    def test_kurobbs_is_used_for_every_kind(self):
+        """★ 接线检查：``kurobbs_icons()`` 要**对所有类别**生效。
 
-        直接查源码字符串 —— 因为这是"接线"问题，不是函数行为问题：
-        函数本身没错，是**调用处的条件写窄了**。
+        ⚠ 这里曾经是个 bug：取用条件写成了
+        ``kurobbs_icons() if kind in ("echoes", "sets") else {}`` ——
+        **只给两个分支接上**，于是武器图标永远只走 bwiki、缺的一直是占位图。
+
+        2026-10-01 用户要求"只从库街区拿"之后，条件已经**整个去掉**了
+        （无条件取用），比"列全类别"更强 —— 所以这条断言也升级成：
+        **不该再有 if 条件卡着它**。
         """
-        line = next(
-            (ln for ln in self.source.splitlines()
-             if "kurobbs_icons()" in ln and "if " in ln),
-            "",
-        )
-        self.assertTrue(line, "没找到 kurobbs_icons() 的取用条件，脚本结构变了？")
-        self.assertIn("echoes", line, f"声骸没接库街区兜底：{line.strip()}")
-        self.assertIn("sets", line, f"★ 套装没接库街区兜底：{line.strip()}")
+        lines = [ln.strip() for ln in self.source.splitlines()
+                 if "kurobbs_icons()" in ln and "def " not in ln]
+        self.assertTrue(lines, "没找到 kurobbs_icons() 的取用处，脚本结构变了？")
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertNotIn(
+                    "if kind", line,
+                    f"还在按类别挑着用库街区（会漏掉某一类）：{line}")
+
+    def test_wiki_only_queried_when_needed(self):
+        """★ 库街区全覆盖时**不该再去查 wiki 列表**。
+
+        那是一次分页请求，查了也用不上（纯浪费、还慢）。
+        """
+        self.assertIn("need_wiki", self.source,
+                      "没有'按需查 wiki'的判断，会每次白查一遍")
 
     def test_kinds_table_has_sets(self):
         """KINDS 表里要有 sets 这一类（否则整个下载流程不会处理套装图标）。"""

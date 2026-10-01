@@ -108,42 +108,50 @@ class TestCheckUpdates(unittest.TestCase):
                          "库街区和 bwiki 措辞不同被误报成'效果更新'")
         self.assertFalse(report.has_updates)
 
-    def test_bwiki_fills_when_kurobbs_has_nothing(self):
-        """库街区没给效果的套装，bwiki 仍要能补上（本地空着 → 算更新）。"""
-        local = {"sets": [{"name": "只有bwiki有", "effects": []}]}
-        snapshot = RemoteSnapshot()
-        snapshot.set_effects = {}
-        snapshot.sets = {"只有bwiki有": [{"pieces": 2, "text": "bwiki 的效果"}]}
-        report = check_updates(snapshot, local_sets=local)
-        self.assertEqual(report.effect_changed, ["只有bwiki有"])
+    def test_same_source_text_difference_is_a_change(self):
+        """同一个源（库街区）文字变了 → 才算"效果更新"。
 
-    def test_new_echo_from_both_sources_reported_once(self):
+        ⚠ 2026-10-01 起 bwiki 已整个删掉（用户："除去一切其他来源数据，
+        只从库街区拿"），所以"跨源比文字"的假报从结构上就不可能再发生了。
+        """
+        snapshot = RemoteSnapshot()
+        snapshot.set_effects = {"凝夜白霜": [
+            {"pieces": 2, "text": "冷凝伤害提升15%"}]}          # 本地是 10%
+        report = check_updates(snapshot, local_sets=_local())
+        self.assertEqual(report.effect_changed, ["凝夜白霜"])
+
+    def test_empty_local_effect_counts_as_change(self):
+        """本地效果空着（等着远端填）→ 算更新。"""
+        local = {"sets": [{"name": "新套装", "effects": []}]}
+        snapshot = RemoteSnapshot()
+        snapshot.set_effects = {"新套装": [{"pieces": 2, "text": "效果文字"}]}
+        report = check_updates(snapshot, local_sets=local)
+        self.assertEqual(report.effect_changed, ["新套装"])
+
+    def test_new_echoes_reported_once(self):
         snapshot = _snapshot()
-        snapshot.echoes_bwiki = {"凝夜白霜": {1: ["新声骸甲"]}}
         snapshot.echoes_kuro = {"凝夜白霜": {1: ["新声骸甲", "新声骸乙"]}}
         report = check_updates(snapshot, local_sets=_local())
-        # 同一个名字两个源都有 → 只报一次；名字带上来源标注
         self.assertEqual(len(report.new_echoes), 2)
-        self.assertTrue(any(n.startswith("新声骸甲") for n in report.new_echoes))
-        self.assertTrue(any(n.startswith("新声骸乙") for n in report.new_echoes))
+        self.assertIn("新声骸甲", report.new_echoes)
+        self.assertIn("新声骸乙", report.new_echoes)
 
 
 class TestKuroOnlySets(unittest.TestCase):
-    """★ 库街区独有的套装（bwiki 还没收录的）必须也能被发现并建出来。
+    """★ 库街区独有的套装必须能被发现并建出来。
 
     2026-09-30 用户报："现在更新了 3 套新的声骸套装，我怎么没看到呢"。
     实测：3.7 的「衔梦照世之心 / 镜影流电之瞬 / 茜染怀想之花」库街区
-    **已经有**（37 套），bwiki 还停在上个版本（34 套）。
-    而代码**只拿 bwiki 的『声骸合鸣』页当套装名单** → 报「套装没有变化」，
-    库街区明明带回了这些套装及其声骸，却整批被忽略。
+    **已经有**（37 套），而当时代码只拿 bwiki 的『声骸合鸣』页当套装名单
+    → 报「套装没有变化」，库街区明明带回了这些套装及其声骸，却整批被忽略。
 
-    这组用例把"库街区也是套装名单的来源"钉住。
+    ⚠ 2026-10-01 起只有库街区一路了，这类"漏掉新套装"从结构上不可能再发生
+    —— 但这几条仍然保留，钉住"库街区的套装名单确实进了 new_sets"。
     """
 
     def test_check_reports_kuro_only_set(self):
         snapshot = RemoteSnapshot()
-        snapshot.sets = {"凝夜白霜": _local()["sets"][0]["effects"]}   # bwiki 只有老套装
-        snapshot.echoes_kuro = {"新套装甲": {4: ["某声骸"]}}            # 库街区有新的
+        snapshot.echoes_kuro = {"新套装甲": {4: ["某声骸"]}}
         report = check_updates(snapshot, local_sets=_local())
         self.assertIn("新套装甲", report.new_sets)
         self.assertTrue(report.has_updates)
@@ -259,7 +267,7 @@ class TestMergeSetsData(unittest.TestCase):
     def test_append_new_set(self):
         local = _local()
         snapshot = RemoteSnapshot()
-        snapshot.sets = {"新套装": [{"pieces": 5, "text": "y"}]}
+        snapshot.set_effects = {"新套装": [{"pieces": 5, "text": "y"}]}
         self.assertTrue(_merge_sets_data(local, snapshot))
         names = [s["name"] for s in local["sets"]]
         self.assertIn("新套装", names)
@@ -267,7 +275,7 @@ class TestMergeSetsData(unittest.TestCase):
     def test_union_keeps_existing_echoes(self):
         local = _local()
         snapshot = RemoteSnapshot()
-        snapshot.echoes_bwiki = {"凝夜白霜": {1: ["新声骸甲"]}}
+        snapshot.echoes_kuro = {"凝夜白霜": {1: ["新声骸甲"]}}
         _merge_sets_data(local, snapshot)
         echoes = {e["name"] for e in local["sets"][0]["echoes"]}
         # 老条目一个不能少，新条目要进来

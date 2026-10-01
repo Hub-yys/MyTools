@@ -101,8 +101,9 @@ class WuwaLibraryUpdatePanel(QWidget):
 
         root.addWidget(TitleLabel("资源库更新", self))
         note = CaptionLabel(
-            "数据来源：bwiki（套装效果 / 声骸掉落池 / 角色名单 / 技能说明）+ 库街区官方 wiki"
-            "（声骸掉落池 / 图标）。检查只发 4~5 个轻量请求，不会写任何本地文件。\n"
+            "数据来源：库街区官方 wiki（套装效果 / 声骸掉落池 / 角色名单 / "
+            "技能说明 / 图标 —— 全部只从它拿）。\n"
+            "检查只发几个轻量请求，不会写任何本地文件。\n"
             "角色名单只增不减：新角色会加进来（配置页就能选到），已有的不会被删。",
             self,
         )

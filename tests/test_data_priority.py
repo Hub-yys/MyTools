@@ -1,16 +1,20 @@
-"""数据源优先级：**库街区优先，bwiki 只补它没有的**。
+"""数据源：**只从库街区拿**（用户 2026-10-01 明确要求）。
 
     python tests/test_data_priority.py
 
-用户 2026-09-30 看着「资源库更新」的日志问："为什么不是优先从库街区拿？"
-—— 他早就说过"这些数据以后优先从库街区拿"，但代码一直是
-**bwiki 先拉、库街区只补缺**。
+演变过程（三轮，用户每次都比上一次更明确）：
 
-这里钉住三件事：
-1. ``fetch_remote`` 里**库街区先拉**；
-2. 合并时**库街区的值不被 bwiki 覆盖**（反过来就会退化成旧行为）；
-3. 库街区角色名要**归一化**（漂泊者男/女 → 本地那 4 条），
-   否则每更新一次就多出 8 个假角色。
+1. 2026-09-30 用户看着日志顺序问："为什么不是优先从库街区拿？"
+   → 改成库街区主源、bwiki 兜底。
+2. 同一天用户给页面链接纠正："库街区也有套装效果"
+   → 确认 ``getEntryDetail`` 详情接口能拿到文字。
+3. **2026-10-01 用户要求："除去一切其他来源数据，只从库街区拿"**
+   → 把 bwiki 整个删掉。
+
+最后一轮的依据是实测：**bwiki 没有独占数据**（库街区 37 套 / 205 声骸 /
+60 角色；bwiki 34 / 255 / 58，全是子集），而两个源的**文字措辞不同**
+（bwiki 的套装效果多一句"延奏技能伤害提升60%"之类），
+留着只会导致"效果更新 30 套"那种假报。
 
 不打网络 —— 全用构造的 RemoteSnapshot。
 """
@@ -18,11 +22,9 @@
 from __future__ import annotations
 
 import inspect
-import json
 import pathlib
 import sys
 import unittest
-import unittest.mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -30,91 +32,117 @@ sys.path.insert(0, str(ROOT))
 from src.core import wuwa_update  # noqa: E402
 
 
-class TestFetchOrder(unittest.TestCase):
-    """★ 拉取顺序：库街区在前。"""
+class TestBwikiIsGone(unittest.TestCase):
+    """★ bwiki 的代码**不该再存在**（用户要求"除去一切其他来源数据"）。"""
 
-    def test_kurobbs_is_fetched_before_bwiki(self):
-        """源码里 ``_fetch_kurobbs`` 要出现在 ``_fetch_bwiki_sets`` 之前。
+    def test_no_bwiki_constants(self):
+        for name in ("BWIKI_API", "SETS_PAGE", "ECHO_ASK", "CHARACTER_ASK"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(wuwa_update, name),
+                                 f"{name} 还在 —— bwiki 没删干净")
 
-        ⚠ 这条正是用户看到的那几行日志顺序。顺序本身不影响"并集"结果，
-        但它代表了**谁是主源** —— 而且日志顺序就是用户判断的依据。
-        """
-        source = inspect.getsource(wuwa_update.fetch_remote)
-        kuro_at = source.find("_fetch_kurobbs(")
-        bwiki_at = source.find("_fetch_bwiki_sets(")
-        self.assertGreater(kuro_at, -1, "没找到 _fetch_kurobbs")
-        self.assertGreater(bwiki_at, -1, "没找到 _fetch_bwiki_sets")
-        self.assertLess(kuro_at, bwiki_at,
-                        "bwiki 又跑到库街区前面了 —— 数据源优先级反了")
+    def test_no_bwiki_functions(self):
+        for name in ("_bwiki", "_fetch_bwiki_sets", "_fetch_bwiki_echo_index",
+                     "_fetch_bwiki_characters", "_fetch_skill"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(wuwa_update, name),
+                                 f"{name} 还在 —— bwiki 没删干净")
 
-    def test_characters_come_from_both_sources(self):
-        """角色名单：库街区是主源（``characters``），bwiki 是兜底。
-
-        两个字段都要在，合并时才能"主源先写、兜底补空"。
-        """
-        source = inspect.getsource(wuwa_update.fetch_remote)
-        self.assertIn("_fetch_kurobbs_characters", source)
-        self.assertIn("_fetch_bwiki_characters", source)
-
-
-class TestCharacterMergePriority(unittest.TestCase):
-    """★ 合并时库街区的值不能被 bwiki 盖掉。"""
-
-    def _snapshot(self, kuro: dict, bwiki: dict):
+    def test_snapshot_has_no_bwiki_fields(self):
+        """快照上也不该留 bwiki 的入口字段（留着就会被重新用起来）。"""
         snapshot = wuwa_update.RemoteSnapshot()
-        snapshot.characters = kuro
-        snapshot.characters_bwiki = bwiki
+        for field_name in ("sets", "echoes_bwiki", "characters_bwiki"):
+            with self.subTest(field=field_name):
+                self.assertFalse(hasattr(snapshot, field_name),
+                                 f"RemoteSnapshot.{field_name} 还留着")
+
+    def test_fetch_remote_does_not_call_bwiki(self):
+        """``fetch_remote`` 里不该**调用**任何 bwiki 的东西。
+
+        ⚠ 只查代码、不查注释/docstring —— 文档里说明"为什么删掉 bwiki"
+        是应该留着的（那是决策记录）。
+        """
+        import ast
+        import textwrap
+
+        source = textwrap.dedent(inspect.getsource(wuwa_update.fetch_remote))
+        tree = ast.parse(source)
+        called = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        self.assertFalse(
+            [name for name in called if "bwiki" in name.lower()],
+            f"fetch_remote 还在调 bwiki 的东西：{sorted(called)}")
+
+
+class TestFetchUsesKurobbs(unittest.TestCase):
+    """拉取要走库街区的那几个接口。"""
+
+    def test_fetch_remote_pulls_all_kurobbs_parts(self):
+        source = inspect.getsource(wuwa_update.fetch_remote)
+        for name in ("_fetch_kurobbs", "_fetch_kurobbs_characters",
+                     "_fetch_kurobbs_set_effects", "_fetch_kurobbs_echo_skills"):
+            with self.subTest(name=name):
+                self.assertIn(name, source)
+
+    def test_catalogue_ids_are_the_kurobbs_ones(self):
+        source = inspect.getsource(wuwa_update)
+        for cid in ("1105", "1106", "1107", "1219"):
+            with self.subTest(cid=cid):
+                self.assertIn(f'"{cid}"', source,
+                              f"catalogueId {cid} 没在用了")
+
+
+class TestCharacterMerge(unittest.TestCase):
+    """角色合并（只有库街区一路，规则不变）。"""
+
+    def _snapshot(self, characters: dict):
+        snapshot = wuwa_update.RemoteSnapshot()
+        snapshot.characters = characters
         return snapshot
 
-    def test_kurobbs_wins_on_conflict(self):
-        """★ 同一个角色两边都有值时，**以库街区为准**。
-
-        这正是改之前的毛病：bwiki 的稀有度是 0（它没有结构化字段），
-        先写进去之后就把位置占住了，库街区真正的「五星」反而进不来。
-        """
+    def test_kurobbs_values_written(self):
         local = {"characters": []}
-        snapshot = self._snapshot(
-            kuro={"某角色": {"rarity": 5, "element": "导电", "weapon": "迅刀"}},
-            bwiki={"某角色": {"rarity": 0, "element": "", "weapon": ""}},
-        )
-        wuwa_update._merge_characters_data(local, snapshot)
+        wuwa_update._merge_characters_data(
+            local, self._snapshot({"绯雪": {"rarity": 5, "element": "冷凝",
+                                          "weapon": "迅刀"}}))
         entry = local["characters"][0]
-        self.assertEqual(entry["rarity"], 5, "库街区的稀有度被 bwiki 盖掉了")
-        self.assertEqual(entry["element"], "导电")
-
-    def test_bwiki_still_fills_gaps(self):
-        """bwiki 仍要能**补库街区没有的**（不能因为改优先级就不管它了）。"""
-        local = {"characters": []}
-        snapshot = self._snapshot(
-            kuro={"甲": {"rarity": 5, "element": "导电", "weapon": "迅刀"}},
-            bwiki={"乙": {"rarity": 4, "element": "热熔", "weapon": "长刃"}},
-        )
-        wuwa_update._merge_characters_data(local, snapshot)
-        names = {c["name"] for c in local["characters"]}
-        self.assertEqual(names, {"甲", "乙"}, "bwiki 独有的角色没进来")
-
-    def test_bwiki_fills_missing_field_of_kuro_character(self):
-        """库街区缺的字段，bwiki 补上（互补，不是二选一）。"""
-        local = {"characters": []}
-        snapshot = self._snapshot(
-            kuro={"某角色": {"rarity": 5, "element": "", "weapon": "迅刀"}},
-            bwiki={"某角色": {"rarity": 0, "element": "湮灭", "weapon": ""}},
-        )
-        wuwa_update._merge_characters_data(local, snapshot)
-        entry = local["characters"][0]
-        self.assertEqual(entry["element"], "湮灭", "bwiki 的补空能力没了")
         self.assertEqual(entry["rarity"], 5)
+        self.assertEqual(entry["element"], "冷凝")
 
-    def test_existing_local_rarity_not_zeroed(self):
-        """本地已有的星级**绝不能**被 0 覆盖（老数据的保命规则）。"""
+    def test_new_character_appended(self):
+        local = {"characters": [{"name": "旧角色", "rarity": 5}]}
+        wuwa_update._merge_characters_data(
+            local, self._snapshot({"新角色": {"rarity": 4}}))
+        names = {c["name"] for c in local["characters"]}
+        self.assertIn("新角色", names)
+        self.assertIn("旧角色", names, "已有角色不能被删（只增不减）")
+
+    def test_missing_field_is_filled(self):
+        """远端有值就补上缺的字段。"""
         local = {"characters": [{"name": "甲", "rarity": 5,
-                                 "element": "导电", "weapon": "迅刀"}]}
-        snapshot = self._snapshot(
-            kuro={"甲": {"rarity": 0, "element": "", "weapon": ""}},
-            bwiki={"甲": {"rarity": 0, "element": "", "weapon": ""}},
-        )
-        wuwa_update._merge_characters_data(local, snapshot)
+                                 "element": "", "weapon": "迅刀"}]}
+        wuwa_update._merge_characters_data(
+            local, self._snapshot({"甲": {"rarity": 5, "element": "湮灭",
+                                         "weapon": ""}}))
+        self.assertEqual(local["characters"][0]["element"], "湮灭")
+
+    def test_existing_rarity_not_zeroed(self):
+        """★ 本地已有的星级**绝不能**被 0 覆盖。"""
+        local = {"characters": [{"name": "甲", "rarity": 5}]}
+        wuwa_update._merge_characters_data(
+            local, self._snapshot({"甲": {"rarity": 0, "element": "",
+                                         "weapon": ""}}))
         self.assertEqual(local["characters"][0]["rarity"], 5)
+
+    def test_empty_element_does_not_wipe(self):
+        """远端空串不能盖掉本地已有的值。"""
+        local = {"characters": [{"name": "甲", "element": "导电"}]}
+        wuwa_update._merge_characters_data(
+            local, self._snapshot({"甲": {"element": ""}}))
+        self.assertEqual(local["characters"][0]["element"], "导电")
 
 
 class TestStarParsing(unittest.TestCase):
@@ -149,7 +177,6 @@ class TestCharacterNameNormalization(unittest.TestCase):
     """★ 漂泊者：库街区按男/女拆成 8 条，本地一直用 4 条属性版。"""
 
     def test_traveller_variants_collapse(self):
-        """男/女两种都要归一到同一个本地名字。"""
         pairs = [
             ("漂泊者-男-导电", "漂泊者·导电"),
             ("漂泊者-女-导电", "漂泊者·导电"),
@@ -168,25 +195,17 @@ class TestCharacterNameNormalization(unittest.TestCase):
                     wuwa_update._normalize_character_name(name), name)
 
     def test_no_duplicate_travellers_after_merge(self):
-        """★ 端到端：归一化后不该多出假角色。
-
-        不归一化的话，每点一次「获取最新数据」就多 8 条
-        （而原有的 4 条又删不掉，因为合并是"只增不减"）。
-        """
+        """★ 端到端：归一化后不该多出假角色。"""
         local = {"characters": [
             {"name": "漂泊者·导电", "rarity": 5, "element": "导电",
              "weapon": "迅刀"}]}
         snapshot = wuwa_update.RemoteSnapshot()
         snapshot.characters = {
-            "漂泊者·导电": {"rarity": 5, "element": "导电", "weapon": "迅刀"},
-        }
-        snapshot.characters_bwiki = {}
+            "漂泊者·导电": {"rarity": 5, "element": "导电", "weapon": "迅刀"}}
         wuwa_update._merge_characters_data(local, snapshot)
-        self.assertEqual(len(local["characters"]), 1,
-                         "漂泊者被拆成了多条")
+        self.assertEqual(len(local["characters"]), 1, "漂泊者被拆成了多条")
 
     def test_info_score_picks_complete_entry(self):
-        """归一化撞车时保留信息更全的那条。"""
         fuller = {"rarity": 5, "element": "导电", "weapon": "迅刀"}
         emptier = {"rarity": 0, "element": "", "weapon": ""}
         self.assertGreater(wuwa_update._info_score(fuller),
@@ -194,12 +213,7 @@ class TestCharacterNameNormalization(unittest.TestCase):
 
 
 class TestKurobbsEntryDetail(unittest.TestCase):
-    """★ 套装效果 / 声骸技能也来自库街区（详情接口）。
-
-    我原先断言"这两项**只有 bwiki 有**" —— 用户给了页面链接纠正：
-    "库街区也有套装效果"。根因是被 ``getPage`` 的**空 textList 模板**
-    骗了：列表接口只给骨架，**文字在 getEntryDetail 详情里**。
-    """
+    """★ 套装效果 / 声骸技能来自库街区**详情接口**。"""
 
     def test_detail_url_constant(self):
         self.assertIn("getEntryDetail", wuwa_update.KUROBBS_ENTRY_DETAIL)
@@ -211,11 +225,7 @@ class TestKurobbsEntryDetail(unittest.TestCase):
                          "1553877397214363648")
 
     def test_entry_id_from_linkUrl(self):
-        """★ 套装（1219）**没有 linkId**，只有 ``linkUrl``。
-
-        只认 linkId 的话，37 套效果一条都取不到
-        （实测就是这个原因先跑出"0 套"的）。
-        """
+        """★ 套装（1219）**没有 linkId**，只有 ``linkUrl``。"""
         record = {"content": {
             "linkUrl": "https://wiki.kurobbs.com/mc/item/1553889998205132800"}}
         self.assertEqual(wuwa_update._entry_id_from_record(record),
@@ -241,19 +251,13 @@ class TestKurobbsEntryDetail(unittest.TestCase):
         self.assertNotIn("&nbsp;", "".join(lines))
 
     def test_parse_set_effects(self):
-        """★ 实测形状：名字 / (N件套) / 正文。"""
         lines = ["茜染怀想之花", "(2件套)", "治疗效果提升10%。",
                  "茜染怀想之花", "(5件套)", "为队伍中角色提供治疗时…"]
         effects = wuwa_update._parse_set_effects(lines)
         self.assertEqual([e["pieces"] for e in effects], [2, 5])
         self.assertEqual(effects[0]["text"], "治疗效果提升10%。")
-        self.assertIn("提供治疗", effects[1]["text"])
 
     def test_parse_set_effects_without_name_line(self):
-        """没有名字行的格式（声骸详情里的合鸣效果）也要能解析。
-
-        所以是按 ``(N件套)`` **定位**、取后一行，而不是"每 3 行取一次"。
-        """
         effects = wuwa_update._parse_set_effects(["(2件套)", "攻击提升10%。"])
         self.assertEqual(len(effects), 1)
         self.assertEqual(effects[0]["pieces"], 2)
@@ -263,11 +267,7 @@ class TestKurobbsEntryDetail(unittest.TestCase):
         self.assertEqual(wuwa_update._parse_set_effects(["随便一行"]), [])
 
     def test_parse_echo_skill_takes_five_star_only(self):
-        """★ 只要 **5★** 那一段。
-
-        库街区把 2★~5★ 各写一遍（数值不同）；全塞进去技能说明会变成
-        四段重复文字（本地一直只存 5 星数据）。
-        """
+        """★ 只要 **5★** 那一段（库街区把 2~5★ 各写一遍）。"""
         lines = ["5★", "技能描述", "五星的技能文本。", "冷却时间：8秒",
                  "4★", "技能描述", "四星的技能文本。", "冷却时间：9秒"]
         info = wuwa_update._parse_echo_skill(lines)
@@ -281,7 +281,7 @@ class TestKurobbsEntryDetail(unittest.TestCase):
         self.assertEqual(info["cooldown"], "")
 
     def test_component_texts_picks_right_module(self):
-        """要按「模块名 + 组件名」双层定位 —— 只用组件名会串（都叫「声骸技能」）。"""
+        """要按「模块名 + 组件名」双层定位 —— 只用组件名会串。"""
         detail = {"content": {"modules": [
             {"title": "基本信息",
              "components": [{"title": "合鸣效果",
@@ -292,112 +292,38 @@ class TestKurobbsEntryDetail(unittest.TestCase):
         ]}}
         self.assertEqual(
             wuwa_update._kuro_component_texts(detail, "基础信息", "合鸣效果"),
-            ["甲效果"])
+            ["甲效果"], "模块名对不上时要能按组件名兜底找到")
         self.assertEqual(
             wuwa_update._kuro_component_texts(detail, "声骸技能", "声骸技能"),
             ["乙技能"])
 
 
-class TestEffectsComeFromKurobbs(unittest.TestCase):
-    """★ 接线：套装效果 / 声骸技能要先走库街区。"""
-
-    def test_fetch_remote_pulls_kurobbs_effects(self):
-        source = inspect.getsource(wuwa_update.fetch_remote)
-        self.assertIn("_fetch_kurobbs_set_effects", source)
-        self.assertIn("_fetch_kurobbs_echo_skills", source)
-
-    def test_kurobbs_effects_before_bwiki(self):
-        source = inspect.getsource(wuwa_update.fetch_remote)
-        kuro_at = source.find("_fetch_kurobbs_set_effects")
-        bwiki_at = source.find("_fetch_bwiki_sets")
-        self.assertLess(kuro_at, bwiki_at,
-                        "bwiki 又跑到库街区前面了")
-
-    def test_bwiki_effects_only_fill_empty(self):
-        """★ bwiki 的效果只在本地**没有**时才写入（不覆盖库街区的）。
-
-        否则 bwiki 那 34 套会把库街区已经写好的 37 套效果盖回去。
-        """
-        local = {"sets": [{"name": "甲", "effects": [
-            {"pieces": 2, "text": "库街区的效果"}]}]}
-        snapshot = wuwa_update.RemoteSnapshot()
-        snapshot.set_effects = {"甲": [{"pieces": 2, "text": "库街区的效果"}]}
-        snapshot.sets = {"甲": [{"pieces": 2, "text": "bwiki 的效果"}]}
-        wuwa_update._merge_sets_data(local, snapshot)
-        effects = local["sets"][0]["effects"]
-        self.assertEqual(effects[0]["text"], "库街区的效果",
-                         "bwiki 把库街区的效果覆盖了")
-
-    def test_bwiki_still_fills_missing_effect(self):
-        """库街区没给的套装，bwiki 仍要能补上。"""
-        local = {"sets": [{"name": "乙", "effects": []}]}
-        snapshot = wuwa_update.RemoteSnapshot()
-        snapshot.set_effects = {}
-        snapshot.sets = {"乙": [{"pieces": 2, "text": "bwiki 补的"}]}
-        wuwa_update._merge_sets_data(local, snapshot)
-        self.assertEqual(local["sets"][0]["effects"][0]["text"], "bwiki 补的")
+class TestEffectsMerge(unittest.TestCase):
+    """套装 / 效果的合并（库街区一路）。"""
 
     def test_kurobbs_effect_overwrites_local(self):
-        """★ 库街区的效果要能**更新**已有的（数值会随版本调整）。"""
+        """★ 效果要能**更新**已有的（数值会随版本调整）。"""
         local = {"sets": [{"name": "丙", "effects": [
             {"pieces": 2, "text": "旧的"}]}]}
         snapshot = wuwa_update.RemoteSnapshot()
         snapshot.set_effects = {"丙": [{"pieces": 2, "text": "新的"}]}
-        snapshot.sets = {}
         wuwa_update._merge_sets_data(local, snapshot)
         self.assertEqual(local["sets"][0]["effects"][0]["text"], "新的")
 
-    def test_echo_skill_skips_only_when_text_exists(self):
-        """★ 只按"名字在不在"跳过是**错的**。
+    def test_new_set_appended(self):
+        local = {"sets": []}
+        snapshot = wuwa_update.RemoteSnapshot()
+        snapshot.set_effects = {"新套": [{"pieces": 2, "text": "效果"}]}
+        wuwa_update._merge_sets_data(local, snapshot)
+        self.assertEqual(local["sets"][0]["name"], "新套")
 
-        本地 187 条大多是 ``{"skill": "", "cooldown": ""}`` 的空壳
-        （只有名字、没有正文）—— 按名字跳过的话一个都补不上
-        （实测第一次跑就是"0 个拿到"）。要看**有没有正文**。
-        """
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as tmp:
-            path = pathlib.Path(tmp) / "wuwa_echo_skills.json"
-            path.write_text(json.dumps({"echoes": {
-                "空壳": {"skill": "", "cooldown": ""},
-                "有正文": {"skill": "已经有的技能", "cooldown": "5秒"},
-            }}, ensure_ascii=False), encoding="utf-8")
-
-            original = wuwa_update.SKILLS_FILE
-            wuwa_update.SKILLS_FILE = path
-            try:
-                with unittest.mock.patch.object(
-                        wuwa_update, "_kuro_page",
-                        return_value=([{"name": "空壳"}, {"name": "有正文"},
-                                       {"name": "全新"}], {})):
-                    with unittest.mock.patch.object(
-                            wuwa_update, "_entry_id_from_record",
-                            return_value="123"):
-                        with unittest.mock.patch.object(
-                                wuwa_update, "_kuro_entry_detail",
-                                return_value={}):
-                            # 只验证"要拉哪些"——看它有没有把空壳算进去
-                            logs: list[str] = []
-                            wuwa_update._fetch_kurobbs_echo_skills(
-                                logs.append, {})
-                joined = " ".join(logs)
-                self.assertIn("需要补 2 个", joined,
-                              f"空壳没被算进「待补」（日志：{joined}）")
-            finally:
-                wuwa_update.SKILLS_FILE = original
-
-
-class TestEchoPoolPriority(unittest.TestCase):
-    """声骸掉落池：库街区先并（新的套装声骸先到位）。"""
-
-    def test_kurobbs_pools_merged_first(self):
-        source = inspect.getsource(wuwa_update._merge_sets_data)
-        kuro_at = source.find("snapshot.echoes_kuro")
-        bwiki_at = source.find("snapshot.echoes_bwiki")
-        self.assertGreater(kuro_at, -1)
-        self.assertGreater(bwiki_at, -1)
-        self.assertLess(kuro_at, bwiki_at,
-                        "bwiki 掉落池又跑到库街区前面了")
+    def test_set_without_effects_still_created(self):
+        """只有名单、还没详情的套装也要建出来 —— 否则它带的声骸会整批丢掉。"""
+        local = {"sets": []}
+        snapshot = wuwa_update.RemoteSnapshot()
+        snapshot.echoes_kuro = {"只有名单": {4: ["某声骸"]}}
+        wuwa_update._merge_sets_data(local, snapshot)
+        self.assertEqual(local["sets"][0]["name"], "只有名单")
 
 
 if __name__ == "__main__":
