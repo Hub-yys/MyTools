@@ -1,0 +1,107 @@
+{
+  "info": {
+    "description": "MyTools: recognition templates for character Xin (generated from in-game screenshots)"
+  },
+  "images": [
+    {
+      "id": 1,
+      "file_name": "images/xin_templates.png",
+      "width": 1280,
+      "height": 720
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "char_xin",
+      "supercategory": "xin"
+    },
+    {
+      "id": 2,
+      "name": "xin_red",
+      "supercategory": "xin"
+    },
+    {
+      "id": 3,
+      "name": "xin_red_idle",
+      "supercategory": "xin"
+    },
+    {
+      "id": 4,
+      "name": "xin_white",
+      "supercategory": "xin"
+    },
+    {
+      "id": 5,
+      "name": "xin_dominion",
+      "supercategory": "xin"
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0,
+        0,
+        140,
+        125
+      ],
+      "area": 17500,
+      "iscrowd": 0
+    },
+    {
+      "id": 2,
+      "image_id": 1,
+      "category_id": 2,
+      "bbox": [
+        0,
+        137,
+        270,
+        47
+      ],
+      "area": 12690,
+      "iscrowd": 0
+    },
+    {
+      "id": 3,
+      "image_id": 1,
+      "category_id": 3,
+      "bbox": [
+        0,
+        196,
+        270,
+        47
+      ],
+      "area": 12690,
+      "iscrowd": 0
+    },
+    {
+      "id": 4,
+      "image_id": 1,
+      "category_id": 4,
+      "bbox": [
+        0,
+        255,
+        270,
+        47
+      ],
+      "area": 12690,
+      "iscrowd": 0
+    },
+    {
+      "id": 5,
+      "image_id": 1,
+      "category_id": 5,
+      "bbox": [
+        0,
+        314,
+        270,
+        47
+      ],
+      "area": 12690,
+      "iscrowd": 0
+    }
+  ]
+}

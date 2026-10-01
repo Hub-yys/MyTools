@@ -45,6 +45,8 @@ from okww.char.Taoqi import Taoqi
 from okww.char.Verina import Verina
 from okww.char.Xiangliyao import Xiangliyao
 from okww.char.Xigelika import Xigelika
+# ★ MyTools 新增（2026-10-01）—— 上游没有这个角色，见 class 里 char_xin 的说明
+from okww.char.Xin import Xin
 from okww.char.Yinlin import Yinlin
 from okww.char.YangYangSp import YangYangSp
 from okww.char.Youhu import Youhu
@@ -133,6 +135,12 @@ _char_dict_raw = {
     Labels.char_rebecca: {'cls': Rebecca, 'char_type': CharType.SUB_DPS, 'ring_index': Elements.ELECTRIC},
     Labels.char_qingxiao: {'cls': Qingxiao, 'char_type': CharType.MAIN_DPS, 'ring_index': Elements.WIND},
     Labels.char_jingran: {'cls': JingRan, 'char_type': CharType.MAIN_DPS, 'ring_index': Elements.FIRE},
+    # ★ MyTools 新增（2026-10-01）：「心」—— 上游还没有这个角色。
+    #   识别模板在 ok_tasks/assets/（见 tools/make_xin_templates.py），
+    #   战斗逻辑在 okww/char/Xin.py（本仓自写，未在实机验证）。
+    #   属性：5★ 导电 音感仪 → ring_index 用 ELECTRIC。
+    Labels.char_xin: {'cls': Xin, 'char_type': CharType.MAIN_DPS,
+                      'ring_index': Elements.ELECTRIC},
 }
 
 char_dict = {}

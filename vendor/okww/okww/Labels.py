@@ -282,4 +282,12 @@ class Labels(str, Enum):
     wheel_levitator = 'wheel_levitator'
     world_earth_icon = 'world_earth_icon'
     ww = 'ww'
+    # ★ MyTools 新增：「心」的识别模板（2026-10-01）
+    # 模板不是官方 assets，而是放在 ok_tasks/assets/（上游的扩展目录），
+    # 生成脚本：tools/make_xin_templates.py
+    char_xin = 'char_xin'            # 队伍栏头像（认人）
+    xin_red = 'xin_red'              # 红狐-紫条（应世心攒能中）
+    xin_red_idle = 'xin_red_idle'    # 红狐-白条（常态）
+    xin_white = 'xin_white'          # 白狐-金条（一段大已开）
+    xin_dominion = 'xin_dominion'    # 统御众机-金色柱状格
     yangyang_sp = 'yangyang_sp'
