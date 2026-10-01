@@ -62,7 +62,12 @@ class TestRotationOrder(unittest.TestCase):
 
 
 class TestHandOff(unittest.TestCase):
-    """什么时候换人。"""
+    """什么时候换人。
+
+    ⚠ 2026-10-01 用户更正：**没有"慢卸载"这回事** ——
+    他原来写的"2号位打完一套慢卸载"是**打错了**，实际就是「满协奏」：
+    **每一棒都是协奏一满就换人**，一视同仁。
+    """
 
     def _at(self, slot: int) -> rotation.RotationState:
         st = rotation.RotationState()
@@ -70,38 +75,31 @@ class TestHandOff(unittest.TestCase):
         return st
 
     def test_con_full_hands_off(self):
-        st = self._at(1)
-        go, why = st.should_hand_off(con_full=True, slot=1)
-        self.assertTrue(go, f"1 号位协奏满了却不换（{why}）")
+        for slot in rotation.ROTATION:
+            with self.subTest(slot=slot):
+                st = self._at(slot)
+                go, why = st.should_hand_off(con_full=True, slot=slot)
+                self.assertTrue(go, f"{slot} 号位协奏满了却不换（{why}）")
 
     def test_not_full_stays(self):
         st = self._at(1)
         go, _why = st.should_hand_off(con_full=False, slot=1)
         self.assertFalse(go, "协奏没满就换人了")
 
-    def test_slow_unload_waits(self):
-        """★ 2 号位（坎特蕾拉）是"慢卸载"—— 协奏满了还要再打一会儿。"""
-        st = self._at(2)
-        st._since = time.monotonic()          # 刚上场
-        go, _why = st.should_hand_off(con_full=True, slot=2)
-        self.assertFalse(go, "慢卸载位协奏一满就走，没打完整套")
+    def test_no_slow_unload_slot(self):
+        """★ 「慢卸载」是用户打错的 —— 现在**不该有**任何位置多等。"""
+        self.assertEqual(
+            rotation.SLOW_UNLOAD_SLOTS, frozenset(),
+            "还有位置被标成慢卸载 —— 用户已经更正说没有这回事")
 
-    def test_slow_unload_eventually_goes(self):
-        st = self._at(2)
-        st._since = time.monotonic() - (rotation.SLOW_UNLOAD_SECONDS + 0.1)
-        go, _why = st.should_hand_off(con_full=True, slot=2)
-        self.assertTrue(go, "慢卸载等够了还不换人")
-
-    def test_slow_unload_slot_is_two(self):
-        """慢卸载位必须是 2 号位（坎特蕾拉）—— 用户点名的。"""
-        self.assertIn(2, rotation.SLOW_UNLOAD_SLOTS)
-
-    def test_non_slow_slot_leaves_immediately(self):
-        """1 号位（心）不是慢卸载位：协奏一满就走。"""
-        st = self._at(1)
-        st._since = time.monotonic()
-        go, _why = st.should_hand_off(con_full=True, slot=1)
-        self.assertTrue(go)
+    def test_every_slot_leaves_immediately(self):
+        """★ 每一棒都是协奏一满就走（包括 2 号位）。"""
+        for slot in rotation.ROTATION:
+            with self.subTest(slot=slot):
+                st = self._at(slot)
+                st._since = time.monotonic()      # 刚上场
+                go, _why = st.should_hand_off(con_full=True, slot=slot)
+                self.assertTrue(go, f"{slot} 号位协奏满了却没立刻走")
 
     def test_timeout_fallback(self):
         """★ 协奏一直不满也要有兜底 —— 否则原地卡死。"""
@@ -129,7 +127,7 @@ class TestHandOff(unittest.TestCase):
             f"信号失灵时会干等这么久（等于卡死）")
 
     def test_slow_unload_is_bounded(self):
-        """慢卸载的额外等待也要有上界。"""
+        """慢卸载机制仍要自洽（虽然当前没启用）。"""
         self.assertGreaterEqual(rotation.SLOW_UNLOAD_SECONDS, 0)
         self.assertLess(
             rotation.SLOW_UNLOAD_SECONDS, rotation.MAX_FIELD_SECONDS,
