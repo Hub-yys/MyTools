@@ -845,5 +845,171 @@ class TestHistoryRendersOnOpen(unittest.TestCase):
         self.assertGreaterEqual(widget.pools_box.count(), 1)
 
 
+class TestCardWallLayout(unittest.TestCase):
+    """★ 卡片墙要**横着**铺成网格，不能竖成一列。
+
+    用户 2026-10-01 截图："这个怎么竖着展示了，这个横着展示就行"。
+
+    根因：原来列数是在 ``_render_cards`` 里**当场算**的，而那时页面刚构造、
+    控件还没被布局过 —— ``cards_host.width()`` 拿到的是默认尺寸（624px，
+    实际窗口 1226px），算出来 1 列；而且 **QGridLayout 不会自己重排**，
+    算错了就一直是错的。
+
+    现在卡片先建好、位置由 ``_relayout_cards()`` 按当前宽度算，
+    并挂在 ``cards_host`` 的 resize 上。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _widget(self, width=1300):
+        from PySide6.QtWidgets import QWidget
+
+        import src.tools.game.gacha.tool as tool_mod
+
+        holder = QWidget()
+        holder.resize(width, 900)
+        widget = tool_mod.GachaWidget()
+        widget.setParent(holder)
+        widget.resize(width, 900)
+        holder.show()
+        for _ in range(4):
+            self.app.processEvents()
+        self._holders = getattr(self, "_holders", [])
+        self._holders += [holder, widget]
+        return widget
+
+    def _fives(self, count: int):
+        """造 ``count`` 个不同名字的五星 → ``count`` 张卡。"""
+        records = [
+            {"name": f"角色{i}", "qualityLevel": 5,
+             "time": f"2026-09-{min(28, i + 1):02d} 12:00:00",
+             "resourceId": 1000 + i, "resourceType": "角色",
+             "pool_type": "1", "pool": "角色活动唤取"}
+            for i in range(count)
+        ]
+        return gacha.report_from_records(records)
+
+    def test_cards_go_horizontal_not_vertical(self):
+        """★ 多张卡要落在**同一行**（横着铺），不是一人一行。"""
+        widget = self._widget()
+        widget.render(self._fives(6))
+        for _ in range(3):
+            self.app.processEvents()
+
+        grid = widget.cards_grid
+        self.assertEqual(grid.count(), 6)
+        self.assertGreater(grid.columnCount(), 1,
+                           "只有 1 列 —— 卡片又被竖着排了")
+        rows = {grid.getItemPosition(i)[0] for i in range(grid.count())}
+        self.assertEqual(rows, {0}, f"卡片没铺在一行：行号 {sorted(rows)}")
+
+    def test_relayouts_after_show(self):
+        """★★ 核心场景：构造时列数可能是错的，**显示后必须自己重排回来**。
+
+        这就是用户遇到的路径（打开页面 → 构造里渲染 → 之后才被布局）：
+        构造那一刻容器宽度是默认值，算出来的列数偏小；
+        ``QGridLayout`` 又**不会**自己把卡片挪到别的列 ——
+        所以必须有"容器宽度一变就重排"这一步。
+
+        没有它的话，卡片会一直按构造时那个偏小的列数排下去
+        （用户截图就是排成了一列）。
+        """
+        from PySide6.QtWidgets import QWidget
+
+        import src.tools.game.gacha.tool as tool_mod
+
+        holder = QWidget()
+        holder.resize(1438, 950)
+        widget = tool_mod.GachaWidget()
+        widget.setParent(holder)
+        widget.resize(1438, 950)
+        self._holders = getattr(self, "_holders", [])
+        self._holders += [holder, widget]
+
+        widget.render(self._fives(12))
+        columns_before = widget.cards_grid.columnCount()
+
+        holder.show()
+        for _ in range(5):
+            self.app.processEvents()
+        columns_after = widget.cards_grid.columnCount()
+
+        self.assertGreaterEqual(columns_after, columns_before,
+                                "显示后列数反而变少了")
+        self.assertGreater(columns_after, 1, "显示后还是一列 —— 没重排")
+        rows = {widget.cards_grid.getItemPosition(i)[0]
+                for i in range(widget.cards_grid.count())}
+        self.assertEqual(
+            len(rows), 1,
+            f"12 张卡占了 {len(rows)} 行 —— 应该是横着铺在第 0 行")
+
+    def test_columns_scale_with_width(self):
+        """容器越宽，一行放的卡片越多。
+
+        ⚠ 不能靠 ``cards_host.resize()`` —— 它在布局里，一转头就被**布局重置**
+        回原宽（实测：给 300 也没用，事件过滤器读到的一直是布局算的宽度）。
+        所以这里直接查 ``_relayout_cards`` 用的那套算法，把宽度喂进去。
+        """
+        import src.tools.game.gacha.tool as tool_mod
+
+        widget = self._widget()
+        widget.render(self._fives(10))
+        self.app.processEvents()
+
+        def columns_for(width: int) -> int:
+            spacing = widget.cards_grid.spacing()
+            return min(max(1, (width + spacing) // (tool_mod.CARD_SIZE + spacing)),
+                       tool_mod.MAX_CARD_COLUMNS)
+
+        narrow, wide = columns_for(200), columns_for(1200)
+        self.assertGreater(wide, narrow,
+                           f"宽度不影响列数（{narrow} → {wide}）")
+
+    def test_columns_actually_applied(self):
+        """★ 真的按当前宽度摆过位置（不是只算了列数没用上）。"""
+        widget = self._widget()
+        widget.render(self._fives(10))
+        self.app.processEvents()
+        self.assertEqual(widget._card_columns, widget.cards_grid.columnCount(),
+                         "算出来的列数和网格实际列数对不上")
+
+    def test_columns_capped(self):
+        """再宽也要封顶（``MAX_CARD_COLUMNS``）—— 一行长得离谱没意义。"""
+        from PySide6.QtCore import QSize
+
+        import src.tools.game.gacha.tool as tool_mod
+
+        widget = self._widget()
+        widget.render(self._fives(4))
+        widget.cards_host.resize(QSize(99999, 100))
+        self.app.processEvents()
+        self.assertLessEqual(widget._card_columns, tool_mod.MAX_CARD_COLUMNS)
+
+    def test_narrow_container_does_not_break(self):
+        """极窄容器退回 1 列，而不是 0 列（除零 / 一张都不画）。"""
+        from PySide6.QtCore import QSize
+
+        widget = self._widget()
+        widget.render(self._fives(3))
+        widget.cards_host.resize(QSize(10, 100))
+        self.app.processEvents()
+        self.assertGreaterEqual(widget._card_columns, 1)
+        self.assertEqual(widget.cards_grid.count(), 3)
+
+    def test_relayout_is_idempotent(self):
+        """列数没变时不该反复摘挂布局项（白折腾）。"""
+        widget = self._widget()
+        widget.render(self._fives(5))
+        self.app.processEvents()
+        before = widget.cards_grid.count()
+        widget._relayout_cards()
+        widget._relayout_cards()
+        self.assertEqual(widget.cards_grid.count(), before)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

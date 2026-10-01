@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QSize, Qt, QThread, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -100,6 +100,9 @@ AVATAR_SIZE = 48
 
 #: 卡片墙里每张图的边长（工坊那种方块卡）
 CARD_SIZE = 64
+
+#: 卡片墙最多几列（再多一行就长得离谱了，没必要）
+MAX_CARD_COLUMNS = 12
 
 
 class GrabLinkThread(QThread):
@@ -293,6 +296,9 @@ class GachaWidget(ScrollArea):
         self._report: gacha.GachaReport | None = None
         #: 历史存储（懒建 —— 测试可以换成临时目录）
         self._store = None
+        #: 卡片墙的卡片（建好存着，位置由 _relayout_cards 算）
+        self._card_widgets: list[QWidget] = []
+        self._card_columns = 0
 
         view = QWidget(self)
         view.setObjectName("gachaView")
@@ -412,6 +418,12 @@ class GachaWidget(ScrollArea):
         self.cards_grid = QGridLayout(self.cards_host)
         self.cards_grid.setContentsMargins(0, 0, 0, 0)
         self.cards_grid.setSpacing(6)
+        # ★ 卡片墙的重排钩在 **cards_host 自己**身上，不是整个页面。
+        #
+        # ⚠ 挂在页面上没用：页面在 ScrollArea 里，窗口变窄时它**不跟着缩**
+        #   （实测：窗口 1300→600，cards_host 一直停在 1226）——
+        #   所以宽度变化要直接监听真正承载卡片的那一层。
+        self.cards_host.installEventFilter(self)
         self.root.addWidget(self.cards_host)
 
         # ---- 分卡池明细 ----
@@ -716,13 +728,55 @@ class GachaWidget(ScrollArea):
             counts[f.name] = counts.get(f.name, 0) + 1
             kinds.setdefault(f.name, f.kind)
 
-        columns = max(1, (self.cards_host.width() or 900) // (CARD_SIZE + 8))
-        columns = min(columns, 12)
-        for index, (name, count) in enumerate(
-                sorted(counts.items(), key=lambda kv: -kv[1])):
-            self.cards_grid.addWidget(
-                self._five_card(name, count, kinds.get(name, "")),
-                index // columns, index % columns)
+        # ★ 卡片**先建好存起来**，位置由 _relayout_cards() 单独算。
+        #
+        # ⚠ 不在这里算列数 —— 构造页面时控件还没被布局过，
+        #   ``cards_host.width()`` 拿到的是**默认尺寸**（实测 624px，
+        #   而窗口实际是 1226px），于是列数算成 1，
+        #   卡片全被竖着排成一列（用户 2026-10-01 截图：
+        #   "这个怎么竖着展示了，这个横着展示就行"）。
+        #   而且 Qt 的 QGridLayout **不会**在窗口变宽后自己重排 ——
+        #   算错了就一直是错的。
+        self._card_widgets = [
+            self._five_card(name, count, kinds.get(name, ""))
+            for name, count in sorted(counts.items(), key=lambda kv: -kv[1])
+        ]
+        self._relayout_cards()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt 回调
+        """``cards_host`` 尺寸一变就重排卡片墙。
+
+        ⚠ 用事件过滤器而不是重写 ``resizeEvent``：``cards_host`` 是个**普通
+        QWidget**，为了重排单独给它派生子类不值得；而且页面的 resizeEvent
+        拿不到它的宽度变化（见 ``_build`` 里的说明）。
+        """
+        # ⚠ 过滤器是**在 _build 之前**就装上的，那时 cards_host 还不存在 ——
+        #   直接访问会 AttributeError（实测：Python override 里抛异常会打断 Qt）。
+        host = getattr(self, "cards_host", None)
+        if host is not None and obj is host \
+                and event.type() == QEvent.Type.Resize:
+            self._relayout_cards()
+        return super().eventFilter(obj, event)
+
+    def _relayout_cards(self) -> None:
+        """按**当前**容器宽度把卡片摆成网格（容器宽度变了就重排）。"""
+        cards = getattr(self, "_card_widgets", None)
+        if not cards:
+            return
+
+        spacing = self.cards_grid.spacing()
+        avail = self.cards_host.width()
+        columns = max(1, (avail + spacing) // (CARD_SIZE + spacing))
+        columns = min(columns, MAX_CARD_COLUMNS)
+        if columns == getattr(self, "_card_columns", None) \
+                and self.cards_grid.count() == len(cards):
+            return                       # 列数没变就不折腾
+
+        self._card_columns = columns
+        while self.cards_grid.count():
+            self.cards_grid.takeAt(0)    # 只摘布局项，卡片本身留着复用
+        for index, card in enumerate(cards):
+            self.cards_grid.addWidget(card, index // columns, index % columns)
 
     def _five_card(self, name: str, count: int, kind: str) -> QWidget:
         """一张五星卡片：图片铺满 + 右上角 ×N 角标。
