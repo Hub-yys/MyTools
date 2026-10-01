@@ -814,6 +814,48 @@ def matches_keyword(keys, text, keyword) -> bool: ...
 > ⚠ 因为 `info` 在同一个进程里**跨次运行累加**，报告显示的是「当前 − 开跑前快照」的差值 ——
 > 也就是你要的"本次 4C 自动战斗"。
 
+### ★ 固定循环轴（"轮椅轴"）
+
+用户 2026-10-01 报："还是在乱切人"，要求改成固定轴：
+
+```
+3号位打完一套满协奏 → 2号位打完一套慢卸载 → 1号位打完一套满协奏 → 回 3号位
+```
+
+**为什么之前是乱的**：ok-ww 的切人是**通用增益调度器**在临时决策，
+每次原因都不一样（日志原文）：
+
+```
+reason=lowest_support_buff_remaining      谁的增益快过期了
+reason=unbuffed_healer                    奶妈还没上增益
+reason=fallback_role_order                兜底按角色定位排序
+reason=support_buffs_active_return_to_main_dps
+```
+
+它按「增益剩余时间 / 角色定位」挑人（见
+`BaseCombatTask._choose_switch_target_by_buff_time`），
+**根本没有"固定轴的顺序"这个概念**。
+
+**怎么改的**：只覆盖**一个决策点** `_choose_switch_target`，
+在 MyTools 自己的任务子类里（`auto_combat/okww_farm.py`）——
+⚠ **不改 `vendor/` 里的 ok-ww 代码**，上游更新不会冲突
+（这个坑在「心」的模板上踩过一次）。其余（协奏值读取、入场判定、
+切人动作、漂移容错）全部沿用 ok-ww 原实现，那些是踩过坑的。
+
+纯逻辑在 `auto_combat/rotation.py`（`RotationState`），不碰游戏，可单测。
+
+| 概念 | 说明 |
+|---|---|
+| 轴顺序 | `ROTATION = (3, 2, 1)` —— 3号位→2号位→1号位 循环 |
+| 换人信号 | **协奏满**（`is_con_full()`，ok-ww 自己的判定，不自造信号） |
+| 慢卸载位 | `SLOW_UNLOAD_SLOTS = {2}`（坎特蕾拉）：协奏满了再打 `SLOW_UNLOAD_SECONDS` 秒 |
+| **超时兜底** | `MAX_FIELD_SECONDS`（12s）：信号失灵时也换人，**不原地卡死** |
+| 漂移容错 | `resync()`：ok-ww 或玩家已经换过人时，轴跟着**实际**在场的人走 |
+
+> ⚠ **队伍是写死的**（用户队伍固定 1=心、2=坎特蕾拉、3=守岸人）。
+> 换队伍要改 `ROTATION` / `SLOW_UNLOAD_SLOTS`。
+> 队伍不足 3 人时**不接管**，交回 ok-ww 的原逻辑。
+
 
 ok-ww 配置里还注册了触发式的 `AutoCombatTask`（进战斗自动输出），
 当前页面未暴露入口。

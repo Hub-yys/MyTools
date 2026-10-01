@@ -42,14 +42,19 @@ _ensure_vendor_on_path()
 
 from okww.task.FarmEchoTask import FarmEchoTask  # noqa: E402
 
-from . import report
+from . import report, rotation
 
 #: 与 ok-ww ``EnhanceEchoTask`` 判锁/弃置状态用的是同一批特征名
 PICKUP_FEATURES = ("echo_locked", "echo_not_locked", "echo_dropped", "echo_not_dropped")
 
 
 class MyToolsFarmEchoTask(FarmEchoTask):
-    """ok-ww 的 4C 刷声骸 + 「拾取到的声骸里有多少锁定/弃置」的计数。"""
+    """ok-ww 的 4C 刷声骸 + 「拾取到的声骸里有多少锁定/弃置」的计数。
+
+    另外还**接管了切人**：用户要的是固定循环轴（见
+    :mod:`src.tools.game.auto_combat.rotation`），而 ok-ww 默认是
+    通用增益调度器（按 buff 剩余 / 角色定位临时挑人）—— 表现就是"乱切人"。
+    """
 
     #: 判定区域（相对屏幕坐标）：**左下象限**。用户实测：角标绝对出现在左下区域。
     PICKUP_BOX = (0.0, 0.5, 0.5, 1.0)
@@ -61,6 +66,74 @@ class MyToolsFarmEchoTask(FarmEchoTask):
     PICKUP_WAIT = 0.8
     #: 每次重试之间的间隔
     PICKUP_POLL = 0.15
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        #: 固定轴状态机（每个任务实例一份）
+        self.rotation_state = rotation.RotationState()
+
+    # ------------------------------------------------------------------ 固定轴
+    def _choose_switch_target(self, current_char, has_intro,
+                              target_low_con=False):
+        """★ 按固定轴挑下一个上场的人 —— 覆盖 ok-ww 的通用增益调度。
+
+        ## 为什么只覆盖这一个方法
+
+        ok-ww 挑人在 ``_choose_switch_target`` 里。我们**只换这一个决策点**，
+        其余（协奏值读取、入场判定、切人动作、漂移容错）全部沿用原实现 ——
+        那些是踩过坑的，重写风险大。
+
+        ## 什么时候**不**接管（交回 ok-ww）
+
+        * 队伍不完整（不足 3 人）：轴没有意义；
+        * 轴里找不到在场的人：说明位置对不上号，硬切更危险。
+
+        这两种情况返回 ``super()`` 的结果，行为和原来一致。
+        """
+        chars = [c for c in getattr(self, "chars", []) or [] if c is not None]
+        if len(chars) != len(rotation.ROTATION):
+            return super()._choose_switch_target(current_char, has_intro,
+                                                 target_low_con)
+
+        state = self.rotation_state
+        here = rotation.slot_of(current_char)
+        if here is not None:
+            # 轴跟着**实际**在场的人走（漂移容错：ok-ww 或玩家可能已经换过人了）
+            state.resync(here)
+
+        should_go, why = state.should_hand_off(
+            con_full=self._con_is_full(current_char), slot=here)
+        if not should_go:
+            return current_char          # 不换：继续打这一棒
+        self.log_info(f"固定轴：{why} → 换下一棒")
+
+        # 推进到下一棒，并找出对应的角色
+        want = state.advance()
+        target = self._char_at_slot(want)
+        if target is None or target is current_char:
+            # 找不到目标（位置对不上）—— 退回 ok-ww 的原逻辑，别硬切
+            self.log_debug(f"固定轴：{want} 号位没有可用角色，交回 ok-ww 调度")
+            return super()._choose_switch_target(current_char, has_intro,
+                                                 target_low_con)
+        return target
+
+    def _char_at_slot(self, slot: int):
+        """取队伍里 ``slot`` 号位（1 起）的角色对象。"""
+        for char in getattr(self, "chars", []) or []:
+            if rotation.slot_of(char) == slot:
+                return char
+        return None
+
+    def _con_is_full(self, char) -> bool:
+        """协奏能量满了没 —— 用 ok-ww 自己的判定，不自己造信号。"""
+        try:
+            if char is not None and hasattr(char, "is_con_full"):
+                return bool(char.is_con_full())
+            index = rotation.slot_of(char)
+            return bool(self.is_con_full(index - 1)) if index else False
+        except Exception as exc:  # noqa: BLE001 - 读不到就当没满，交给超时兜底
+            self.log_debug(f"读协奏值失败：{type(exc).__name__}: {exc}")
+            return False
 
     # ------------------------------------------------------------------ 钩子
     def incr_drop(self, dropped):
