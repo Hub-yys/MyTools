@@ -762,5 +762,88 @@ class TestWidgetRender(unittest.TestCase):
         self.assertFalse(meta.coming_soon)
 
 
+class TestHistoryRendersOnOpen(unittest.TestCase):
+    """★ 打开页面就要显示**已累积的历史**。
+
+    用户 2026-09-30 报："有数据，为什么没有展示" —— 本地明明攒了 887 条，
+    页面却全是「—」。根因：原来**只有点「分析」成功才渲染**，
+    而那次没取到链接（过期 / 没打开唤取记录页），界面就一直空着。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _widget_with(self, records):
+        """建页面，并让它读一份**临时**历史（别碰真实用户数据）。"""
+        import pathlib
+        import tempfile
+
+        from PySide6.QtWidgets import QWidget
+
+        import src.tools.game.gacha.tool as tool_mod
+        from src.core import gacha_store
+
+        path = pathlib.Path(tempfile.mkdtemp()) / "h.json"
+        store = gacha_store.GachaHistoryStore(path)
+        if records:
+            history = store.load()
+            added = history.merge(records, pool_type="1",
+                                  pool_name="角色活动唤取", at="2026-09-30")
+            history.add_snapshot(gacha_store.PullSnapshot(
+                at="2026-09-30", total=len(records), added=added))
+            store.save(history)
+
+        original = tool_mod.GachaWidget._get_store
+        tool_mod.GachaWidget._get_store = lambda self: store
+        try:
+            holder = QWidget()
+            holder.resize(1200, 900)
+            self._holders = getattr(self, "_holders", [])
+            self._holders.append(holder)
+            widget = tool_mod.GachaWidget()
+            widget.setParent(holder)
+            widget.resize(1200, 900)
+            holder.show()
+            for _ in range(3):
+                self.app.processEvents()
+            return widget
+        finally:
+            tool_mod.GachaWidget._get_store = original
+
+    def _records(self, count=5, stars=(5, 3, 3, 3, 3)):
+        return [
+            {"name": f"物品{i}", "qualityLevel": star if i == 0 else 3,
+             "time": f"2026-09-{10 - i:02d} 12:00:00", "resourceId": i,
+             "resourceType": "角色"}
+            for i, star in enumerate(stars[:count])
+        ]
+
+    def test_history_shown_without_clicking(self):
+        """★ 不点任何按钮，打开就该看到累计数字。"""
+        widget = self._widget_with(self._records())
+        self.assertEqual(widget.stat_total.value_label.text(), "5",
+                         "有历史却没显示总抽数")
+        self.assertEqual(widget.stat_fives.value_label.text(), "1")
+
+    def test_status_says_it_is_local_history(self):
+        """状态栏要说明这是**本地累计**，不是这次拉的。"""
+        widget = self._widget_with(self._records())
+        self.assertIn("本地累计", widget.status.text())
+
+    def test_empty_history_keeps_empty_state(self):
+        """没有历史时仍显示空状态引导（别弄成"0 抽"）。"""
+        widget = self._widget_with([])
+        self.assertEqual(widget.stat_total.value_label.text(), "—")
+        self.assertEqual(widget.pools_box.count(), 1)
+        self.assertIn("还没有数据", widget.pools_box.itemAt(0).widget().text())
+
+    def test_history_pools_are_rendered(self):
+        widget = self._widget_with(self._records())
+        self.assertGreaterEqual(widget.pools_box.count(), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

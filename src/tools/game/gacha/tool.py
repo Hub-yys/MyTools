@@ -449,8 +449,42 @@ class GachaWidget(ScrollArea):
         self.root.addStretch(1)
         self._show_empty_hint()
         self.reload_history()
+        # ★ 打开页面就把**已累积的历史**显示出来（2026-09-30 修）。
+        #   用户报："有数据，为什么没有展示" —— 历史里明明有 887 条，
+        #   页面却是空的（统计全是「—」），因为原来**只有点「分析」成功
+        #   才会渲染**；一旦这次没取到链接（链接过期 / 没打开唤取记录页），
+        #   界面就一直是空的，而数据其实早就攒在本地了。
+        self._render_from_history()
 
     # ---------------------------------------------------------------- 历史
+    def _render_from_history(self) -> bool:
+        """用本地累积的记录渲染界面。**返回是否渲染了**。
+
+        没有历史 → 保持空状态（返回 False，让"点获取"的引导留在那）。
+        """
+        try:
+            history = self._get_store().load()
+        except Exception:  # noqa: BLE001 - 历史坏了不该把页面带崩
+            logger.warning("读抽卡历史失败", exc_info=True)
+            return False
+        if not len(history):
+            return False
+
+        report = gacha.report_from_records(
+            history.all_records(),
+            player_id=str(history.snapshots[0].at if history.snapshots else ""))
+        if not report.total:
+            return False
+
+        self._report = report
+        self.render(report)
+        # ⚠ 状态栏要写清"这是**本地累计**，不是这次拉的" ——
+        #   否则用户会以为刚点的那一下就拉到了这么多。
+        self.status.setText(
+            f"显示的是本地累计的 {report.total} 抽（{len(history)} 条记录）。"
+            "点「分析」可以把最新记录并进来。")
+        return True
+
     def _get_store(self):
         from ....core.gacha_store import GachaHistoryStore
 
