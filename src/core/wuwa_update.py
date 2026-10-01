@@ -890,18 +890,46 @@ def check_updates(snapshot: RemoteSnapshot, local_sets: dict | None = None,
     # 远端一条都没拉到 → 结论不成立。以前这里的表现是"安静地报数据已是最新"，
     # 明明什么都没查到却说没事，是**误导**。
     # ⚠ 角色也算一路数据源：只拉到角色、其它全挂时，仍应认为"取到了东西"。
-    if (not snapshot.sets and not snapshot.echoes_bwiki
+    # ⚠ **set_effects（库街区效果）也要算** —— 它是现在的主源，
+    #   漏掉的话"只拉到效果"会被误判成 remote_empty（2026-10-01 修）。
+    if (not snapshot.sets and not snapshot.set_effects
+            and not snapshot.echoes_bwiki
             and not snapshot.echoes_kuro and not snapshot.characters):
         report.remote_empty = True
         return report
     report.local_empty = not local_by_name
 
-    for name, effects in snapshot.sets.items():
+    # ★ 套装效果：要比就比**数据的实际来源**（库街区优先），别拿 bwiki 去比。
+    #
+    # ⚠ 2026-10-01 修的假报：原来这里只拿 ``snapshot.sets``（bwiki）跟本地比，
+    #   而本地效果**是从库街区写入的**（2026-09-30 改成库街区优先）。
+    #   两个源的文字**本来就有出入**（bwiki 多一句"延奏技能伤害提升60%"之类），
+    #   于是**每次检查都报"效果更新 30 套"** —— 用户当场指出：
+    #   "本来就有 你这是更新什么"。
+    #
+    #   规则：**哪个源写进去的，就跟哪个源比**（和 _merge_sets_data 一一对应）：
+    #   库街区有这套 → 比库街区的；没有 → 才退回比 bwiki 的。
+    for name, effects in snapshot.set_effects.items():
         local = local_by_name.get(name)
         if local is None:
             report.new_sets.append(name)
-        elif local.get("effects") != effects:
+        elif effects and local.get("effects") != effects:
             report.effect_changed.append(name)
+
+    # 库街区没给效果的套装，才拿 bwiki 的来比（合并时也是这个规则）
+    for name, effects in snapshot.sets.items():
+        if name in snapshot.set_effects:
+            continue                      # 上面已经比过库街区那份了
+        local = local_by_name.get(name)
+        if local is None:
+            if name not in report.new_sets:
+                report.new_sets.append(name)
+        elif effects and local.get("effects") != effects:
+            # ⚠ 只在本地**没有**效果（等着 bwiki 填）时才可能算变化 ——
+            #   本地已有内容（库街区写的 / 手工补的）不会被 bwiki 覆盖，
+            #   那就不该报"要更新"（报了也应用不上，是假报）。
+            if not local.get("effects"):
+                report.effect_changed.append(name)
 
     # ★ 库街区也带了套装名单（tagTree 的「套装」分组），而且**比 bwiki 全**。
     #   2026-09-30 实测：3.7 的「衔梦照世之心 / 镜影流电之瞬 / 茜染怀想之花」

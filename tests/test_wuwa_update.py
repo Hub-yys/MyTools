@@ -46,37 +46,76 @@ def _local() -> dict:
 
 
 def _snapshot() -> RemoteSnapshot:
+    """默认快照 —— 效果走 ``set_effects``（**库街区那份**，现在的主源）。
+
+    ⚠ 别再往 ``snapshot.sets`` 里塞效果来测"有没有变化"：
+    那份是 bwiki 的兜底，check_updates 现在按"数据实际来源"比（见 TestCheckUpdates）。
+    """
     snapshot = RemoteSnapshot()
-    snapshot.sets = {
+    snapshot.set_effects = {
         # 已有套装，效果没变
         "凝夜白霜": [{"pieces": 2, "text": "冷凝伤害提升10%"}],
-        # 已有套装，效果变了
-        # （分开两个快照测，见各用例）
     }
     return snapshot
 
 
 class TestCheckUpdates(unittest.TestCase):
+    """★ 「有没有更新」的判定 —— **必须跟数据的实际来源比**。
+
+    ⚠ 2026-10-01 修的假报：本地效果是**库街区**写进去的，而这里原来只拿
+    ``snapshot.sets``（bwiki）去比 —— 两个源的文字本来就有出入
+    （bwiki 多一句"延奏技能伤害提升60%"之类），于是**每次检查都报
+    "效果更新 30 套"**，用户当场指出："本来就有 你这是更新什么"。
+
+    所以下面的用例一律用 ``set_effects``（库街区那份）来造数据。
+    """
+
     def test_no_updates(self):
         snapshot = RemoteSnapshot()
-        snapshot.sets = {"凝夜白霜": _local()["sets"][0]["effects"]}
+        snapshot.set_effects = {"凝夜白霜": _local()["sets"][0]["effects"]}
         report = check_updates(snapshot, local_sets=_local())
         self.assertFalse(report.has_updates)
         self.assertIn("已是最新", report.summary())
 
     def test_new_set_detected(self):
         snapshot = _snapshot()
-        snapshot.sets["新套装"] = [{"pieces": 2, "text": "x"}]
+        snapshot.set_effects["新套装"] = [{"pieces": 2, "text": "x"}]
         report = check_updates(snapshot, local_sets=_local())
         self.assertTrue(report.has_updates)
         self.assertEqual(report.new_sets, ["新套装"])
 
     def test_effect_change_detected(self):
         snapshot = _snapshot()
-        snapshot.sets["凝夜白霜"] = [{"pieces": 2, "text": "冷凝伤害提升15%"}]
+        snapshot.set_effects["凝夜白霜"] = [{"pieces": 2, "text": "冷凝伤害提升15%"}]
         report = check_updates(snapshot, local_sets=_local())
         self.assertEqual(report.effect_changed, ["凝夜白霜"])
         self.assertEqual(report.new_sets, [])
+
+    def test_bwiki_text_difference_is_not_a_change(self):
+        """★★ 库街区写的效果，**不能**因为和 bwiki 不一样就报"有更新"。
+
+        这就是用户看到的假报：本地（库街区）和 bwiki 的措辞本来就有出入，
+        拿 bwiki 去比 → 每次都说"效果更新 30 套"，点获取数据又什么都没变。
+        """
+        snapshot = RemoteSnapshot()
+        # 本地效果（来自库街区）
+        snapshot.set_effects = {"凝夜白霜": [{"pieces": 2, "text": "冷凝伤害提升10%"}]}
+        # bwiki 那套措辞不一样（多了一句）
+        snapshot.sets = {"凝夜白霜": [
+            {"pieces": 2, "text": "冷凝伤害提升10%。延奏技能伤害提升60%"}]}
+        report = check_updates(snapshot, local_sets=_local())
+        self.assertEqual(report.effect_changed, [],
+                         "库街区和 bwiki 措辞不同被误报成'效果更新'")
+        self.assertFalse(report.has_updates)
+
+    def test_bwiki_fills_when_kurobbs_has_nothing(self):
+        """库街区没给效果的套装，bwiki 仍要能补上（本地空着 → 算更新）。"""
+        local = {"sets": [{"name": "只有bwiki有", "effects": []}]}
+        snapshot = RemoteSnapshot()
+        snapshot.set_effects = {}
+        snapshot.sets = {"只有bwiki有": [{"pieces": 2, "text": "bwiki 的效果"}]}
+        report = check_updates(snapshot, local_sets=local)
+        self.assertEqual(report.effect_changed, ["只有bwiki有"])
 
     def test_new_echo_from_both_sources_reported_once(self):
         snapshot = _snapshot()
