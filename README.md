@@ -305,6 +305,22 @@ POST form + header `wiki_type: 9`）：
 > 手动脚本仍然可用（`--only weapons` 等），它多一条 **bwiki** 来源；
 > 自动补图只走库街区（`icon_urls` 里存的就是库街区的 URL）。
 
+#### ★ 声骸技能：别"每次都重拉一遍"（2026-10-01 修）
+
+用户报："这里为什么老是要拉取，我本地本来就是最新的"。
+
+根因：判断"要不要拉"的条件是**有没有 skill 正文** ——
+但有些声骸（活动 / 装饰类）库街区详情里**根本没有「声骸技能」模块**，
+它们永远不会有正文，于是**每次更新都白拉一遍**（那十几个 + 每个 0.35s 间隔）。
+
+改法：确认没有技能时在数据里打个 `_skill_missing` 标记，
+下次直接跳过（库街区和 bwiki 两条路都跳过）。
+报告里会写"确认 N 个声骸没有技能说明（记下来，以后不再重复拉取）"。
+
+> ⚠ 两条保命规则：
+> 1. **绝不能用"没查到"覆盖已有的正文** —— 那是数据倒退；
+> 2. 后来真补到正文了，标记要**作废**（否则数据和界面自相矛盾）。
+
 > ⚠ 网页 URL 是 `?fid=1099&sid=1219` —— **`sid` 才是 catalogueId（1219）**，
 > `fid=1099` 传进去返回 0 条且 `code=200`（**静默空**，不报错，很容易误判成"没数据"）。
 
@@ -701,6 +717,32 @@ def matches_keyword(keys, text, keyword) -> bool: ...
 | 点「启动」跑的任务 | ok-ww 侧实现 | 说明 |
 |---|---|---|
 | 4C 刷声骸 | `FarmEchoTask`（🌀 Farm 4C Echo in Dungeon/World） | 打 Boss → 拾取 4C 声骸 → 重开，循环 |
+
+### 定时关机（2026-10-01 新增）
+
+运行卡下面是**定时关机**卡：勾「启用」+ 填分钟数（1 ~ 1440），
+点「启动」开始计时，到点自动关机。关机前 **60 秒弹提醒，可取消**
+（用户明确要求"提前提醒且可取消"）。
+
+| 行为 | 说明 |
+|---|---|
+| 计时起点 | **点「启动」那一刻**（"跑 N 分钟后关"），不是固定时刻 |
+| 关机前 | 弹窗提醒，**可取消**（取消后本次不再自动关） |
+| 点「停止」 | **一并取消定时关机** —— 否则你以为停了就没事，到点电脑还是关了 |
+| 设置存哪 | `tool_settings.json` 的 `auto_combat` 节 |
+
+纯逻辑在 `src/core/shutdown_timer.py`：
+
+- `ShutdownTimer` 是**纯状态机**（不碰 Qt、不真关机），
+  `should_warn()` / `should_fire()` 各**只报一次**（轮询每 300ms 一次，
+  不"只报一次"会连着弹几十个框）；
+- 时间用 `time.monotonic()`（不受系统时钟调整影响）；
+- `clamp_minutes()` 夹范围，**界面和读设置共用这一份**；
+- `shutdown()` 命令失败会**如实返回失败** —— 绝不"假装关了"
+  （用户以为会关、结果没关，比直接报错糟得多）。
+
+> 测试里**绝不真的关机**：状态机喂时间戳即可；
+> `shutdown()` 只验证它构造的命令对不对（把 `subprocess.run` mock 掉）。
 
 ### 战斗报告（2026-09-24 新增）
 
@@ -1168,6 +1210,7 @@ class DiceTool(BaseTool):
 .venv\Scripts\python tests\test_config_search.py    # 配置页搜索：拼音匹配 + 过滤
 .venv\Scripts\python tests\test_battle_profile.py   # 角色战斗配置：数据 + 弹框
 .venv\Scripts\python tests\test_auto_combat_ui.py   # 4C 队伍头像 / 界面精简
+.venv\Scripts\python tests\test_shutdown_timer.py   # 定时关机 + 不再重复拉取
 .venv\Scripts\python tests\smoke_echo_reader.py     # 合成图 → OCR → 判定
 .venv\Scripts\python tests\smoke_echo_runner.py     # 强化流程状态机（假窗口）
 .venv\Scripts\python tests\check_settings_gui.py    # 工具页配置存盘/回填 + 资源库页重建（带截图）

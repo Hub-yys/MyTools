@@ -622,25 +622,48 @@ def _fetch_kurobbs_echo_skills(log, echoes_kuro: dict) -> dict[str, dict]:
         log(f"  库街区声骸列表拉取失败（{exc}）—— 稍后用 bwiki 兜底")
         return {}
 
-    # 只拉**真的还缺**的：⚠ 不能只看"名字在不在" ——
-    # 本地那 187 条大多是 ``{"skill": "", "cooldown": ""}`` 的空壳
-    # （只有名字、没有正文）。按名字跳过的话一个都补不上
-    # （实测：第一次跑就是这么"0 个拿到"的）。**要看有没有 skill 正文**。
-    existing: set[str] = set()
+    # 只拉**真的还缺**的。
+    #
+    # ⚠ 两个坑（都是实测踩出来的）：
+    #
+    # 1. **不能只看"名字在不在"** —— 本地那 187 条大多是
+    #    ``{"skill": "", "cooldown": ""}`` 的空壳（只有名字没正文）。
+    #    按名字跳过的话一个都补不上（第一次跑就是"0 个拿到"）。
+    #    要看**有没有 skill 正文**。
+    # 2. **但"没有正文"也不等于"该反复拉"** —— 有些声骸（活动 / 装饰类）
+    #    库街区详情里**根本没有「声骸技能」模块**，它们永远不会有正文。
+    #    只看正文的话这十几个**每次更新都白拉一遍**（用户 2026-10-01 报：
+    #    "这里为什么老是要拉取，我本地本来就是最新的"）。
+    #    → 用 ``_skill_missing`` 标记"查过了、确实没有"。
+    data = {}
     if SKILLS_FILE.exists():
         try:
-            for name, info in (json.loads(
-                    SKILLS_FILE.read_text(encoding="utf-8")).get("echoes") or {}).items():
-                if isinstance(info, dict) and str(info.get("skill") or "").strip():
-                    existing.add(str(name))
+            loaded = json.loads(SKILLS_FILE.read_text(encoding="utf-8"))
+            data = loaded.get("echoes") if isinstance(loaded, dict) else {}
         except (OSError, json.JSONDecodeError):
-            existing = set()
+            data = {}
+    data = data if isinstance(data, dict) else {}
+
+    def _has_skill(info) -> bool:
+        return isinstance(info, dict) and bool(str(info.get("skill") or "").strip())
+
+    def _checked_no_skill(info) -> bool:
+        """查过了、确认这个声骸**确实没有**技能说明（别再拉）。"""
+        return isinstance(info, dict) and bool(info.get("_skill_missing"))
+
+    existing = {str(n) for n, i in data.items() if _has_skill(i)}
+    known_empty = {str(n) for n, i in data.items() if _checked_no_skill(i)}
 
     skills: dict[str, dict] = {}
-    wanted = [r for r in records
-              if str(r.get("name", "")).strip()
-              and str(r.get("name", "")).strip() not in existing]
-    log(f"  需要补 {len(wanted)} 个（本地已有正文的 {len(existing)} 个，不重复拉）")
+    wanted = [
+        r for r in records
+        if str(r.get("name", "")).strip()
+        and str(r.get("name", "")).strip() not in existing
+        and str(r.get("name", "")).strip() not in known_empty
+    ]
+    skipped = len(known_empty)
+    log(f"  需要补 {len(wanted)} 个（已有正文 {len(existing)} 个、"
+        f"确认无技能 {skipped} 个，都不重复拉）")
 
     no_module = 0        # 详情里根本没有「声骸技能」模块
     for index, record in enumerate(wanted, 1):
@@ -662,12 +685,16 @@ def _fetch_kurobbs_echo_skills(log, echoes_kuro: dict) -> dict[str, dict]:
             #   否则日志显示"0 个拿到"会让人以为整条路走不通
             #   （实测 18 个要补的里，**全部**都是这种）。
             no_module += 1
+            # ★ 记下"查过了、确实没有" —— 否则**每次更新都会再拉一遍**
+            #   （用户 2026-10-01："这里为什么老是要拉取，我本地本来就是最新的"）。
+            skills[name] = {"skill": "", "cooldown": "", "_skill_missing": True}
         if index % 20 == 0:
             log(f"  … {index}/{len(wanted)}")
         time.sleep(DELAY)
 
-    log(f"  声骸技能：{len(skills)} 个拿到"
-        + (f"（{no_module} 个本来就无技能说明）" if no_module else ""))
+    log(f"  声骸技能：{len(skills) - no_module} 个拿到"
+        + (f"（{no_module} 个确认无技能说明，以后不再重复拉）"
+           if no_module else ""))
     return skills
 
 
@@ -1150,20 +1177,41 @@ def apply_updates(
     #     同样是被 getPage 的空 textList 骗过 —— 技能说明在详情接口里。
     if snapshot.echo_skills:
         added = 0
+        missing_marked = 0
         for name, info in snapshot.echo_skills.items():
             entry = skills["echoes"].setdefault(name, {})
             # 库街区是主源：有值就更新（数值会随版本调整）
-            if info.get("skill") and entry.get("skill") != info["skill"]:
-                entry["skill"] = info["skill"]
-                entry["cooldown"] = info.get("cooldown", "")
-                added += 1
+            if info.get("skill"):
+                if entry.get("skill") != info["skill"]:
+                    entry["skill"] = info["skill"]
+                    entry["cooldown"] = info.get("cooldown", "")
+                    added += 1
+                entry.pop("_skill_missing", None)      # 有正文了，标记作废
+            elif info.get("_skill_missing") and not str(
+                    entry.get("skill") or "").strip():
+                # ★ 记下"确认没有技能" —— 下次更新就不再拉它了。
+                #   ⚠ 只在本条**也没有正文**时才标记：绝不能用"没查到"
+                #   去覆盖已有的正文（那是数据倒退）。
+                if not entry.get("_skill_missing"):
+                    entry["_skill_missing"] = True
+                    missing_marked += 1
         if added:
             done.append(f"声骸技能说明已更新（库街区：{added} 条）")
+        if missing_marked:
+            done.append(f"确认 {missing_marked} 个声骸没有技能说明"
+                        "（记下来，以后不再重复拉取）")
 
-    # 2b) 兜底：bwiki（只补库里**还没有**技能说明的声骸）
+    # 2b) 兜底：bwiki（只补库里**还没有**技能说明、且**没被确认过"确实没有"**的）
+    #
+    # ⚠ 也要排掉 ``_skill_missing`` 那些 —— 它们在库街区那边已经确认没有技能，
+    #   bwiki 那边同样不会有；不排掉的话**每次更新都要为它们发一轮请求**
+    #   （用户 2026-10-01 报的就是这个："这里为什么老是要拉取"）。
     missing = [item.split("（")[0] for item in report.new_echoes]
-    missing = [name for name in missing
-               if not (skills["echoes"].get(name) or {}).get("skill")]
+    missing = [
+        name for name in missing
+        if not (skills["echoes"].get(name) or {}).get("skill")
+        and not (skills["echoes"].get(name) or {}).get("_skill_missing")
+    ]
     if missing:
         log(f"补抓 {len(missing)} 个声骸的技能说明（兜底源 bwiki，一页一个请求）…")
         got = 0

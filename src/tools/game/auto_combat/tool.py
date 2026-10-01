@@ -20,23 +20,32 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CaptionLabel,
+    CheckBox,
     FluentIcon,
     IconWidget,
     InfoBar,
+    LineEdit,
+    MessageBox,
     PrimaryPushButton,
     PushButton,
     ScrollArea,
     StrongBodyLabel,
 )
 
+from ....core import paths, shutdown_timer, tool_settings
 from ....core.categories import ToolCategory
-from ....core import paths
 from ....core.registry import registry
 from ....core.tool_base import BaseTool
 from ....gui.library_interface import circular_icon
 from ....gui.pickers import load_icon
 from ....gui.widgets import ConfigCard
 from .okww_boot import DEFAULT_TASK_KEY, get_host
+
+#: 定时关机设置的存放节（和别处一样存 tool_settings）
+SHUTDOWN_SETTINGS_KEY = "auto_combat"
+
+#: 默认的关机分钟数（勾上就用它）
+DEFAULT_SHUTDOWN_MINUTES = 60
 
 
 #: 说明文字颜色（(浅色主题, 深色主题)）—— 与资源库页保持同一套灰
@@ -238,6 +247,8 @@ class AutoCombatWidget(ScrollArea):
         super().__init__(parent)
         self._meta = meta
         self._host = get_host()
+        #: 定时关机（None = 还没启动过；由 _on_start 建）
+        self._shutdown: shutdown_timer.ShutdownTimer | None = None
 
         self.setObjectName("auto_combat_scroll")
         self.setWidgetResizable(True)
@@ -267,6 +278,9 @@ class AutoCombatWidget(ScrollArea):
         self.state_label.setTextColor("#C9514C", "#E6B4AC")
         run_card.add(self.state_label)
         layout.addWidget(run_card)
+
+        # ------------------------------------------------------ 定时关机
+        layout.addWidget(self._build_shutdown_card(page))
 
         # ------------------------------------------------------ 战斗报告
         self.report_card = BattleReportCard(page)
@@ -302,6 +316,137 @@ class AutoCombatWidget(ScrollArea):
         self._timer.start(self.POLL_MS)
         self._poll()
 
+    # ------------------------------------------------------------ 定时关机
+    def _build_shutdown_card(self, page) -> ConfigCard:
+        """定时关机设置卡（2026-10-01 用户要求）。
+
+        * **跑 N 分钟后关**（从点「启动」开始计时）；
+        * 关机前**提前提醒且可取消**。
+        """
+        card = ConfigCard(
+            "定时关机",
+            "跑够指定分钟数后自动关机（从点「启动」开始计时）；"
+            f"关机前 {shutdown_timer.WARN_SECONDS} 秒会弹提醒，随时可以取消。",
+            page)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        self.shutdown_check = CheckBox("启用", card)
+        row.addWidget(self.shutdown_check)
+
+        self.shutdown_edit = LineEdit(card)
+        self.shutdown_edit.setFixedWidth(90)
+        self.shutdown_edit.setPlaceholderText(str(DEFAULT_SHUTDOWN_MINUTES))
+        row.addWidget(self.shutdown_edit)
+
+        row.addWidget(self._muted_label("分钟后关机", card))
+        row.addStretch(1)
+        row.addWidget(self._muted_label(
+            f"（{shutdown_timer.MIN_MINUTES}~{shutdown_timer.MAX_MINUTES} 分钟）",
+            card))
+        card.body.addLayout(row)
+
+        self.shutdown_state = CaptionLabel("", card)
+        self.shutdown_state.setTextColor(*MUTED)
+        self.shutdown_state.setWordWrap(True)
+        card.add(self.shutdown_state)
+
+        # 读回上次的设置
+        saved = tool_settings.load(SHUTDOWN_SETTINGS_KEY) or {}
+        self.shutdown_check.setChecked(bool(saved.get("shutdown_enabled")))
+        minutes = shutdown_timer.clamp_minutes(
+            saved.get("shutdown_minutes") or DEFAULT_SHUTDOWN_MINUTES)
+        self.shutdown_edit.setText(str(minutes or DEFAULT_SHUTDOWN_MINUTES))
+
+        self.shutdown_check.toggled.connect(lambda _c: self._save_shutdown())
+        self.shutdown_edit.textChanged.connect(lambda _t: self._save_shutdown())
+        self._refresh_shutdown_state()
+        return card
+
+    def _muted_label(self, text: str, parent) -> CaptionLabel:
+        label = CaptionLabel(text, parent)
+        label.setTextColor(*MUTED)
+        return label
+
+    def _shutdown_minutes(self) -> int:
+        """界面上填的分钟数（夹过范围）。不启用时返回 0。"""
+        if not self.shutdown_check.isChecked():
+            return 0
+        return shutdown_timer.clamp_minutes(self.shutdown_edit.text())
+
+    def _save_shutdown(self) -> None:
+        """存设置 —— ⚠ 用 ``clamp_minutes`` 夹过再存，别把脏数据写进盘。"""
+        tool_settings.save(SHUTDOWN_SETTINGS_KEY, {
+            **dict(tool_settings.load(SHUTDOWN_SETTINGS_KEY) or {}),
+            "shutdown_enabled": self.shutdown_check.isChecked(),
+            "shutdown_minutes": shutdown_timer.clamp_minutes(
+                self.shutdown_edit.text()) or DEFAULT_SHUTDOWN_MINUTES,
+        })
+        self._refresh_shutdown_state()
+
+    def _refresh_shutdown_state(self) -> None:
+        """状态行：没启用就说明一下，启用了就显示倒计时。"""
+        if self._shutdown is not None and self._shutdown.active:
+            self.shutdown_state.setText(
+                f"将在 {self._shutdown.remaining_text()} 后关机"
+                "（关机前会弹提醒，可取消）")
+            self.shutdown_state.setTextColor("#C9514C", "#E6B4AC")
+            return
+
+        minutes = self._shutdown_minutes()
+        self.shutdown_state.setTextColor(*MUTED)
+        if minutes:
+            self.shutdown_state.setText(
+                f"已设为运行 {minutes} 分钟后关机 —— 点「启动」开始计时。")
+        else:
+            self.shutdown_state.setText("未启用（不勾选就不会关机）。")
+
+    def _tick_shutdown(self) -> None:
+        """轮询里调 —— 检查该提醒 / 该关机了。"""
+        timer = self._shutdown
+        if timer is None or not timer.active:
+            return
+
+        if timer.should_warn():
+            self._warn_before_shutdown()
+            return
+        if timer.should_fire():
+            self._do_shutdown()
+            return
+        self._refresh_shutdown_state()
+
+    def _warn_before_shutdown(self) -> None:
+        """关机前提醒 —— **可取消**（用户明确要求）。"""
+        seconds = shutdown_timer.WARN_SECONDS
+        box = MessageBox(
+            "即将自动关机",
+            f"定时关机时间到了 —— 电脑将在 {seconds} 秒后关机。\n\n"
+            "要继续的话点「取消关机」（本次不再自动关）。",
+            self.window())
+        box.yesButton.setText("立即关机")
+        box.cancelButton.setText("取消关机")
+        accepted = box.exec()
+        if not accepted:
+            self._cancel_shutdown("已取消自动关机。")
+            return
+        self._do_shutdown()
+
+    def _do_shutdown(self) -> None:
+        ok, message = shutdown_timer.shutdown()
+        if ok:
+            self.shutdown_state.setText("已发出关机命令，电脑即将关闭。")
+            self.shutdown_state.setTextColor("#C9514C", "#E6B4AC")
+        else:
+            InfoBar.error("关机失败", message, duration=10000, parent=self)
+            self.shutdown_state.setText(f"关机失败：{message}")
+
+    def _cancel_shutdown(self, note: str = "") -> None:
+        if self._shutdown is not None:
+            self._shutdown.cancel()
+        self.shutdown_state.setText(note or "已取消定时关机。")
+        self.shutdown_state.setTextColor(*MUTED)
+
     # ------------------------------------------------------------------ 槽
     def _on_start(self) -> None:
         # 引擎未就绪 / 失败态 / 就绪：统一走 start_task —— 内部会 boot 或直接开任务，
@@ -309,11 +454,20 @@ class AutoCombatWidget(ScrollArea):
         err = self._host.start_task(DEFAULT_TASK_KEY)
         if err:
             InfoBar.error("启动失败", err, duration=8000, parent=self)
+            return
+        # ★ 计时**从点启动开始**（用户选的"跑多少分钟后关"）
+        self._shutdown = shutdown_timer.ShutdownTimer(self._shutdown_minutes())
+        self._shutdown.start()
+        self._refresh_shutdown_state()
 
     def _on_stop(self) -> None:
         err = self._host.stop_task()
         if err:
             InfoBar.warning("停止失败", err, duration=8000, parent=self)
+        # 手动停止了 → 定时关机也一并取消。
+        # ⚠ 不取消的话，用户以为"停了就没事了"，结果到点电脑还是关了。
+        if self._shutdown is not None and self._shutdown.active:
+            self._cancel_shutdown("已停止任务，定时关机一并取消。")
 
     # ------------------------------------------------------------------ 轮询
     def _poll(self) -> None:
@@ -349,6 +503,9 @@ class AutoCombatWidget(ScrollArea):
         # 战斗报告：边跑边刷新（数字取自 ok-ww 自己的计数器；
         # 放在 poll_done 之后，这样停止那一刻就能读到冻结的时长）
         self.report_card.update_report(self._host.battle_report())
+
+        # 定时关机：提醒 / 到点执行（轮询里顺带做，不用额外的线程）
+        self._tick_shutdown()
 
 
 @registry.register(
