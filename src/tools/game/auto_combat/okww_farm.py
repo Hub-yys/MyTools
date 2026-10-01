@@ -135,6 +135,35 @@ class MyToolsFarmEchoTask(FarmEchoTask):
             self.log_debug(f"读协奏值失败：{type(exc).__name__}: {exc}")
             return False
 
+    # ------------------------------------------------------------------ 连招
+    def load_chars(self):
+        """★ 认完人之后，把需要自定义连招的角色**换成我们的子类**。
+
+        为什么挂在这里：``load_chars`` 是 ok-ww「识别队伍」的唯一收敛点 ——
+        它自己也会在里面调 ``apply_team_char_classes`` 做同类替换，
+        我们在它之后再包一层，顺序最自然。
+
+        ⚠ **不改 vendor/** —— 只替换 ``do_perform``，其余沿用 ok-ww。
+
+        用户 2026-10-01 指定的守岸人流程（ok-ww 自带的不是这个顺序）：
+            平A攒能量条 → 满 → 长按普攻重击 → E+Q → 协奏没满就循环，
+            协奏满了由固定轴换 2 号位。
+        """
+        super().load_chars()
+        try:
+            from . import char_combos
+        except Exception as exc:  # noqa: BLE001 - 换不上不该让刷取崩掉
+            self.log_debug(f"加载连招模块失败：{type(exc).__name__}: {exc}")
+            return
+        for index, char in enumerate(list(getattr(self, "chars", []) or [])):
+            if char is None:
+                continue
+            wrapped = char_combos.wrap_char(self, char, index)
+            if wrapped is not None:
+                self.chars[index] = wrapped
+                self.log_info(f"连招：{type(char).__name__} → "
+                              f"{type(wrapped).__name__}")
+
     # ------------------------------------------------------------------ 钩子
     def incr_drop(self, dropped):
         super().incr_drop(dropped)
