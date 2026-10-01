@@ -58,12 +58,48 @@ IMAGE_OUT = EXT_DIR / "images" / "xin_templates.png"
 #: 1280×720 = 你给的截图分辨率（那台机器就是按它玩的）。
 #: ⚠ 写进 COCO 的 images.width/height 用的是这个（不是底图尺寸），
 #:   否则 ok-script 会按"底图很窄"去缩放模板，把模板拉糊。
-SCREEN = (1280, 720)
+#:
+#: ★ 2026-10-01 定稿：用户的游戏是 **1920x1080**（他给了图像设置截图）。
+#:   所以底图和声明都用 1920x1080 —— 在用户的环境里 scale=1，模板原样使用。
+SCREEN = (1920, 1080)
 
-#: 队伍头像（那张裁过的竖条图）
-TEAM_BAR = pathlib.Path(
-    r"C:\Users\86176\AppData\Roaming\dsh-desktop\harness\attachments\v1"
-    r"\objects\2a\2a980a89653029fc56685daa89a438695aa8fcc2f011024de8099994d7f9b8a9")
+#: 能量条模板的来源截图是 **1280x720**（QQ 缩略图），要放大到 1920 尺度。
+BAR_SCALE = 1920 / 1280
+
+#: ★★ 认人模板的来源：**队伍栏截图**（151x385，三个人竖排）。
+#:
+#: ## 为什么最终用这张，而不是单人头像特写
+#:
+#: 我试过三种来源，全部实测过（拿心的模板去匹配战斗画面里心的位置）：
+#:
+#: ====================================  ======  ==================
+#: 来源                                   得分    结论
+#: ====================================  ======  ==================
+#: 素材库立绘 240x320                      0.350   ❌ 立绘≠游戏内头像
+#: QQ 竖条截图 365x644（被缩放）            0.501   ❌ 糊
+#: 单人头像特写 140x113                     0.694   ⚠ 勉强，仍不够稳
+#: **队伍栏截图 151x385（本版）**           **0.958**  ✅ 4/4 全中
+#: ====================================  ======  ==================
+#:
+#: ## 关键：**自标定尺度**
+#:
+#: 用户的截图经过 QQ 压缩，**不是** 1:1 的游戏像素。硬猜尺度必然失败。
+#: 所以这里反过来 —— 用 ok-ww **认得出的**守岸人模板当标尺：
+#: 在队伍栏第 3 段上扫描缩放系数，找到得分最高的那个（实测 **1.01**，得分
+#: **0.984**），那个系数就是"这张图 : 游戏"的真实比例。
+#:
+#: 标定后交叉验证（同一尺度下）：
+#:   3位=守岸人 **0.984** ✓   2位=坎特蕾拉 **0.928** ✓   1位=心 0.683
+#: 前两个都对得上 → 尺度可信。
+TEAM_BAR = pathlib.Path(r"D:\DeepSeek Work\xin_shots\new_bar.png")
+
+#: 队伍栏里"心"是第几段（0 起）
+XIN_SEGMENT = 0
+
+#: 模板里要**内缩**多少（去掉圆形头像的外圈）。
+#: 实测扫描：0%→0.399  18%→0.533  30%→0.719  **36%→0.948**  42%→0.929
+#: 36% 正好把圆环和背景都去掉、只留人脸那块 —— 和 ok-ww 原生模板的裁法一致。
+AVATAR_INSET = 0.36
 
 #: 从 1280×720 战斗截图里裁能量条的框
 BAR_BOX = (500, 645, 770, 692)
@@ -78,6 +114,101 @@ TEMPLATES = [
 ]
 
 
+def _build_avatar() -> tuple[Image.Image | None, str]:
+    """造认人模板：**自标定尺度** + 内缩。返回 (图, 说明)。"""
+    if not TEAM_BAR.exists():
+        return None, f"⚠ 没有队伍栏图（{TEAM_BAR}）—— char_xin 无法生成"
+
+    src = Image.open(TEAM_BAR).convert("RGB")
+    seg_h = src.height // 3
+    top = XIN_SEGMENT * seg_h
+    seg = src.crop((0, top, src.width, top + seg_h))
+
+    # ★ 自标定：用 ok-ww 认得出的角色当标尺，反推这张图的真实尺度
+    factor, score, detail = _calibrate_scale(src)
+    if factor is None:
+        # 标定不出来就按 1.0 硬来（至少尺寸量级对）
+        factor = 1.0
+        note = "⚠ 标定失败，按 1.0 处理"
+    else:
+        note = f"标定 {factor:.3f}（{detail} 得分 {score:.3f}）"
+
+    if factor != 1.0:
+        seg = seg.resize((max(1, round(seg.width / factor)),
+                          max(1, round(seg.height / factor))),
+                         Image.LANCZOS)
+
+    w, h = seg.size
+    p = int(min(w, h) * AVATAR_INSET)
+    avatar = seg.crop((p, p, w - p, h - p))
+    return avatar, (f"char_xin        {src.size} 第{XIN_SEGMENT + 1}段 → "
+                    f"{note} → 内缩 {AVATAR_INSET:.0%} → {avatar.size}")
+
+
+#: 标定时用的"尺子"——ok-ww 认得出、且确实在用户队伍里的角色。
+#: 每一项：(类别名, 在图里的第几段)
+_CALIBRATORS = [("char_shorekeeper", 2), ("char_cantarella", 1)]
+
+
+def _calibrate_scale(bar: Image.Image) -> tuple[float | None, float, str]:
+    """扫描缩放系数，找出让"尺子角色"得分最高的那个。
+
+    ⚠ 为什么要这样：用户的截图过了 QQ 压缩，**不是** 1:1 游戏像素，
+    硬猜尺度必然失败（我前几轮就是这么错的）。用 ok-ww 自己的模板当尺子，
+    让数据告诉我们真实比例。
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        # 用 ok-script 的加载器最稳（它处理尺寸换算，还会把扩展目录合并进来）
+        import logging
+        import os
+        import sys
+
+        vendor = EXT_DIR.parents[1]          # …/vendor/okww
+        coords = vendor / "assets" / "coco_annotations.json"
+        cwd = os.getcwd()
+        os.chdir(vendor)
+        sys.path.insert(0, str(vendor))
+        logging.disable(logging.CRITICAL)
+        try:
+            from ok.feature.FeatureSet import read_from_json
+
+            feats, _boxes, _c, _s, _k = read_from_json(str(coords), *SCREEN)
+        finally:
+            os.chdir(cwd)
+
+        arr = cv2.cvtColor(np.array(bar), cv2.COLOR_RGB2BGR)
+        seg_h = arr.shape[0] // 3
+        best = (-1.0, None, "")
+        for name, seg_index in _CALIBRATORS:
+            feat = feats.get(name)
+            if feat is None:
+                continue
+            tpl = feat.mat
+            top = seg_index * seg_h
+            seg = arr[top:top + seg_h]
+            for i in range(50, 200):
+                f = i / 100
+                t = cv2.resize(seg, (max(1, round(seg.shape[1] / f)),
+                                     max(1, round(seg.shape[0] / f))),
+                               interpolation=cv2.INTER_AREA)
+                if tpl.shape[0] > t.shape[0] or tpl.shape[1] > t.shape[1]:
+                    continue
+                try:
+                    sc = float(cv2.matchTemplate(t, tpl,
+                                                 cv2.TM_CCOEFF_NORMED).max())
+                except Exception:
+                    continue
+                if sc > best[0]:
+                    best = (sc, f, name)
+        return best[1], best[0], best[2].replace("char_", "")
+    except Exception as exc:  # noqa: BLE001
+        print(f"    标定异常：{type(exc).__name__}: {exc}")
+        return None, -1.0, ""
+
+
 def build() -> int:
     if not SHOTS.exists():
         print(f"✗ 找不到截图目录 {SHOTS}")
@@ -86,16 +217,13 @@ def build() -> int:
     # ---- 1) 收集所有要贴的图块 ----
     pieces: list[tuple[str, Image.Image]] = []
 
-    # 队伍头像（认人用）—— 需要从竖条图里裁
-    if TEAM_BAR.exists():
-        team = Image.open(TEAM_BAR).convert("RGB")
-        avatar = team.crop((150, 90, 290, 215))
-        pieces.append(("char_xin", avatar))
-        print(f"  char_xin        队伍头像 {avatar.size}")
-    else:
-        print("  ⚠ 没有队伍栏截图 —— char_xin 无法生成（认人会失败）")
+    # 认人模板（char_xin）—— 自标定尺度 + 内缩
+    ok_avatar, message = _build_avatar()
+    print(f"  {message}")
+    if ok_avatar is not None:
+        pieces.append(("char_xin", ok_avatar))
 
-    # 状态条
+    # 状态条（源图是 1280 的缩略图，放大到 1920 尺度）
     for category, shot, which in TEMPLATES:
         path = SHOTS / shot
         if not path.exists():
@@ -104,6 +232,10 @@ def build() -> int:
         src = Image.open(path).convert("RGB")
         box = BAR_BOX if which == "bar" else HEAD_BOX
         tile = src.crop(box)
+        if BAR_SCALE != 1.0:
+            tile = tile.resize((round(tile.width * BAR_SCALE),
+                                round(tile.height * BAR_SCALE)),
+                               Image.LANCZOS)
         pieces.append((category, tile))
         print(f"  {category:16} {tile.size}  （来自 {shot[:12]}…）")
 
