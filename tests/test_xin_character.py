@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import pathlib
@@ -43,6 +44,96 @@ EXPECTED_SIZES = {
     "xin_white": (405, 70),
     "xin_dominion": (405, 70),
 }
+
+
+class TestUltimateAfterDominion(unittest.TestCase):
+    """★★ 「心」必须**放得出二段大招**。
+
+    用户 2026-10-01 报："心不放二段大招"。
+
+    ## 根因（我的 bug）
+    二段大招原来放在 ``perform_finish`` 里，靠 ``do_perform`` 的下一轮分派 ——
+    但 ``do_perform`` 的 ``finally`` 会在 ``perform_dominion`` 返回后
+    **立刻切人**；而且此时协奏已满，ok-ww 下次轮到这个角色时又会马上切走。
+    于是 ``perform_finish`` **永远没机会跑**。
+
+    日志证据（用户实机）：
+        ``[统御众机] 13 秒到`` 出现 9 次，``[收尾]`` 出现 **0 次**。
+
+    ## 修法
+    二段大招必须在**切人之前**放完 —— 由 ``perform_dominion`` 当场连着调
+    ``perform_finish()``。
+    """
+
+    def setUp(self):
+        self.path = VENDOR / "okww" / "char" / "Xin.py"
+        self.text = self.path.read_text(encoding="utf-8")
+        tree = ast.parse(self.text)
+        self.fn = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "perform_dominion")
+
+    def test_dominion_calls_finish(self):
+        """★ ``perform_dominion`` 必须**自己**调 ``perform_finish``。"""
+        calls = {
+            n.func.attr for n in ast.walk(self.fn)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        }
+        self.assertIn(
+            "perform_finish", calls,
+            "perform_dominion 没调 perform_finish —— 二段大招放不出来"
+            "（do_perform 的 finally 会先切人）")
+
+    def test_finish_after_heavy(self):
+        """顺序：终结重击 → 二段大招（不能反）。
+
+        ⚠ 用 **AST 的行号**比，不能拿源码字符串 find ——
+        方法的 docstring 里也提到了 ``perform_finish``，
+        字符串搜索会命中注释（实测踩过）。
+        """
+        heavy_line = finish_line = None
+        for n in ast.walk(self.fn):
+            if (isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Attribute)):
+                if n.func.attr == "heavy_attack" and heavy_line is None:
+                    heavy_line = n.lineno
+                elif n.func.attr == "perform_finish" and finish_line is None:
+                    finish_line = n.lineno
+        self.assertIsNotNone(heavy_line, "没有终结重击")
+        self.assertIsNotNone(finish_line, "没有 perform_finish 调用")
+        self.assertLess(
+            heavy_line, finish_line,
+            f"顺序反了（重击 L{heavy_line} / 二段大 L{finish_line}）——"
+            f" 二段大招必须在终结重击**之后**（攻略：提前开会大幅缩水）")
+
+    def test_no_phase_finish_dispatch(self):
+        """★ 不该再有 ``phase = "finish"`` —— 那条路走不通。
+
+        ⚠ 这条防的是"改回去"：只要还有人设 ``phase = "finish"``，
+        就说明二段大招又被丢给下一轮了。
+        """
+        self.assertNotIn(
+            'phase = "finish"', self.text,
+            '又设 phase = "finish" 了 —— 那条路永远轮不到（见类说明）')
+
+    def test_finish_exists_as_method(self):
+        """``perform_finish`` 本身要留着（可读性 + 可单测）。"""
+        tree = ast.parse(self.text)
+        names = {n.name for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef)}
+        self.assertIn("perform_finish", names)
+
+    def test_click_liberation_used(self):
+        """二段大招靠 ``click_liberation`` 放。"""
+        tree = ast.parse(self.text)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "perform_finish")
+        calls = {
+            n.func.attr for n in ast.walk(fn)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        }
+        self.assertIn("click_liberation", calls, "没按大招键")
 
 
 class TestVendorFiles(unittest.TestCase):

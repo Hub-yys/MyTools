@@ -127,16 +127,19 @@ class Xin(BaseChar):
 
     # ------------------------------------------------------------------ 主循环
     def do_perform(self):
-        """一轮行动。ok-ww 每次轮到这个角色站场都会调它。"""
+        """一轮行动。ok-ww 每次轮到这个角色站场都会调它。
+
+        ⚠ 三个形态是**严格顺序**推进的，由 ``self.phase`` 记住走到哪。
+        「收尾」（二段大招）**不在这里分派** —— 它由
+        :meth:`perform_dominion` 当场连着做完（见那个方法的说明）。
+        """
         try:
-            if self.phase == "red":
-                self.perform_red()
-            elif self.phase == "white":
+            if self.phase == "white":
                 self.perform_white()
             elif self.phase == "dominion":
                 self.perform_dominion()
             else:
-                self.perform_finish()
+                self.perform_red()
         finally:
             self.switch_next_char()
 
@@ -205,7 +208,16 @@ class Xin(BaseChar):
 
     # ------------------------------------------------------------------ 统御
     def perform_dominion(self):
-        """统御众机：固定 13 秒爆发 → 终结重击【镇寰宇】。"""
+        """统御众机：固定 13 秒爆发 → 终结重击【镇寰宇】 → **二段大招**。
+
+        ⚠ 2026-10-01 修的 bug（用户报"心不放二段大招"）：二段大招原来放在
+        :meth:`perform_finish` 里，但 ``do_perform`` 的 ``finally`` 会在
+        ``perform_dominion`` 返回后**立刻切人** —— 而且此时协奏已满，
+        ok-ww 下次轮到这个角色时又会马上切走，``perform_finish`` 永远没机会跑
+        （日志里 ``[收尾]`` 一次都没出现，但 ``[统御众机] 13 秒到`` 出现了 9 次）。
+
+        **所以二段大招必须在切人之前放完** —— 也就是在本方法里连着做完。
+        """
         start = self.dominion_start if self.dominion_start > 0 else time.time()
         left = self.DOMINION_DURATION - self.time_elapsed_accounting_for_freeze(start)
         self.logger.info(f"Xin: [统御众机] 开始，剩 {left:.1f} 秒")
@@ -217,19 +229,28 @@ class Xin(BaseChar):
 
         self.logger.info("Xin: [统御众机] 13 秒到 → 终结重击【镇寰宇】")
         self.heavy_attack(2.0)
-        self.phase = "finish"
+
+        # ★ 紧接着放二段大招 —— **不能留到下一轮**（见方法说明）
+        self.perform_finish()
 
     # ------------------------------------------------------------------ 收尾
     def perform_finish(self):
-        """终结重击后放二段大招（终结爆发），然后回红狐。"""
+        """终结重击后放二段大招（终结爆发），然后回红狐。
+
+        ⚠ 这个方法由 :meth:`perform_dominion` **当场调用**，
+        不再靠 ``do_perform`` 的下一轮分派 —— 那样永远轮不到（见上）。
+        保留成独立方法只是为了可读性和**可单测**。
+        """
         self.logger.info("Xin: [收尾] 找二段大招")
         start = time.time()
+        clicked = False
         while self.time_elapsed_accounting_for_freeze(start) < self.FINISH_TIMEOUT:
             if self.click_liberation():
                 self.logger.info("Xin: [收尾] 二段大招（终结爆发）已放")
+                clicked = True
                 break
             self.cycle_sleep(0.1)
-        else:
+        if not clicked:
             self.logger.warning("Xin: [收尾] 二段大招没放出去")
 
         self.phase = "red"
@@ -239,7 +260,10 @@ class Xin(BaseChar):
     # ------------------------------------------------------------------ 切换
     def get_switch_priority(self, current_char=None, has_intro=False,
                             target_low_con=False):
-        """统御众机期间别被切走 —— 那是 13 秒爆发窗口，切了就断。"""
+        """统御众机期间别被切走 —— 那是 13 秒爆发窗口，切了就断。
+
+        ⚠ 收尾（二段大招）也在这段里，同样不能被打断。
+        """
         if self.phase == "dominion":
             return SwitchPriority.NO
         return super().get_switch_priority(current_char, has_intro,
