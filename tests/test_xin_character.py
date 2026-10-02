@@ -225,6 +225,147 @@ class TestUltimateAfterDominion(unittest.TestCase):
             f"等大招 {timeout}s 太久 —— 协奏早满了，该切人了还在原地等")
 
 
+class TestPhaseSurvivesReset(unittest.TestCase):
+    """★★ 形态 phase 必须**跨 ``reset_state`` 保留**。
+
+    用户 2026-10-02 报："心二阶段打满金色能量后，还是没有释放重击…
+    打满金色能量后，一直在普攻"。
+
+    ## 根因
+    ``BaseChar.reset_state`` 的文档写明这些字段是**队伍重新识别时刷新**的：
+
+        "Do not store long-term combat decisions only in these fields;
+         they are refreshed whenever the team is re-read from the screen."
+
+    ok-ww 每次 ``combat_once()``（每场战斗）都会 ``load_chars()``
+    → 对每个角色调 ``reset_state()``。我原来在里面把 ``phase`` 设回
+    ``"red"`` —— 于是：
+
+    * 白狐/统御形态被清掉，下次 ``do_perform`` 又从 ``perform_red`` 开始
+      （日志里形态序列反复出现 ``白狐 → 红狐 → 白狐``，
+      72 次一段大、61 次白狐重新攒能）；
+    * 攒照世心的进度**永远接不上** → 看起来就是"打满金色能量后一直普攻"。
+    """
+
+    def setUp(self):
+        import logging
+        import os
+
+        self.text = (VENDOR / "okww" / "char" / "Xin.py").read_text(
+            encoding="utf-8")
+        logging.disable(logging.CRITICAL)
+        vendor = str(VENDOR)
+        if vendor not in sys.path:
+            sys.path.insert(0, vendor)
+        self._old_cwd = os.getcwd()
+        os.chdir(VENDOR)
+        try:
+            from okww.char.Xin import Xin
+        finally:
+            os.chdir(self._old_cwd)
+        self.Xin = Xin
+
+    def _char(self):
+        class _Task:
+            def __getattr__(self, _n):
+                return lambda *a, **k: None
+
+        return self.Xin(_Task(), 0, char_name="char_xin")
+
+    def test_white_phase_survives_reset(self):
+        """★ 白狐形态不能被 reset_state 清回红狐。"""
+        char = self._char()
+        char.phase = "white"
+        char.reset_state()
+        self.assertEqual(
+            char.phase, "white",
+            "reset_state 把白狐形态清回红狐了 —— 攒照世心的进度会永远接不上"
+            "（表现为「打满金色能量后一直普攻」）")
+
+    def test_dominion_phase_survives_reset(self):
+        char = self._char()
+        char.phase = "dominion"
+        char.dominion_start = 123.0
+        char.reset_state()
+        self.assertEqual(char.phase, "dominion")
+        self.assertEqual(char.dominion_start, 123.0,
+                         "统御的开始时刻丢了 —— 13 秒窗口会重新计时")
+
+    def test_intro_state_still_cleared(self):
+        """对照：**入场**状态仍该被父类清掉（别把该清的也留下）。"""
+        char = self._char()
+        char.has_intro = True
+        char.current_con = 0.5
+        char.reset_state()
+        self.assertFalse(char.has_intro, "has_intro 没被清")
+        self.assertEqual(char.current_con, 0, "current_con 没被清")
+
+    def test_reset_state_calls_super(self):
+        """必须调 ``super().reset_state()`` —— 否则父类那些清理全丢。"""
+        tree = ast.parse(self.text)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "reset_state")
+        calls = [
+            n for n in ast.walk(fn)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "reset_state"
+        ]
+        self.assertTrue(calls, "reset_state 没调 super() —— 入场状态清不掉")
+
+
+class TestDominionDetectsSignal(unittest.TestCase):
+    """★★ 统御阶段要**检测信号**，不能盲等 13 秒。
+
+    用户报"打满金色能量后一直普攻"。原来 ``perform_dominion`` 是
+    ``while 时间 < 13: 平A`` —— 盲等。但机制是：
+
+        进统御 → 攻击**消耗照世心** → **耗尽后**重击才变成【镇寰宇】
+        → 打完才解锁二段大
+
+    盲等的两个坏处：
+    * 照世心早早耗尽时白等剩下的秒数（浪费输出窗口）；
+    * 13 秒还没耗尽时强行放重击 —— 打出来的不是【镇寰宇】，
+      自然解锁不了二段大（这正是"亮了但按不生效"的来源）。
+    """
+
+    def setUp(self):
+        self.text = (VENDOR / "okww" / "char" / "Xin.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(self.text)
+        self.fn = next(
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "perform_dominion")
+
+    def _loop(self) -> ast.While:
+        loops = [n for n in ast.walk(self.fn) if isinstance(n, ast.While)]
+        self.assertTrue(loops, "perform_dominion 里没有 while 循环")
+        return loops[0]
+
+    def test_dominion_checks_forte(self):
+        """★ 循环里要查 ``forte_ready()``（照世心耗尽 = 重击就绪）。"""
+        calls = {
+            n.func.attr for n in ast.walk(self._loop())
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        }
+        self.assertIn(
+            "forte_ready", calls,
+            "统御循环没查 forte_ready —— 会盲等 13 秒，"
+            "照世心耗尽也不知道停手")
+
+    def test_dominion_breaks_early(self):
+        """★ 检测到信号要 ``break`` —— 不能打满整 13 秒。"""
+        breaks = [n for n in ast.walk(self._loop())
+                  if isinstance(n, ast.Break)]
+        self.assertTrue(breaks, "统御循环没有 break —— 永远打满 13 秒")
+
+    def test_elapsed_still_capped(self):
+        """13 秒仍要作为**兜底上限**（信号读不到时别卡死）。"""
+        self.assertIn("DOMINION_DURATION", ast.get_source_segment(
+            self.text, self._loop()) or "",
+            "统御循环没有时间上限 —— 信号失灵时会卡死")
+
+
 class TestVendorFiles(unittest.TestCase):
     """vendor 里的四处改动都在（不看运行，只看文件）。"""
 

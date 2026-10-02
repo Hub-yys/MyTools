@@ -87,11 +87,45 @@ class Xin(BaseChar):
         self.phase = "red"          # red / white / dominion / finish
         #: 统御开始的时刻
         self.dominion_start = -1.0
+        #: ★ 这是一次**战斗内**要跨越 reset_state 保留的形态状态。
+        #:   见 :meth:`reset_state` 的说明。
+        self._phase_kept = None
 
     def reset_state(self):
+        """★ 重置入场状态 —— 但**形态 phase 不能丢**。
+
+        ## ⚠ 2026-10-02 修的第三个 bug（一个根因解释了两个现象）
+
+        ``BaseChar.reset_state`` 的文档写得很清楚：
+
+            这是队伍**重新识别**时刷新的字段。
+            "Do not store long-term combat decisions only in these fields;
+             they are refreshed whenever the team is re-read from the screen."
+
+        ok-ww 每次 ``combat_once()``（每场战斗）都会 ``load_chars()``
+        → 对每个角色调 ``reset_state()``。我原来在里面把 ``self.phase``
+        设回 ``"red"`` —— 于是：
+
+        * **白狐/统御形态被清掉**，下一次 ``do_perform`` 又从
+          ``perform_red`` 开始（日志里形态序列反复出现
+          ``白狐 → 红狐 → 白狐``，72 次一段大、61 次白狐重新攒能）；
+        * 攒照世心的进度**永远接不上** → 看起来就是"打满金色能量后
+          一直普攻"（因为每次都从红狐重来）。
+
+        **修法**：``phase`` 在 ``reset_state`` 时**保留**（存在
+        ``_phase_kept`` 里），只有**新一轮循环从头**时才清。
+
+        注意区分两件事：
+        * ``has_intro`` / ``current_con`` 这些**入场**状态 —— 该清（父类在做）
+        * ``phase``（我打到哪个形态了）—— **不该清**，那是战斗进程
+        """
+        # 先备份形态 —— super() 不碰它，但保险起见先存下来
+        kept = getattr(self, "phase", "red")
+        kept_start = getattr(self, "dominion_start", -1.0)
         super().reset_state()
-        self.phase = "red"
-        self.dominion_start = -1.0
+        self._phase_kept = kept
+        self.phase = kept
+        self.dominion_start = kept_start
 
     # ------------------------------------------------------------------ 工具
     def forte_ready(self) -> bool:
@@ -216,15 +250,27 @@ class Xin(BaseChar):
 
     # ------------------------------------------------------------------ 统御
     def perform_dominion(self):
-        """统御众机：固定 13 秒爆发 → 终结重击【镇寰宇】 → **二段大招**。
+        """统御众机：打空照世心 → 终结重击【镇寰宇】 → **二段大招**。
 
-        ⚠ 2026-10-01 修的 bug（用户报"心不放二段大招"）：二段大招原来放在
-        :meth:`perform_finish` 里，但 ``do_perform`` 的 ``finally`` 会在
-        ``perform_dominion`` 返回后**立刻切人** —— 而且此时协奏已满，
-        ok-ww 下次轮到这个角色时又会马上切走，``perform_finish`` 永远没机会跑
-        （日志里 ``[收尾]`` 一次都没出现，但 ``[统御众机] 13 秒到`` 出现了 9 次）。
+        ## ⚠ 2026-10-02 的第三处修（用户报"打满金色能量后一直普攻"）
 
-        **所以二段大招必须在切人之前放完** —— 也就是在本方法里连着做完。
+        原来这里是**盲等 13 秒**：``while 时间 < 13: 平A``。
+        但用户实测的机制是：
+
+            进统御众机 → **攻击消耗照世心** → **耗尽后**重击才变成
+            【镇寰宇】 → 打完才解锁二段大
+
+        也就是说"能不能放终结重击"取决于**照世心有没有耗尽**，
+        不是"过了几秒"。盲等有两个坏处：
+        * 照世心早早耗尽时，还在白等剩下的秒数（浪费输出窗口）；
+        * 13 秒还没耗尽时，强行放重击 —— 打出来的不是【镇寰宇】，
+          自然也就解锁不了二段大（这正是"亮了但按不生效"的来源）。
+
+        **改法**：像 :meth:`perform_red` 那样**检测信号** ——
+        照世心耗尽 / 重击就绪就停手，13 秒只当**兜底上限**。
+
+        ⚠ 二段大招必须在**切人之前**放完（``do_perform`` 的 ``finally``
+        会立刻切人，协奏已满时下次又马上被切走）。
         """
         start = self.dominion_start if self.dominion_start > 0 else time.time()
         left = self.DOMINION_DURATION - self.time_elapsed_accounting_for_freeze(start)
@@ -232,10 +278,18 @@ class Xin(BaseChar):
 
         while self.time_elapsed_accounting_for_freeze(start) < self.DOMINION_DURATION:
             self.cycle_start()
+            # ★ 照世心耗尽（重击就绪）就停手 —— 别再白打
+            if self.forte_ready():
+                elapsed = self.time_elapsed_accounting_for_freeze(start)
+                self.logger.info(
+                    f"Xin: [统御众机] 照世心已耗尽（第 {elapsed:.1f} 秒）→ 停手")
+                break
             self.click()
             self.cycle_sleep(self.ATTACK_INTERVAL)
+        else:
+            self.logger.info("Xin: [统御众机] 13 秒到（兜底上限）")
 
-        self.logger.info("Xin: [统御众机] 13 秒到 → 终结重击【镇寰宇】")
+        self.logger.info("Xin: [统御众机] 放终结重击【镇寰宇】")
         self.heavy_attack(2.0)
 
         # ★ 等重击的**收招动画**走完 —— 二段大是在【镇寰宇】**打完那一刻**
