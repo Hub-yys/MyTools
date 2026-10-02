@@ -860,44 +860,6 @@ reason=support_buffs_active_return_to_main_dps
 > 换队伍要改 `ROTATION`。
 > 队伍不足 3 人时**不接管**，交回 ok-ww 的原逻辑。
 
-### ★ 角色自己的连招（固定轴里的"每一棒怎么打"）
-
-固定轴只管**什么时候换人**；每一棒的**具体打法**由
-`auto_combat/char_combos.py` 决定。
-
-用户 2026-10-01 指定的守岸人流程（ok-ww 自带的**不是**这个顺序）：
-
-```
-平A攒能量条 → 攒满 → 长按普攻释放重击 → E + Q
-  → 协奏没满？继续上面的循环
-  → 协奏满了？交给固定轴换 2 号位
-```
-
-**判断"能量条满没满"用 ok-ww 自己的 `is_forte_full()`** ——
-所有角色共用屏幕底部那个槽，**不需要新模板**。实测（用户截图）：
-
-| 状态 | 金色像素 |
-|---|---|
-| 能量条空 | **0 px** |
-| 能量条满 | **2851 px** |
-
-区分度是绝对的。
-
-**怎么挂上去**：在 `MyToolsFarmEchoTask.load_chars()` 里
-（ok-ww 识别队伍的唯一收敛点），认完人之后把需要自定义连招的角色
-**换成我们的子类**（`char_combos.wrap_char`）。
-
-> ⚠ 同样**不改 `vendor/`**。ok-ww 虽然自带 `custom_chars/` 机制，
-> 但那个目录在 `configs/` 下且**被 .gitignore 排除**，
-> 不适合随仓库分发。
->
-> ⚠ 换对象时要**把旧对象的 `__dict__` 搬过去** —— 否则
-> `current_con` / `has_intro` / `last_switch_time` 这些
-> 切人调度要用的状态会丢（ok-ww 自己 `apply_team_char_classes`
-> 也是这么做的）。
-
-加新角色连招：在 `char_combos.py` 末尾的 `_COMBO_BUILDERS` 里加一行。
-
 
 ok-ww 配置里还注册了触发式的 `AutoCombatTask`（进战斗自动输出），
 当前页面未暴露入口。
