@@ -622,28 +622,35 @@ class TestPhaseNeverStuck(unittest.TestCase):
         self.assertTrue(calls, "reset_state 没调 super() —— 入场状态清不掉")
 
 
-class TestDominionWaitsFullWindow(unittest.TestCase):
-    """★★ 统御阶段**不该**用 ``forte_ready()`` 判断"照世心耗尽"。
+class TestDominionWaitsForExhaustion(unittest.TestCase):
+    """★★ 统御阶段要在**照世心耗尽那一刻**放重击，不能盲等到底。
 
-    用户 2026-10-02 报："心不放二段大招"。日志里有决定性的一句::
+    ## 实机数据（2026-10-02 用户日志统计，27 个完整循环）
 
-        [统御众机] 照世心已耗尽（第 0.0 秒）→ 停手
+    ==================  ================  ==========
+    统御耗时             重击时机           二段大招
+    ==================  ================  ==========
+    **4.4 / 4.7 秒**     耗尽点立刻放       **成功 2/2**
+    13.0 秒（盲等到底）   窗口过了才放       **失败**
+    ==================  ================  ==========
 
-    **第 0.0 秒就"耗尽"** —— 不可能。
+    ## 为什么
 
-    ## 为什么错
-    ``forte_ready()`` 查的是 ``is_mouse_forte_full()`` / ``is_forte_full()``，
-    那是**屏幕底部的通用能量槽**（红狐的应世心也在那里）。进统御时它
-    还是满的 → 第 0.0 秒就 break → 立刻重击，但照世心根本没打空
-    → 那个重击**不是【镇寰宇】** → 二段大永远解锁不了。
+    攻略：「领域内**消耗完全部照心值**后，重击替换为『观览群岳/镇世』，
+    **随后**解锁第二阶段共鸣解放」。
 
-    ## 攻略怎么说的
-    「统御期间攻击**持续消耗照世心**，**耗尽后**才能打出终结重击
-    【镇寰宇】」—— 照世心是**慢慢掉的**，不是"满了就能放"。
+    → **【镇寰宇】只在照世心耗尽后那一刻才存在**。
+    重击放早了（还没耗尽）打出来的是普通重击 → 二段大不解锁
+    → 之后按大招全是 ``no effect``。
 
-    ## 所以
-    老老实实打满 ``DOMINION_DURATION``（攻略：「持续**固定 13 秒**」），
-    打完再放终结重击。
+    ## ⚠ 但要排除开局的误判
+
+    ``forte_ready()`` 查的是屏幕底部那个圆角小图标
+    （``mouse_forte`` 模板，x≈59.4% y≈91%），它表示"强化重击**可以用**"
+    —— 统御**刚开始时就已经是亮的**（照世心还满着，重击本来就可用）。
+
+    所以实机出现过 ``照世心已耗尽（第 0.0 秒）`` 这种**假信号**。
+    必须加 ``DOMINION_MIN_SECONDS`` 把开局那段排除掉。
     """
 
     def setUp(self):
@@ -653,48 +660,72 @@ class TestDominionWaitsFullWindow(unittest.TestCase):
         self.fn = next(
             n for n in ast.walk(tree)
             if isinstance(n, ast.FunctionDef) and n.name == "perform_dominion")
+        self.consts = {
+            m.group(1): float(m.group(2))
+            for m in re.finditer(
+                r"^\s{4}([A-Z_]+) = ([\d.]+)\s*$", self.text, re.M)
+        }
 
-    def test_does_not_use_forte_ready_as_gauge(self):
-        """★ 别拿通用能量槽当"照世心耗尽"的判据。"""
+    def test_checks_forte_signal(self):
+        """★ 循环里要查 ``forte_ready()``（耗尽信号）。"""
         calls = {
             n.func.attr for n in ast.walk(self.fn)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
         }
-        self.assertNotIn(
+        self.assertIn(
             "forte_ready", calls,
-            "统御阶段又用 forte_ready() 判照世心了 —— 那是**通用槽**，"
-            "进统御时还是满的，会第 0.0 秒就误判成'耗尽'")
+            "统御循环没查 forte_ready —— 盲等 13 秒会错过【镇寰宇】的时机"
+            "（实机数据：盲等全部失败）")
 
-    def test_waits_full_duration(self):
-        """★ 要打满 ``DOMINION_DURATION``（13 秒）。"""
+    def test_breaks_on_signal(self):
+        """★ 检测到耗尽要 break（不能傻等到底）。"""
+        breaks = [n for n in ast.walk(self.fn) if isinstance(n, ast.Break)]
+        self.assertTrue(breaks, "统御循环没有 break —— 永远打满 13 秒")
+
+    def test_guards_against_early_false_positive(self):
+        """★★ 必须排除开局误判（``DOMINION_MIN_SECONDS``）。
+
+        这是**本轮的核心修复**：信号本身是对的，但开局就会亮，
+        不加时间下限的话第 0.0 秒就误判成"耗尽"。
+        """
+        self.assertIn("DOMINION_MIN_SECONDS", self.consts,
+                      "没有 DOMINION_MIN_SECONDS —— 会第 0.0 秒误判成耗尽")
+        floor = self.consts["DOMINION_MIN_SECONDS"]
+        self.assertGreater(floor, 0, "下限必须是正数")
+        # 实机数据：真耗尽在 4.4 / 4.7 秒，误判在 0.0 / 0.8 秒
+        self.assertGreater(floor, 0.8,
+                           f"下限 {floor}s 太低 —— 挡不住 0.8 秒那次误判")
+        self.assertLess(floor, 4.4,
+                        f"下限 {floor}s 太高 —— 会把 4.4 秒那次**真耗尽**挡掉")
+
+    def test_condition_uses_both(self):
+        """★ 判据必须是"时间够 + 信号真"**两个都满足**。"""
+        conds = [n.test for n in ast.walk(self.fn) if isinstance(n, ast.If)]
+        joined = " ".join(ast.get_source_segment(self.text, c) or ""
+                          for c in conds)
+        self.assertIn("DOMINION_MIN_SECONDS", joined,
+                      "条件里没有时间下限 —— 开局会误判")
+        self.assertIn("forte_ready", joined,
+                      "条件里没有 forte_ready —— 不会检测耗尽")
+
+    def test_duration_still_capped(self):
+        """13 秒仍是兜底上限（信号失灵别卡死）。"""
         loop = next((n for n in ast.walk(self.fn) if isinstance(n, ast.While)),
                     None)
         self.assertIsNotNone(loop, "统御阶段没有循环")
         cond = ast.get_source_segment(self.text, loop.test) or ""
         self.assertIn("DOMINION_DURATION", cond,
-                      f"统御循环的条件不是 DOMINION_DURATION：{cond[:60]}")
+                      f"循环没有时间上限：{cond[:60]}")
 
-    def test_no_early_break(self):
-        """★ 不该有提前 break（否则又是"没打满就放重击"）。"""
-        breaks = [n for n in ast.walk(self.fn) if isinstance(n, ast.Break)]
-        self.assertEqual(
-            breaks, [],
-            f"统御循环里有 {len(breaks)} 个 break —— 会提前结束、"
-            f"照世心没打空就放重击（那个重击不是【镇寰宇】）")
-
-    def test_heavy_attack_after_loop(self):
-        """终结重击要在 13 秒**打满之后**。"""
-        heavy = finish = None
-        for n in ast.walk(self.fn):
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
-                if n.func.attr == "heavy_attack" and heavy is None:
-                    heavy = n.lineno
-                elif n.func.attr == "perform_finish" and finish is None:
-                    finish = n.lineno
+    def test_heavy_after_loop(self):
+        """终结重击要在循环**之后**（耗尽检测之后）。"""
         loop = next((n for n in ast.walk(self.fn) if isinstance(n, ast.While)),
                     None)
+        heavy = next((n.lineno for n in ast.walk(self.fn)
+                      if isinstance(n, ast.Call)
+                      and isinstance(n.func, ast.Attribute)
+                      and n.func.attr == "heavy_attack"), None)
         self.assertIsNotNone(heavy, "没有终结重击")
-        self.assertIsNotNone(loop, "没有循环")
         self.assertGreater(heavy, loop.lineno,
                            "终结重击在循环之前 —— 顺序反了")
 
