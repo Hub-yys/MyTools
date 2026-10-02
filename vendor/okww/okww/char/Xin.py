@@ -78,6 +78,10 @@ class Xin(BaseChar):
     #: 放完终结重击后等二段大招的窗口。
     #: ⚠ 放宽到 8 秒：动画 + 解锁判定需要时间，太短会白白错过。
     FINISH_TIMEOUT = 8.0
+    #: ★ 同一个 phase 最多待多久（秒）—— 超过就认为是"卡住了"，
+    #:   放行切人。算上各段上限：红狐 14 + 白狐 18 + 统御 13 + 收尾 8
+    #:   ≈ 53 秒，留点余量取 60。见 :meth:`should_stay`。
+    PHASE_STUCK_TIMEOUT = 60.0
     #: 普攻节奏
     ATTACK_INTERVAL = 0.12
 
@@ -196,6 +200,21 @@ class Xin(BaseChar):
                 self.perform_dominion()
             else:
                 self.perform_red()
+        except Exception as exc:  # noqa: BLE001
+            # ★ 阶段被中途打断 —— 最常见的是 ok-ww 的
+            #   ``raise_not_in_combat``（战斗判定瞬时为假，
+            #   ``sleep_check`` / ``check_combat`` 都会抛）。
+            #   ⚠ **必须复位 phase**，否则它会卡在中途，
+            #   导致「二段大招不放 + 永远不切人」两个现象一起出现
+            #   （用户 2026-10-02 报的正是这个）。
+            #   不重新抛出：那条异常对 ok-ww 来说是"战斗结束了"的
+            #   正常信号，上层（combat_once 的循环）会自己处理。
+            self.logger.warning(
+                f"Xin: 阶段 {self.phase} 被中断（{type(exc).__name__}）"
+                f"→ phase 复位，避免卡住")
+            self.phase = "red"
+            self._phase_since = None
+            self._phase_tag = None
         finally:
             if self.should_stay():
                 # ★ 还没打完一套 —— 协奏满了也不走
@@ -209,8 +228,41 @@ class Xin(BaseChar):
 
         红狐 = 一轮的起点，也是终点 —— 回到红狐说明这一套打完了，
         可以正常切人。其它形态（白狐 / 统御）都是**中途**，不能走。
+
+        ## ★ 2026-10-02 加的**卡死兜底**（`_phase_since`）
+
+        ``phase`` 有可能**卡在中途**：比如 ``perform_dominion`` 里
+        某个调用抛了异常（``sleep_check`` 就会），函数被打断，
+        ``perform_finish`` 没跑到 → ``phase`` 留在 ``dominion``。
+
+        后果是**两个现象一起出现**（用户 2026-10-02 报的正是这个）：
+        * 二段大招没放（``perform_finish`` 没跑）；
+        * **永远不切人**（``should_stay`` 永远 True）。
+
+        所以这里加个时间上限：同一个 phase 待太久（超过
+        :data:`PHASE_STUCK_TIMEOUT`）就认为是卡住了，**放行切人** ——
+        宁可少打一轮，也不能把整个队伍卡死。
         """
-        return getattr(self, "phase", "red") != "red"
+        phase = getattr(self, "phase", "red")
+        if phase == "red":
+            return False
+        # 记一下这个 phase 是什么时候开始的
+        since = getattr(self, "_phase_since", None)
+        now = time.monotonic()
+        if since is None or getattr(self, "_phase_tag", None) != phase:
+            self._phase_since = now
+            self._phase_tag = phase
+            return True
+        if now - since > self.PHASE_STUCK_TIMEOUT:
+            self.logger.warning(
+                f"Xin: phase={phase} 卡了 {now - since:.1f} 秒"
+                f"（超过 {self.PHASE_STUCK_TIMEOUT:.0f}s）→ 放行切人，"
+                f"避免把队伍卡死")
+            self.phase = "red"
+            self._phase_since = None
+            self._phase_tag = None
+            return False
+        return True
 
 
     # ------------------------------------------------------------------ 红狐
@@ -299,25 +351,37 @@ class Xin(BaseChar):
 
         ⚠ 二段大招必须在**切人之前**放完（``do_perform`` 的 ``finally``
         会立刻切人，协奏已满时下次又马上被切走）。
+
+        ## ★ 2026-10-02 的第四处修（用户报"心不放二段大招，也不切3号位了"）
+
+        上一版我加了"照世心耗尽就停手"，但**用错了检测**：
+
+            if self.forte_ready():     # ← 查的是**屏幕底部通用槽**
+                break                  #   进统御时它还是满的（应世心）→
+                                       #   第 0.0 秒就 break！
+
+        实机日志：``照世心已耗尽（第 0.0 秒）→ 停手`` —— 明显是假的。
+        后果：立刻重击，但照世心根本没打空 → 那个重击**不是【镇寰宇】**
+        → 二段大永远解锁不了。
+
+        攻略对统御的描述是「攻击**持续消耗**照世心，**耗尽后**才能打出
+        终结重击【镇寰宇】」。**照世心是慢慢掉的**，不是"满了就能放"——
+        所以这里**不该**用通用能量槽判断。
+
+        **改法**：老老实实打满 :data:`DOMINION_DURATION` 秒
+        （攻略说「持续**固定 13 秒**」，这是最可靠的信号），
+        打完再放终结重击。这也正是我最早那版的写法。
         """
         start = self.dominion_start if self.dominion_start > 0 else time.time()
         left = self.DOMINION_DURATION - self.time_elapsed_accounting_for_freeze(start)
-        self.logger.info(f"Xin: [统御众机] 开始，剩 {left:.1f} 秒")
+        self.logger.info(f"Xin: [统御众机] 开始，打满 {left:.1f} 秒")
 
         while self.time_elapsed_accounting_for_freeze(start) < self.DOMINION_DURATION:
             self.cycle_start()
-            # ★ 照世心耗尽（重击就绪）就停手 —— 别再白打
-            if self.forte_ready():
-                elapsed = self.time_elapsed_accounting_for_freeze(start)
-                self.logger.info(
-                    f"Xin: [统御众机] 照世心已耗尽（第 {elapsed:.1f} 秒）→ 停手")
-                break
             self.click()
             self.cycle_sleep(self.ATTACK_INTERVAL)
-        else:
-            self.logger.info("Xin: [统御众机] 13 秒到（兜底上限）")
 
-        self.logger.info("Xin: [统御众机] 放终结重击【镇寰宇】")
+        self.logger.info("Xin: [统御众机] 13 秒到 → 放终结重击【镇寰宇】")
         self.heavy_attack(2.0)
 
         # ★ 等重击的**收招动画**走完 —— 二段大是在【镇寰宇】**打完那一刻**
@@ -326,8 +390,17 @@ class Xin(BaseChar):
         #   ⚠ 2026-10-02 修的第二个 bug：原来这里紧接着就去找大招，
         #   结果日志里连续 4 次 `clicked liberation but no effect` ——
         #   因为全落在动画期间，大招还没解锁。
+        #
+        #   ⚠⚠ **必须用 sleep(check_combat=False)**：
+        #   ``BaseChar.sleep`` 默认会走 ``BaseCombatTask.sleep_check()``，
+        #   一旦那一瞬检测到"不在战斗"就 ``raise_not_in_combat`` **抛异常**，
+        #   把 ``perform_dominion`` 整个打断 —— 后面的二段大招永远走不到。
+        #   实机日志证据：
+        #       BaseCombatTask:sleep check not in combat
+        #       TaskExecutor:sleep_check error
+        #       （而 ``[收尾]`` 在那一轮里完全没出现）
         self.logger.info(f"Xin: [统御众机] 等重击收招（{self.HEAVY_SETTLE} 秒）")
-        self.sleep(self.HEAVY_SETTLE)
+        self.sleep(self.HEAVY_SETTLE, check_combat=False)
 
         # ★ 紧接着放二段大招 —— **不能留到下一轮**（见方法说明）
         self.perform_finish()
@@ -366,7 +439,9 @@ class Xin(BaseChar):
                     break
                 self.logger.info(
                     f"Xin: [收尾] 第 {attempts} 次按了大招但没生效，重试")
-            self.cycle_sleep(0.2)
+            # ⚠ check_combat=False —— 见 perform_dominion 里那段说明：
+            #   收招期间战斗判定可能瞬时为假，抛异常会把收尾打断。
+            self.sleep(0.2, check_combat=False)
         if not clicked:
             # ⚠ 这两种情况的**原因完全不同**，日志里必须分得清：
             #   saw_ready=False → 大招**从来没亮过**（识别问题 / 没解锁）

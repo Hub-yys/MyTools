@@ -89,6 +89,14 @@ class MyToolsFarmEchoTask(FarmEchoTask):
         * 轴里找不到在场的人：说明位置对不上号，硬切更危险。
 
         这两种情况返回 ``super()`` 的结果，行为和原来一致。
+
+        ## 关于返回 ``current_char``
+
+        ``switch_next_char`` 里 ``switch_to == current_char`` 会被判成
+        "can't find next char"，然后**提前返回 = 不换人** ——
+        行为是对的，只是会打条 warning 日志。
+        所以这里返回 ``current_char`` 表示"这一棒还没到换人时机"，
+        是**刻意为之**（用户要求：协奏没满就别换）。
         """
         chars = [c for c in getattr(self, "chars", []) or [] if c is not None]
         if len(chars) != len(rotation.ROTATION):
@@ -104,7 +112,8 @@ class MyToolsFarmEchoTask(FarmEchoTask):
         should_go, why = state.should_hand_off(
             con_full=self._con_is_full(current_char), slot=here)
         if not should_go:
-            return current_char          # 不换：继续打这一棒
+            # 还没到换人时机 → 不换（ok-ww 会打条 warning，属正常）
+            return current_char
         self.log_info(f"固定轴：{why} → 换下一棒")
 
         # 推进到下一棒，并找出对应的角色

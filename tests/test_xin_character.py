@@ -382,7 +382,158 @@ class TestDontSwitchMidCombo(unittest.TestCase):
                       "perform_dominion 没收尾 —— phase 回不到 red，会卡住不切人")
 
 
-class TestPhaseSurvivesReset(unittest.TestCase):
+class TestPhaseNeverStuck(unittest.TestCase):
+    """★★ 阶段被中断时 phase **必须复位**，否则会连带两个现象。
+
+    用户 2026-10-02 报："心不放二段大招，也不切3号位了"。
+
+    ## 一个根因解释两个现象
+
+    ``perform_dominion`` 里的 ``self.sleep(1.5)`` 会走
+    ``BaseCombatTask.sleep_check()`` —— 一旦那一瞬检测到"不在战斗"
+    就 ``raise_not_in_combat`` **抛异常**，函数被打断：
+
+    * ``perform_finish`` 没跑到 → **二段大招没放**；
+    * ``phase`` 留在 ``dominion`` → ``should_stay()`` 永远 True
+      → **永远不切人**（"不切3号位"）。
+
+    实机日志证据::
+
+        BaseCombatTask:sleep check not in combat
+        TaskExecutor:sleep_check error <MyToolsFarmEchoTask>
+        Xin: 一套没打完（phase=dominion）→ 协奏满也**不切人**
+
+    三处修：
+    1. 那次 sleep 用 ``check_combat=False``（收招期间战斗判定可能瞬时为假）；
+    2. ``do_perform`` 捕获异常并**复位 phase**；
+    3. ``should_stay`` 加**卡死超时**兜底（``PHASE_STUCK_TIMEOUT``）。
+    """
+
+    def setUp(self):
+        import logging
+        import os
+
+        self.text = (VENDOR / "okww" / "char" / "Xin.py").read_text(
+            encoding="utf-8")
+        logging.disable(logging.CRITICAL)
+        vendor = str(VENDOR)
+        if vendor not in sys.path:
+            sys.path.insert(0, vendor)
+        self._old_cwd = os.getcwd()
+        os.chdir(VENDOR)
+        try:
+            from okww.char.Xin import Xin
+            self.Xin = Xin
+        finally:
+            os.chdir(self._old_cwd)
+
+    def _char(self):
+        class _Task:
+            def __getattr__(self, _n):
+                return lambda *a, **k: None
+
+        return self.Xin(_Task(), 0, char_name="char_xin")
+
+    def test_exception_resets_phase(self):
+        """★ 阶段抛异常后 phase 必须回到 red（否则永远不切人）。"""
+        char = self._char()
+        char.phase = "dominion"
+
+        def _boom():
+            raise RuntimeError("raise_not_in_combat 模拟")
+
+        char.perform_dominion = _boom
+        char.switch_next_char = lambda *a, **k: None
+        char.do_perform()
+        self.assertEqual(
+            char.phase, "red",
+            "阶段抛异常后 phase 卡在 dominion —— 会永远不切人")
+
+    def test_do_perform_catches_exception(self):
+        """★ ``do_perform`` 必须捕获异常（不能让它冒出去又不复位）。"""
+        tree = ast.parse(self.text)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "do_perform")
+        handlers = [n for n in ast.walk(fn) if isinstance(n, ast.ExceptHandler)]
+        self.assertTrue(handlers, "do_perform 没有 except —— 异常会把 phase 卡住")
+        # handler 里必须把 phase 设回 "red"
+        reset = False
+        for h in handlers:
+            for n in ast.walk(h):
+                if (isinstance(n, ast.Assign)
+                        and isinstance(n.value, ast.Constant)
+                        and n.value.value == "red"):
+                    reset = True
+        self.assertTrue(reset, "except 里没把 phase 设回 red")
+
+    def test_settle_sleep_disables_combat_check(self):
+        """★★ 收招那次 sleep 必须 ``check_combat=False``。
+
+        否则 ``sleep_check`` 会在"瞬时不在战斗"时抛异常，
+        把 ``perform_dominion`` 打断（这就是二段大不放的原因）。
+
+        ⚠ 用 AST 查调用参数，不查源码文本。
+        """
+        tree = ast.parse(self.text)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "perform_dominion")
+        found = False
+        for n in ast.walk(fn):
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+                continue
+            if n.func.attr != "sleep":
+                continue
+            seg = ast.get_source_segment(self.text, n) or ""
+            if "HEAVY_SETTLE" not in seg:
+                continue
+            found = True
+            kwargs = {k.arg: k.value for k in n.keywords}
+            self.assertIn("check_combat", kwargs,
+                          "收招 sleep 没传 check_combat —— 会被 sleep_check 打断")
+            val = kwargs["check_combat"]
+            self.assertIsInstance(val, ast.Constant)
+            self.assertFalse(val.value,
+                             "收招 sleep 的 check_combat 不是 False ——"
+                             " 战斗判定瞬时为假时会抛异常打断")
+        self.assertTrue(found, "找不到收招那次 sleep(HEAVY_SETTLE)")
+
+    def test_stuck_timeout_exists(self):
+        """★ 卡死兜底：```PHASE_STUCK_TIMEOUT`` 要有，且值合理。"""
+        tree = ast.parse(self.text)
+        cls = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.ClassDef) and n.name == "Xin")
+        consts = {}
+        for n in cls.body:
+            if (isinstance(n, ast.Assign)
+                    and isinstance(n.value, ast.Constant)
+                    and isinstance(n.value.value, float)):
+                consts[n.targets[0].id] = n.value.value
+        self.assertIn("PHASE_STUCK_TIMEOUT", consts,
+                      "没有 PHASE_STUCK_TIMEOUT —— phase 卡住就永远不切人")
+        stuck = consts["PHASE_STUCK_TIMEOUT"]
+        # 各段上限之和：红狐 14 + 白狐 18 + 统御 13 + 收尾 8 ≈ 53
+        total = (consts.get("RED_GAIN_TIMEOUT", 0)
+                 + consts.get("WHITE_GAIN_TIMEOUT", 0)
+                 + consts.get("DOMINION_DURATION", 0)
+                 + consts.get("FINISH_TIMEOUT", 0))
+        self.assertGreater(
+            stuck, total,
+            f"PHASE_STUCK_TIMEOUT({stuck}) 比各段上限之和({total}) 还小 ——"
+            f" 正常流程会被误判成卡住")
+        self.assertLessEqual(stuck, 180.0, "卡死兜底太久了")
+
+    def test_stuck_timeout_releases(self):
+        """★ 卡住超时后 should_stay 要放行，并把 phase 复位。"""
+        import time
+
+        char = self._char()
+        char.phase = "dominion"
+        char.should_stay()          # 首次记录起点
+        char._phase_since = time.monotonic() - (self.Xin.PHASE_STUCK_TIMEOUT + 1)
+        self.assertFalse(char.should_stay(),
+                         "卡了超过上限还不放行 —— 队伍会卡死")
+        self.assertEqual(char.phase, "red", "放行后 phase 没复位")
     """★★ 形态 phase 必须**跨 ``reset_state`` 保留**。
 
     用户 2026-10-02 报："心二阶段打满金色能量后，还是没有释放重击…
@@ -471,19 +622,28 @@ class TestPhaseSurvivesReset(unittest.TestCase):
         self.assertTrue(calls, "reset_state 没调 super() —— 入场状态清不掉")
 
 
-class TestDominionDetectsSignal(unittest.TestCase):
-    """★★ 统御阶段要**检测信号**，不能盲等 13 秒。
+class TestDominionWaitsFullWindow(unittest.TestCase):
+    """★★ 统御阶段**不该**用 ``forte_ready()`` 判断"照世心耗尽"。
 
-    用户报"打满金色能量后一直普攻"。原来 ``perform_dominion`` 是
-    ``while 时间 < 13: 平A`` —— 盲等。但机制是：
+    用户 2026-10-02 报："心不放二段大招"。日志里有决定性的一句::
 
-        进统御 → 攻击**消耗照世心** → **耗尽后**重击才变成【镇寰宇】
-        → 打完才解锁二段大
+        [统御众机] 照世心已耗尽（第 0.0 秒）→ 停手
 
-    盲等的两个坏处：
-    * 照世心早早耗尽时白等剩下的秒数（浪费输出窗口）；
-    * 13 秒还没耗尽时强行放重击 —— 打出来的不是【镇寰宇】，
-      自然解锁不了二段大（这正是"亮了但按不生效"的来源）。
+    **第 0.0 秒就"耗尽"** —— 不可能。
+
+    ## 为什么错
+    ``forte_ready()`` 查的是 ``is_mouse_forte_full()`` / ``is_forte_full()``，
+    那是**屏幕底部的通用能量槽**（红狐的应世心也在那里）。进统御时它
+    还是满的 → 第 0.0 秒就 break → 立刻重击，但照世心根本没打空
+    → 那个重击**不是【镇寰宇】** → 二段大永远解锁不了。
+
+    ## 攻略怎么说的
+    「统御期间攻击**持续消耗照世心**，**耗尽后**才能打出终结重击
+    【镇寰宇】」—— 照世心是**慢慢掉的**，不是"满了就能放"。
+
+    ## 所以
+    老老实实打满 ``DOMINION_DURATION``（攻略：「持续**固定 13 秒**」），
+    打完再放终结重击。
     """
 
     def setUp(self):
@@ -494,33 +654,49 @@ class TestDominionDetectsSignal(unittest.TestCase):
             n for n in ast.walk(tree)
             if isinstance(n, ast.FunctionDef) and n.name == "perform_dominion")
 
-    def _loop(self) -> ast.While:
-        loops = [n for n in ast.walk(self.fn) if isinstance(n, ast.While)]
-        self.assertTrue(loops, "perform_dominion 里没有 while 循环")
-        return loops[0]
-
-    def test_dominion_checks_forte(self):
-        """★ 循环里要查 ``forte_ready()``（照世心耗尽 = 重击就绪）。"""
+    def test_does_not_use_forte_ready_as_gauge(self):
+        """★ 别拿通用能量槽当"照世心耗尽"的判据。"""
         calls = {
-            n.func.attr for n in ast.walk(self._loop())
+            n.func.attr for n in ast.walk(self.fn)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
         }
-        self.assertIn(
+        self.assertNotIn(
             "forte_ready", calls,
-            "统御循环没查 forte_ready —— 会盲等 13 秒，"
-            "照世心耗尽也不知道停手")
+            "统御阶段又用 forte_ready() 判照世心了 —— 那是**通用槽**，"
+            "进统御时还是满的，会第 0.0 秒就误判成'耗尽'")
 
-    def test_dominion_breaks_early(self):
-        """★ 检测到信号要 ``break`` —— 不能打满整 13 秒。"""
-        breaks = [n for n in ast.walk(self._loop())
-                  if isinstance(n, ast.Break)]
-        self.assertTrue(breaks, "统御循环没有 break —— 永远打满 13 秒")
+    def test_waits_full_duration(self):
+        """★ 要打满 ``DOMINION_DURATION``（13 秒）。"""
+        loop = next((n for n in ast.walk(self.fn) if isinstance(n, ast.While)),
+                    None)
+        self.assertIsNotNone(loop, "统御阶段没有循环")
+        cond = ast.get_source_segment(self.text, loop.test) or ""
+        self.assertIn("DOMINION_DURATION", cond,
+                      f"统御循环的条件不是 DOMINION_DURATION：{cond[:60]}")
 
-    def test_elapsed_still_capped(self):
-        """13 秒仍要作为**兜底上限**（信号读不到时别卡死）。"""
-        self.assertIn("DOMINION_DURATION", ast.get_source_segment(
-            self.text, self._loop()) or "",
-            "统御循环没有时间上限 —— 信号失灵时会卡死")
+    def test_no_early_break(self):
+        """★ 不该有提前 break（否则又是"没打满就放重击"）。"""
+        breaks = [n for n in ast.walk(self.fn) if isinstance(n, ast.Break)]
+        self.assertEqual(
+            breaks, [],
+            f"统御循环里有 {len(breaks)} 个 break —— 会提前结束、"
+            f"照世心没打空就放重击（那个重击不是【镇寰宇】）")
+
+    def test_heavy_attack_after_loop(self):
+        """终结重击要在 13 秒**打满之后**。"""
+        heavy = finish = None
+        for n in ast.walk(self.fn):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+                if n.func.attr == "heavy_attack" and heavy is None:
+                    heavy = n.lineno
+                elif n.func.attr == "perform_finish" and finish is None:
+                    finish = n.lineno
+        loop = next((n for n in ast.walk(self.fn) if isinstance(n, ast.While)),
+                    None)
+        self.assertIsNotNone(heavy, "没有终结重击")
+        self.assertIsNotNone(loop, "没有循环")
+        self.assertGreater(heavy, loop.lineno,
+                           "终结重击在循环之前 —— 顺序反了")
 
 
 class TestVendorFiles(unittest.TestCase):
