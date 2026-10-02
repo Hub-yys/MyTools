@@ -72,6 +72,12 @@ class TestUltimateAfterDominion(unittest.TestCase):
         self.fn = next(
             n for n in ast.walk(tree)
             if isinstance(n, ast.FunctionDef) and n.name == "perform_dominion")
+        #: 常量要从源码里读（不在测试进程里 import ok-ww，那会拖进整个 ok 链）
+        self.consts = {
+            m.group(1): float(m.group(2))
+            for m in re.finditer(
+                r"^\s{4}([A-Z_]+) = ([\d.]+)\s*$", self.text, re.M)
+        }
 
     def test_dominion_calls_finish(self):
         """★ ``perform_dominion`` 必须**自己**调 ``perform_finish``。"""
@@ -134,6 +140,89 @@ class TestUltimateAfterDominion(unittest.TestCase):
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
         }
         self.assertIn("click_liberation", calls, "没按大招键")
+
+    def test_waits_for_heavy_settle(self):
+        """★★ 终结重击之后要**等收招**再去按大招。
+
+        用户 2026-10-02 反馈"还是不行"，日志显示：:
+
+            [统御众机] 13 秒到 → 终结重击【镇寰宇】
+            [收尾] 找二段大招
+            clicked liberation but no effect   ← 连续 4 次
+
+        原因：二段大是【镇寰宇】**打完那一刻**才解锁的
+        （攻略：「消耗完全部照心值后，重击替换为镇世，**随后**解锁
+        第二阶段共鸣解放」）。重击有收招动画，抢在动画里按大招
+        必然 no effect。
+
+        ⚠ 这条防的是"把那个等待删掉"。
+        """
+        self.assertIn("HEAVY_SETTLE", self.text,
+                      "没有 HEAVY_SETTLE 常量 —— 收招等待被删了")
+        settle_line = None
+        for n in ast.walk(self.fn):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "sleep"):
+                seg = ast.get_source_segment(self.text, n) or ""
+                if "HEAVY_SETTLE" in seg and settle_line is None:
+                    settle_line = n.lineno
+        self.assertIsNotNone(
+            settle_line,
+            "perform_dominion 里没有等收招（sleep(HEAVY_SETTLE)）——"
+            " 大招会在动画期间被抢按，全部 no effect")
+
+    def test_settle_between_heavy_and_finish(self):
+        """顺序必须是：重击 → 等收招 → 找大招。"""
+        heavy_line = settle_line = finish_line = None
+        for n in ast.walk(self.fn):
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+                continue
+            name = n.func.attr
+            if name == "heavy_attack" and heavy_line is None:
+                heavy_line = n.lineno
+            elif name == "sleep" and settle_line is None:
+                seg = ast.get_source_segment(self.text, n) or ""
+                if "HEAVY_SETTLE" in seg:
+                    settle_line = n.lineno
+            elif name == "perform_finish" and finish_line is None:
+                finish_line = n.lineno
+        self.assertIsNotNone(heavy_line, "没有终结重击")
+        self.assertIsNotNone(settle_line, "没有等收招")
+        self.assertIsNotNone(finish_line, "没有 perform_finish")
+        self.assertLess(heavy_line, settle_line,
+                        "等收招必须在重击**之后**")
+        self.assertLess(settle_line, finish_line,
+                        "找大招必须在等收招**之后**")
+
+    def test_finish_waits_for_ultimate_ready(self):
+        """★ 收尾里要先查 ``ultimate_ready()`` 再按 —— 不闷头乱按。"""
+        tree = ast.parse(self.text)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "perform_finish")
+        calls = {
+            n.func.attr for n in ast.walk(fn)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+        }
+        self.assertIn(
+            "ultimate_ready", calls,
+            "perform_finish 没查 ultimate_ready —— 会像之前那样"
+            "在动画期间连按 4 次 no effect")
+
+    def test_finish_timeout_is_reasonable(self):
+        """★ 等大招的窗口要有上界，但也不能太短。"""
+        settle = self.consts.get("HEAVY_SETTLE")
+        timeout = self.consts.get("FINISH_TIMEOUT")
+        self.assertIsNotNone(settle, "没有 HEAVY_SETTLE 常量")
+        self.assertIsNotNone(timeout, "没有 FINISH_TIMEOUT 常量")
+        self.assertGreater(settle, 0, "收招等待必须是正数")
+        self.assertLess(settle, 5.0, "收招等待太久会拖慢循环")
+        self.assertGreaterEqual(
+            timeout, 3.0,
+            f"等大招只有 {timeout}s —— 动画+解锁判定不够，会像之前那样错过")
+        self.assertLessEqual(
+            timeout, 15.0,
+            f"等大招 {timeout}s 太久 —— 协奏早满了，该切人了还在原地等")
 
 
 class TestVendorFiles(unittest.TestCase):

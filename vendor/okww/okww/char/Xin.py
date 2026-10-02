@@ -68,8 +68,16 @@ class Xin(BaseChar):
     WHITE_GAIN_TIMEOUT = 18.0
     #: 统御众机：攻略明确"持续固定13秒"
     DOMINION_DURATION = 13.0
-    #: 放完终结重击后等二段大招的窗口
-    FINISH_TIMEOUT = 5.0
+    #: 终结重击之后、去按二段大之前的**收招等待**（秒）。
+    #:
+    #: ⚠ 2026-10-02 加的：二段大是在【镇寰宇】**打完那一刻**才解锁的
+    #:   （攻略：「消耗完全部照心值后，重击替换为镇世，**随后**解锁
+    #:   第二阶段共鸣解放」）。不留这点时间的话，去按大招会连续
+    #:   `clicked liberation but no effect`（实机日志出现过 4 连）。
+    HEAVY_SETTLE = 1.5
+    #: 放完终结重击后等二段大招的窗口。
+    #: ⚠ 放宽到 8 秒：动画 + 解锁判定需要时间，太短会白白错过。
+    FINISH_TIMEOUT = 8.0
     #: 普攻节奏
     ATTACK_INTERVAL = 0.12
 
@@ -230,6 +238,15 @@ class Xin(BaseChar):
         self.logger.info("Xin: [统御众机] 13 秒到 → 终结重击【镇寰宇】")
         self.heavy_attack(2.0)
 
+        # ★ 等重击的**收招动画**走完 —— 二段大是在【镇寰宇】**打完那一刻**
+        #   才解锁的（攻略：「消耗完全部照心值后，重击替换为镇世，
+        #   **随后**解锁第二阶段共鸣解放」）。
+        #   ⚠ 2026-10-02 修的第二个 bug：原来这里紧接着就去找大招，
+        #   结果日志里连续 4 次 `clicked liberation but no effect` ——
+        #   因为全落在动画期间，大招还没解锁。
+        self.logger.info(f"Xin: [统御众机] 等重击收招（{self.HEAVY_SETTLE} 秒）")
+        self.sleep(self.HEAVY_SETTLE)
+
         # ★ 紧接着放二段大招 —— **不能留到下一轮**（见方法说明）
         self.perform_finish()
 
@@ -240,18 +257,47 @@ class Xin(BaseChar):
         ⚠ 这个方法由 :meth:`perform_dominion` **当场调用**，
         不再靠 ``do_perform`` 的下一轮分派 —— 那样永远轮不到（见上）。
         保留成独立方法只是为了可读性和**可单测**。
+
+        ## ⚠ 2026-10-02 修的第二个 bug
+
+        原来这里是"闷头按 5 秒" ``click_liberation()``。实机日志显示
+        连续 4 次 ``clicked liberation but no effect`` —— 因为那会儿
+        重击的收招动画还没走完、二段大**还没解锁**，按了也白按。
+
+        现在改成：**先等 ``liberation_available()`` 说"亮"了再按**，
+        并且在窗口内**反复重试**（解锁可能有延迟）。
         """
-        self.logger.info("Xin: [收尾] 找二段大招")
+        self.logger.info("Xin: [收尾] 等二段大招解锁")
         start = time.time()
         clicked = False
+        attempts = 0
+        saw_ready = False
         while self.time_elapsed_accounting_for_freeze(start) < self.FINISH_TIMEOUT:
-            if self.click_liberation():
-                self.logger.info("Xin: [收尾] 二段大招（终结爆发）已放")
-                clicked = True
-                break
-            self.cycle_sleep(0.1)
+            if self.ultimate_ready():
+                saw_ready = True
+                attempts += 1
+                if self.click_liberation():
+                    self.logger.info(
+                        f"Xin: [收尾] 二段大招（终结爆发）已放"
+                        f"（第 {attempts} 次尝试）")
+                    clicked = True
+                    break
+                self.logger.info(
+                    f"Xin: [收尾] 第 {attempts} 次按了大招但没生效，重试")
+            self.cycle_sleep(0.2)
         if not clicked:
-            self.logger.warning("Xin: [收尾] 二段大招没放出去")
+            # ⚠ 这两种情况的**原因完全不同**，日志里必须分得清：
+            #   saw_ready=False → 大招**从来没亮过**（识别问题 / 没解锁）
+            #   saw_ready=True  → 亮了但按下去不生效（按键问题 / 动画期）
+            if saw_ready:
+                self.logger.warning(
+                    f"Xin: [收尾] 二段大招亮了但按不生效"
+                    f"（{self.FINISH_TIMEOUT:.0f} 秒内试了 {attempts} 次）")
+            else:
+                self.logger.warning(
+                    f"Xin: [收尾] 二段大招**一直没亮**"
+                    f"（{self.FINISH_TIMEOUT:.0f} 秒内 liberation_available "
+                    f"始终为假）—— 可能是还没解锁，或大招图标没被识别到")
 
         self.phase = "red"
         self.dominion_start = -1.0
