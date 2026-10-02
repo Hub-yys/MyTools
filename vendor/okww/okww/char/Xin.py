@@ -56,7 +56,7 @@
 
 import time
 
-from okww.char.BaseChar import BaseChar, SwitchPriority
+from okww.char.BaseChar import BaseChar
 
 
 class Xin(BaseChar):
@@ -174,6 +174,20 @@ class Xin(BaseChar):
         ⚠ 三个形态是**严格顺序**推进的，由 ``self.phase`` 记住走到哪。
         「收尾」（二段大招）**不在这里分派** —— 它由
         :meth:`perform_dominion` 当场连着做完（见那个方法的说明）。
+
+        ## ★ 2026-10-02 修的第四个 bug（用户报"没打完一套就切人"）
+
+        原来这里是 ``finally: self.switch_next_char()`` —— **无条件**切人。
+        于是协奏一满就被切走，一套连招打断在半路。
+
+        我一开始想用 ``get_switch_priority → SwitchPriority.NO`` 拦住，
+        但**那个理解是错的**：``NO`` 只表示"**别把我选为切换目标**"
+        （``_choose_switch_target`` 里用 ``> SwitchPriority.NO`` 过滤候选人），
+        **不阻止当前角色自己主动切走**。而 ``switch_next_char()`` 正是
+        心**主动**发起的 —— 保护形同虚设。
+
+        **修法**：一套没打完就**不切**（``should_stay`` 说了算）。
+        打完了（回了红狐）才 ``switch_next_char()``。
         """
         try:
             if self.phase == "white":
@@ -183,7 +197,21 @@ class Xin(BaseChar):
             else:
                 self.perform_red()
         finally:
-            self.switch_next_char()
+            if self.should_stay():
+                # ★ 还没打完一套 —— 协奏满了也不走
+                self.logger.info(
+                    f"Xin: 一套没打完（phase={self.phase}）→ 协奏满也**不切人**")
+            else:
+                self.switch_next_char()
+
+    def should_stay(self) -> bool:
+        """一套连招还没走完吗（走完 = 已回红狐）。
+
+        红狐 = 一轮的起点，也是终点 —— 回到红狐说明这一套打完了，
+        可以正常切人。其它形态（白狐 / 统御）都是**中途**，不能走。
+        """
+        return getattr(self, "phase", "red") != "red"
+
 
     # ------------------------------------------------------------------ 红狐
     def perform_red(self):
@@ -360,11 +388,19 @@ class Xin(BaseChar):
     # ------------------------------------------------------------------ 切换
     def get_switch_priority(self, current_char=None, has_intro=False,
                             target_low_con=False):
-        """统御众机期间别被切走 —— 那是 13 秒爆发窗口，切了就断。
+        """★ **这不是"别切我"的开关** —— 别再用它做保护。
 
-        ⚠ 收尾（二段大招）也在这段里，同样不能被打断。
+        ``SwitchPriority.NO`` 的含义是「**别把我选为切换目标**」
+        （``BaseCombatTask._choose_switch_target`` 里用
+        ``switch_priority > SwitchPriority.NO`` 过滤候选人），
+        **不阻止**当前角色自己调 ``switch_next_char()``。
+
+        2026-10-02 我就是误解了这一点，以为返回 ``NO`` 就能保住
+        统御窗口 —— 结果协奏一满照样被切走（用户报"没打完一套就切人"）。
+        真正的保护在 :meth:`do_perform` 里的 :meth:`should_stay`。
+
+        留这个方法是因为父类的默认实现有"奶妈协奏满了要锁一会儿"的逻辑，
+        得继承下来。
         """
-        if self.phase == "dominion":
-            return SwitchPriority.NO
         return super().get_switch_priority(current_char, has_intro,
                                            target_low_con)

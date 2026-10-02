@@ -225,6 +225,163 @@ class TestUltimateAfterDominion(unittest.TestCase):
             f"等大招 {timeout}s 太久 —— 协奏早满了，该切人了还在原地等")
 
 
+class TestDontSwitchMidCombo(unittest.TestCase):
+    """★★ 一套没打完**不能切人**（协奏满了也不行）。
+
+    用户 2026-10-02 报："心怎么没打完一套就切人了？虽然他的协奏满了"。
+
+    日志现象::
+
+        [白狐] 开始攒照世心
+        [红狐] 开始攒应世心            ← 白狐被打断，从红狐重来
+        [白狐] 照世心满 → 强化 E 进统御众机
+        switch_next_char Xin -> ShoreKeeper   ← 刚进统御就被切走
+
+    ## 根因：我误解了 ``SwitchPriority.NO``
+
+    它只表示「**别把我选为切换目标**」
+    （``_choose_switch_target`` 用 ``> SwitchPriority.NO`` 过滤候选人），
+    **不阻止**当前角色自己调 ``switch_next_char()``。
+
+    而 ``do_perform`` 原来在 ``finally`` 里**无条件**调它 ——
+    那是心**主动**要求换人，所以那个"保护"完全没生效。
+
+    ## 修法
+    ``do_perform`` 里用 :meth:`should_stay` 判断：一套走完（回红狐）才切。
+    """
+
+    def setUp(self):
+        import logging
+        import os
+
+        self.text = (VENDOR / "okww" / "char" / "Xin.py").read_text(
+            encoding="utf-8")
+        logging.disable(logging.CRITICAL)
+        vendor = str(VENDOR)
+        if vendor not in sys.path:
+            sys.path.insert(0, vendor)
+        self._old_cwd = os.getcwd()
+        os.chdir(VENDOR)
+        try:
+            from okww.char.Xin import Xin
+
+            class _Task:
+                def __getattr__(self, _n):
+                    return lambda *a, **k: None
+
+            self.char = Xin(_Task(), 0, char_name="char_xin")
+        finally:
+            os.chdir(self._old_cwd)
+
+    def test_white_phase_does_not_switch(self):
+        """★ 白狐阶段（中途）不能切。"""
+        self.char.phase = "white"
+        self.assertTrue(self.char.should_stay(),
+                        "白狐阶段还要切人 —— 一套会被打断")
+
+    def test_dominion_phase_does_not_switch(self):
+        """★ 统御阶段（中途）不能切。"""
+        self.char.phase = "dominion"
+        self.assertTrue(self.char.should_stay(),
+                        "统御阶段还要切人 —— 13 秒窗口会被打断")
+
+    def test_red_phase_switches(self):
+        """红狐 = 一套的起点/终点 → 可以切。"""
+        self.char.phase = "red"
+        self.assertFalse(self.char.should_stay(),
+                         "红狐阶段不切人 —— 会永远占场")
+
+    def test_do_perform_guards_the_switch(self):
+        """★ ``do_perform`` 里切人要**受 should_stay 保护**。
+
+        ⚠ 这条防的是"改回无条件切人"。用 AST 看 finally 里有没有 if。
+        """
+        tree = ast.parse(self.text)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == "do_perform")
+        # 找 finally 块
+        final_body = fn.body[-1]
+        self.assertIsInstance(final_body, ast.Try, "do_perform 没有 try")
+        self.assertTrue(final_body.finalbody, "do_perform 没有 finally")
+
+        # finally 里必须有一个 If（判断 should_stay）
+        has_guard = any(isinstance(n, ast.If) for n in final_body.finalbody)
+        self.assertTrue(
+            has_guard,
+            "do_perform 的 finally 里没有条件判断 —— 又是无条件切人了"
+            "（协奏一满就被切走，一套打不完）")
+
+        # 那个 If 必须查 should_stay
+        guard_src = " ".join(ast.get_source_segment(self.text, n) or ""
+                             for n in final_body.finalbody
+                             if isinstance(n, ast.If))
+        self.assertIn("should_stay", guard_src,
+                      "finally 里的判断不是 should_stay")
+
+    def test_switch_priority_not_used_as_guard(self):
+        """★ 别再把 ``SwitchPriority.NO`` 当"别切我"的开关。
+
+        它只影响"谁被选为**目标**"，不影响当前角色主动切走 ——
+        用它做保护是无效的（我就是这么错的）。
+
+        ⚠ 只查**真代码**（AST），不查 docstring —— 方法文档里正好在
+        解释这件事，字符串搜索会命中它（第一版就是这么误报的）。
+        """
+        tree = ast.parse(self.text)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "get_switch_priority")
+        # 收集方法体里真实用到的属性名（不看注释/docstring）
+        used = set()
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name):
+                used.add(f"{n.value.id}.{n.attr}")
+        self.assertNotIn(
+            "SwitchPriority.NO", used,
+            "get_switch_priority 又拿 SwitchPriority.NO 当保护了 ——"
+            " 那拦不住主动切人（2026-10-02 踩过）")
+
+    def test_every_phase_eventually_returns_to_red(self):
+        """★ 不切人会不会卡死？每条路都要能回到 red。
+
+        红狐/白狐/统御三条路都有**超时兜底**，最终都会 phase="red"
+        （``perform_finish`` 负责设回 red）。
+
+        ⚠ 用 AST 查**字符串赋值**，不查源码文本 ——
+        docstring 里也提到了 phase（第一版误报过）。
+        """
+        tree = ast.parse(self.text)
+
+        def assigned_strings(fn_name: str) -> set:
+            """方法体里 ``self.xxx = "字面量"`` 的所有字面量。"""
+            fn = next(n for n in ast.walk(tree)
+                      if isinstance(n, ast.FunctionDef) and n.name == fn_name)
+            out = set()
+            for n in ast.walk(fn):
+                if (isinstance(n, ast.Assign)
+                        and isinstance(n.value, ast.Constant)
+                        and isinstance(n.value.value, str)):
+                    out.add(n.value.value)
+            return out
+
+        # 三条路各自会推进到下一个形态
+        self.assertIn("white", assigned_strings("perform_red"),
+                      "perform_red 没把 phase 推进到 white")
+        self.assertIn("dominion", assigned_strings("perform_white"),
+                      "perform_white 没把 phase 推进到 dominion")
+        # perform_finish 是唯一把 phase 设回 red 的地方
+        self.assertIn("red", assigned_strings("perform_finish"),
+                      "perform_finish 没把 phase 设回 red —— 会永远不切人")
+        # 统御靠调 perform_finish 收尾
+        dom = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef)
+                   and n.name == "perform_dominion")
+        called = {n.func.attr for n in ast.walk(dom)
+                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+        self.assertIn("perform_finish", called,
+                      "perform_dominion 没收尾 —— phase 回不到 red，会卡住不切人")
+
+
 class TestPhaseSurvivesReset(unittest.TestCase):
     """★★ 形态 phase 必须**跨 ``reset_state`` 保留**。
 
