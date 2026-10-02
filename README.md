@@ -842,6 +842,40 @@ reason=support_buffs_active_return_to_main_dps
 （这个坑在「心」的模板上踩过一次）。其余（协奏值读取、入场判定、
 切人动作、漂移容错）全部沿用 ok-ww 原实现，那些是踩过坑的。
 
+### ★ 修的 ok-ww bug：守岸人永远不放重击
+
+用户实测："ok-ww 的守岸人不释放重击"。查下来是**上游的一个 bug**：
+
+```python
+# ok-ww 原版 ShoreKeeper.do_perform
+if not self.click_resonance():
+    self.heavy_click_forte(self.is_mouse_forte_full)
+```
+
+`click_resonance()` 返回的是**元组** `(clicked, duration, has_animation)`
+—— 元组**永远是真值**，所以 `not 元组` **永远是 False**，
+那句重击是**死代码**。
+
+**修法**：摘掉 `if not ...` 包装，改成无条件调用 ——
+和 ok-ww 自己的 **Changli**（同样是"攒满→重击"型）写法一致：
+
+```python
+self.click_resonance()
+self.heavy_click_forte(check_fun=self.is_mouse_forte_full)
+```
+
+`heavy_click_forte` 内部会先调 `check_fun()`（能量满没满），
+没满就什么都不做 —— 所以**无条件调用是安全的**。
+
+> ⚠ 这处改在 `vendor/` 里（上游更新会冲掉），靠
+> **`tools/install_xin_patch.py`** 重放 —— 和「心」的支持同一套机制。
+> 跑 `.venv/Scripts/python tools/install_xin_patch.py --apply` 装回。
+>
+> ⚠ 该脚本有**两种模式**：`_patch`（插在后面）和 `_patch_replace`（替换）。
+> 守岸人这处必须用**替换** —— 第一版错用了插入，结果旧的 bug 代码还在、
+> 新的只是被加在它后面（等于没修）。`tests/test_shorekeeper_heavy.py`
+> 现在用 AST 盯着这点。
+
 纯逻辑在 `auto_combat/rotation.py`（`RotationState`），不碰游戏，可单测。
 
 | 概念 | 说明 |

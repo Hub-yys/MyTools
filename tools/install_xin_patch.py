@@ -36,6 +36,43 @@ VENDOR = ROOT / "vendor" / "okww"
 
 LABELS = VENDOR / "okww" / "Labels.py"
 FACTORY = VENDOR / "okww" / "char" / "CharFactory.py"
+SHOREKEEPER = VENDOR / "okww" / "char" / "ShoreKeeper.py"
+
+#: ★ 守岸人「能量条满了就放重击」——**修 ok-ww 上游的一个 bug**。
+#:
+#: ## 上游的写法（有 bug）
+#:
+#:     if not self.click_resonance():
+#:         self.heavy_click_forte(self.is_mouse_forte_full)
+#:
+#: ``click_resonance()`` 返回的是**元组** ``(clicked, duration, has_animation)``
+#: —— 元组**永远是真值**，所以 ``not 元组`` **永远是 False**，
+#: 那句重击是**死代码**。用户实测："ok-ww 的守岸人不释放重击"。
+#:
+#: 对照 ok-ww 自己的 **Changli**（同样是"攒满→重击"型），写的是
+#: ``self.heavy_click_forte(check_fun=self.is_mouse_forte_full)`` ——
+#: **无条件调用**（函数内部自己判断能量满没满）。这才是正确用法。
+#:
+#: ## 怎么修的
+#:
+#: 摘掉那个 ``if not ...`` 包装，改成无条件调用 —— 和 Changli 一致。
+#: ``heavy_click_forte`` 内部会先查 ``check_fun()``（能量满没满），
+#: 没满就什么都不做，所以无条件调用是安全的。
+SK_NEEDLE = (
+    "        if not self.click_resonance():\n"
+    "            self.heavy_click_forte(self.is_mouse_forte_full)\n"
+)
+SK_BLOCK = (
+    "        # ★ MyTools 修的 ok-ww bug（2026-10-01）：原来写成\n"
+    "        #   ``if not self.click_resonance(): heavy_click_forte(...)``，\n"
+    "        #   而 click_resonance() 返回的是**元组**（永远真值）——\n"
+    "        #   于是重击成了**死代码**，守岸人永远不放重击。\n"
+    "        #   改成无条件调用（heavy_click_forte 内部自己判断能量满没满），\n"
+    "        #   和 ok-ww 自己的 Changli 写法一致。\n"
+    "        self.click_resonance()\n"
+    "        self.heavy_click_forte(check_fun=self.is_mouse_forte_full)\n"
+)
+SK_ALREADY = "self.heavy_click_forte(check_fun=self.is_mouse_forte_full)"
 
 #: Labels 里要加的常量（插在 `yangyang_sp` 之前，那是文件最后一项）
 LABELS_ANCHOR = "    yangyang_sp = 'yangyang_sp'"
@@ -90,8 +127,33 @@ def _patch(path: pathlib.Path, needle: str, block: str, *,
     return True, f"✓ {label} 已安装"
 
 
+def _patch_replace(path: pathlib.Path, needle: str, block: str, *,
+                   already: str, label: str, apply: bool) -> tuple[bool, str]:
+    """把 ``needle`` **替换**成 ``block``（幂等）。返回 (是否已就位, 说明)。
+
+    ⚠ 和 :func:`_patch` 的区别：那个是"插在后面"（加东西），
+    这个是"换掉"（改 bug）。混用会把旧代码留着 —— 实测踩过：
+    第一次实现时用 _patch 追加，结果**旧的 bug 代码还在**，
+    新的重击调用只是被加在它后面，等于没修。
+    """
+    if not path.exists():
+        return False, f"✗ 找不到 {path}"
+    text = path.read_text(encoding="utf-8")
+    if already in text and needle not in text:
+        return True, f"✓ {label} 已在位"
+    if needle not in text:
+        return False, (f"✗ {label}：找不到锚点（上游改了文件结构？）\n"
+                       f"     锚点: {needle.strip()[:70]}")
+    if not apply:
+        return False, f"· {label} 需要安装（--apply 才动手）"
+    path.write_text(text.replace(needle, block, 1), encoding="utf-8")
+    return True, f"✓ {label} 已安装"
+
+
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="把「心」的支持装回 vendor/okww")
+    parser = argparse.ArgumentParser(
+        description="把 MyTools 对 vendor/okww 的改动装回去"
+                    "（「心」的支持 + 守岸人重击 bug 修复）")
     parser.add_argument("--apply", action="store_true", help="真的写文件")
     args = parser.parse_args(argv[1:])
 
@@ -109,6 +171,13 @@ def main(argv: list[str]) -> int:
                              label=label, apply=args.apply)
         print("  ", message)
         results.append(ok)
+
+    # 守岸人那处是**替换**（原来的写法有 bug）—— 单独处理
+    ok, message = _patch_replace(
+        SHOREKEEPER, SK_NEEDLE, SK_BLOCK, already=SK_ALREADY,
+        label="守岸人重击 bug 修复", apply=args.apply)
+    print("  ", message)
+    results.append(ok)
 
     # 另外两处是"新文件"，不靠补丁
     print()
