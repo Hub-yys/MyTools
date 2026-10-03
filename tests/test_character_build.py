@@ -545,36 +545,160 @@ class TestEchoIssues(unittest.TestCase):
 
 
 class TestCachePersistence(unittest.TestCase):
-    """★★ 数据持久化 —— 重启后直接显示上次结果，不用重拉。"""
+    """★★ 数据持久化 —— 重启后直接显示上次结果，不用重拉。
+
+    ## ⚠⚠ 测试**绝不能**写用户的真实缓存
+
+    2026-10-03 我踩过：一个探索脚本直接调 ``tool.save_cache(假数据)``，
+    把用户辛苦拉到的**真实缓存覆盖**成了 ``角色1..角色43`` ——
+    用户打开工具看到的就是假数据。
+
+    所以这里的每个用例都::
+
+        setUp    → 把缓存路径**改到临时目录**
+        tearDown → 还原
+
+    并且有一条测试专门钉住"路径能被替换"这件事。
+    """
+
+    def setUp(self):
+        import tempfile
+
+        from src.tools.game.character_build import tool as T
+
+        self.T = T
+        self._tmp = tempfile.TemporaryDirectory()
+        self._orig = T.cache_file
+        T.cache_file = lambda: pathlib.Path(self._tmp.name) / "c.json"
+
+    def tearDown(self):
+        self.T.cache_file = self._orig
+        self._tmp.cleanup()
 
     def test_save_and_load(self):
-        from src.tools.game.character_build import tool as T
-
-        payload = {"at": "x", "base": {"energy": 1}, "roleList": [],
-                   "details": {}}
-        try:
-            T.save_cache(payload)
-            got = T.load_cache()
-            self.assertEqual(got.get("base", {}).get("energy"), 1)
-        finally:
-            T.clear_cache()
+        self.T.save_cache({"at": "x", "base": {"energy": 1}})
+        self.assertEqual(self.T.load_cache().get("base", {}).get("energy"), 1)
 
     def test_load_missing_returns_empty(self):
-        from src.tools.game.character_build import tool as T
-
-        T.clear_cache()
-        self.assertEqual(T.load_cache(), {})
+        self.assertEqual(self.T.load_cache(), {})
 
     def test_load_corrupt_returns_empty(self):
+        p = self.T.cache_file()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{ 坏的", encoding="utf-8")
+        self.assertEqual(self.T.load_cache(), {})
+
+    def test_clear_removes_file(self):
+        self.T.save_cache({"a": 1})
+        self.assertTrue(self.T.cache_file().exists())
+        self.T.clear_cache()
+        self.assertFalse(self.T.cache_file().exists())
+
+    def test_cache_path_is_redirectable(self):
+        """★★ 钉住"缓存路径可替换" —— 否则上面那些用例会写用户的真文件。
+
+        ⚠ 这个检查**必须在 setUp 之外**做一次（用真实路径对比），
+        所以特意用模块级函数而不是 self。
+        """
+        from src.core import paths
         from src.tools.game.character_build import tool as T
 
+        real = paths.user_data_dir() / "kuro_练度.json"
+        #: setUp 里已把路径改到临时目录 → 两者必须不同
+        self.assertNotEqual(
+            self.T.cache_file(), real,
+            "cache_file 没被替换 —— 测试会写用户真实的缓存文件！"
+            "（2026-10-03 就是这样把用户的真数据覆盖成假数据的）")
+        #: 但"真实位置"的推导必须是对的（不然测的是空气）
+        self.assertEqual(real.name, "kuro_练度.json")
+        self.assertEqual(T.CACHE_NAME, "kuro_练度.json")
+
+
+class TestFetchThreadPartial(unittest.TestCase):
+    """★★ 43 个角色 = 43 次请求，**要几十秒** —— 不能等全拉完才有画面。
+
+    ## 用户的真实遭遇（2026-10-03）
+
+    日志停在 `正在拉声骸详情（43 个角色）…` 之后没下文 ——
+    **没跑完就被关掉了**，`succeeded` 从没发出 → **缓存从没写**
+    → 下次打开还是"没数据"。
+
+    所以现在：
+      * 每 5 个角色 ``progress.emit`` 一次（看得到进度在动）
+      * 同时 ``partial.emit`` 把**已有数据**交给界面
+      * 中途被打断也**已经存了一部分**
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_has_partial_signal(self):
+        from src.tools.game.character_build.tool import FetchThread
+
+        self.assertTrue(hasattr(FetchThread, "partial"),
+                        "没有 partial 信号 —— 拉到一半界面看不到东西")
+
+    def test_has_stop(self):
+        from src.tools.game.character_build.tool import FetchThread
+
+        self.assertTrue(hasattr(FetchThread, "stop"))
+
+    def test_saves_progressively(self):
+        """★ 中途就要落盘（不然被打断就白拉了）。"""
+        import tempfile
+        import time
+
+        from src.core import kuro_account as K
+        from src.tools.game.character_build import tool as T
+
+        tmp = tempfile.TemporaryDirectory()
+        orig_file = T.cache_file
+        T.cache_file = lambda: pathlib.Path(tmp.name) / "c.json"
+
+        saved = {"n": 0}
+        orig_save = T.save_cache
+
+        def counting_save(payload):
+            saved["n"] += 1
+            orig_save(payload)
+
+        #: 把网络调用换成假的
+        origs = {}
+        for name, val in (
+            ("request_data_token", lambda *a, **k: ("DT", False)),
+            ("fetch_base_data", lambda *a, **k: {"name": "x"}),
+            ("fetch_role_data", lambda *a, **k: {
+                "roleList": [{"roleId": i, "roleName": f"c{i}", "level": 90}
+                             for i in range(1, 13)]}),
+            ("fetch_role_detail", lambda *a, **k: {"phantomData": {}}),
+        ):
+            origs[name] = getattr(K, name)
+            setattr(K, name, val)
+
+        T.save_cache = counting_save
         try:
-            p = T.cache_file()
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("{ 坏的", encoding="utf-8")
-            self.assertEqual(T.load_cache(), {})
+            acc = K.Account(token="t", roles=[{"roleId": "1", "serverId": "s",
+                                               "roleName": "x", "gameId": 3}])
+            th = T.FetchThread(acc, "")
+            done = {"v": False}
+            th.succeeded.connect(lambda _p: done.__setitem__("v", True))
+            th.start()
+            deadline = time.time() + 10
+            while not done["v"] and time.time() < deadline:
+                self.app.processEvents()
+                time.sleep(0.02)
+            self.assertTrue(done["v"], "线程没跑完")
+            self.assertGreater(saved["n"], 1,
+                               "只在最后存了一次 —— 中途被打断就白拉了")
         finally:
-            T.clear_cache()
+            T.save_cache = orig_save
+            T.cache_file = orig_file
+            for name, val in origs.items():
+                setattr(K, name, val)
+            tmp.cleanup()
 
 
 class TestToolPage(unittest.TestCase):

@@ -29,7 +29,7 @@ import json
 import logging
 import time
 
-from PySide6.QtCore import QSize, Qt, QThread, Signal
+from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -111,23 +111,43 @@ class LoginThread(QThread):
 
 
 class FetchThread(QThread):
-    """后台拉账号数据（基础 + 角色列表 + 声骸）。"""
+    """后台拉账号数据（基础 + 角色列表 + 声骸）。
+
+    ## ★ 为什么要"边拉边存"（2026-10-03 实测教训）
+
+    43 个角色 = **43 次网络请求**，实测要**十几到几十秒**。
+    用户日志停在 `正在拉声骸详情（43 个角色）…` 之后就没下文 ——
+    因为**没跑完就被关掉了**，`succeeded` 从没发出 → **缓存从没写**
+    → 下次打开还是"没数据"。
+
+    所以现在：
+      * 每拉完**一个**角色就 ``progress.emit``（界面能看到进度在动）
+      * 声骸详情是**逐步累积**的，中途被打断也**已经存了一部分**
+      * ``partial`` 信号：拉到一半也能先把已有数据交给界面
+    """
 
     progress = Signal(str)
     succeeded = Signal(object)
     failed = Signal(str)
+    #: ★ 阶段性成果（拉到一半也先给界面用）
+    partial = Signal(object)
 
     def __init__(self, account, feature_code: str = "", parent=None):
         super().__init__(parent)
         self._account = account
         self._feature_code = (feature_code or "").strip()
+        self._stop = False
+
+    def stop(self) -> None:
+        """请求中止（界面关掉时调）—— 循环会尽快退出并保存已拉到的。"""
+        self._stop = True
 
     def run(self) -> None:                     # noqa: D102
         try:
             acc = self._account
             roles = acc.roles or []
 
-            # ★★ 特征码：用户填了就以它为准
+            # ★★ 特征码：用户填了就以它为准（留空 = 用绑定的那个）
             role = None
             want = self._feature_code
             if want:
@@ -167,33 +187,46 @@ class FetchThread(QThread):
             rd = kuro_account.fetch_role_data(data_token, role_id, server_id)
             role_list = (rd or {}).get("roleList") or []
 
-            self.progress.emit(f"正在拉声骸详情（{len(role_list)} 个角色）…")
-            details = {}
-            for r in role_list:
+            total = len(role_list)
+            self.progress.emit(f"正在拉声骸详情（{total} 个角色）…")
+            details: dict = {}
+            for i, r in enumerate(role_list, 1):
+                if self._stop:
+                    self.progress.emit(f"已中止（拉到 {i - 1}/{total}）")
+                    break
                 cid = r.get("roleId")
                 try:
                     details[str(cid)] = kuro_account.fetch_role_detail(
                         data_token, role_id, server_id, cid)
                 except Exception:              # noqa: BLE001 - 单个失败不中断
                     continue
+                # ★ 每拉几个就报一次进度 + 交给界面（中途关掉也不白拉）
+                if i % 5 == 0 or i == total:
+                    self.progress.emit(f"  声骸进度 {i}/{total}")
+                    payload = self._payload(role, base, role_list, details)
+                    save_cache(payload)
+                    self.partial.emit(payload)
 
+            payload = self._payload(role, base, role_list, details)
+            save_cache(payload)
+            acc.roles = roles
             try:
                 kuro_account.save_account(acc)
             except Exception:                  # noqa: BLE001
                 pass
-
-            payload = {
-                "at": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "role": role, "base": base,
-                "roleList": role_list, "details": details,
-            }
-            save_cache(payload)
-
             self.succeeded.emit(payload)
         except kuro_account.RoleNotFound as exc:
             self.failed.emit(str(exc))
         except Exception as exc:               # noqa: BLE001
             self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _payload(role, base, role_list, details) -> dict:
+        return {
+            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "role": role, "base": base,
+            "roleList": role_list, "details": details,
+        }
 
 
 # --------------------------------------------------------------------- 缓存
@@ -328,10 +361,25 @@ class CharacterBuildPanel(ScrollArea):
         self.setObjectName("CharacterBuildPanel")
         self._account = kuro_account.load_account()
         self._thread: QThread | None = None
+        self._login_thread: QThread | None = None   # ★ 单独持有，别被覆盖
         self._data: dict = load_cache()        # ★ 直接显示上次结果
         self._cards: list[CharacterCard] = []
+        self._auto_fetched = False
         self._build()
         self._render(self._data)               # 有缓存就先显示
+        # ★ 已登录但**没有缓存**（比如上次没拉完）→ 自动拉一次
+        #   （用户："我上次已经登陆，为什么不显示数据"）
+        QTimer.singleShot(300, self._maybe_auto_fetch)
+
+    def _maybe_auto_fetch(self) -> None:
+        """已登录 + 没数据 → 自动拉一次（不用用户再点）。"""
+        if self._auto_fetched or self._data.get("roleList"):
+            return
+        if not self._account.logged_in:
+            return
+        self._auto_fetched = True
+        self._say("检测到已登录但本地没有数据 —— 自动拉取一次…")
+        self._on_fetch()
 
     # ------------------------------------------------------------- 构建
     def _build(self) -> None:
@@ -388,19 +436,21 @@ class CharacterBuildPanel(ScrollArea):
             box.addLayout(row)
             return edit
 
-        self._feature_edit = field("特征码", "留空 = 用绑定账号自动获取",
-                                   200)
+        # ⚠ 特征码**不给输入框**（用户 2026-10-03 要求）：
+        #   登录后自动从「绑定的游戏角色」拿到，没必要手填。
         self._mobile_edit = field("手机号", "手机号", 200, MOBILE_LEN)
         self._code_edit = field("验证码", "短信验证码", 200, 8)
+        #: 兼容老测试 / 老配置：特征码恒为空（永远走"自动获取"）
+        self._feature_edit = QLineEdit(card)
+        self._feature_edit.setVisible(False)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
         self._login_button = PushButton("登录", card)
         self._login_button.clicked.connect(self._on_login)
         btn_row.addWidget(self._login_button)
-        self._fetch_button = PushButton("获取数据", card)
-        self._fetch_button.clicked.connect(self._on_fetch)
-        btn_row.addWidget(self._fetch_button)
+        # ⚠ 「获取数据」按钮已去掉（用户要求）：登录后**自动拉**，
+        #   之后想重拉点「刷新数据」。
         self._refresh_button = PushButton("刷新数据", card)
         self._refresh_button.clicked.connect(self._on_fetch)
         btn_row.addWidget(self._refresh_button)
@@ -409,7 +459,7 @@ class CharacterBuildPanel(ScrollArea):
 
         box.addWidget(CaptionLabel(
             "验证码在任意官方入口获取（库街区 App / 网页登录框）—— 两边通用。"
-            "　登录后会**自动拉一次**数据。", card))
+            "　**登录后会自动拉取数据**；之后想重拉点「刷新数据」。", card))
         return card
 
     def _build_overview_card(self, parent) -> CardWidget:
@@ -506,12 +556,10 @@ class CharacterBuildPanel(ScrollArea):
                 f"已登录（手机号 ****{tail}）" if tail else "已登录")
         else:
             self._login_status.setText("未登录")
-        self._fetch_button.setEnabled(self._account.logged_in)
         self._refresh_button.setEnabled(self._account.logged_in)
 
     def _busy(self, busy: bool) -> None:
-        for b in (self._login_button, self._fetch_button,
-                  self._refresh_button):
+        for b in (self._login_button, self._refresh_button):
             b.setEnabled(not busy)
         if not busy:
             self._refresh_login_state()
@@ -528,21 +576,27 @@ class CharacterBuildPanel(ScrollArea):
             return
         self._busy(True)
         self._say("正在登录（APP 端）…")
-        thread = LoginThread(mobile, code,
-                             self._feature_edit.text().strip(), self)
+        thread = LoginThread(mobile, code, "", self)
         thread.progress.connect(self._say)
         thread.succeeded.connect(self._on_logged_in)
         thread.failed.connect(self._on_failed)
-        self._thread = thread
+        # ★ 用**单独的引用** —— 之前赋给 self._thread 后，
+        #   _on_logged_in → _on_fetch 会把它覆盖掉（登录线程还在跑），
+        #   日志里就出现了两条"正在登录"（重复触发）。
+        self._login_thread = thread
         thread.start()
 
     def _on_logged_in(self, account) -> None:
         self._account = account
+        try:
+            kuro_account.save_account(account)  # ★ 先落盘（下次打开就是已登录）
+        except Exception:                      # noqa: BLE001
+            pass
         names = [str(r.get("roleName") or r.get("roleId"))
                  for r in (account.roles or [])]
         self._say(f"✓ 登录成功。绑定的游戏角色：{names or '（没拿到）'}")
         self._toast("登录成功")
-        # ★ 登录后**自动拉一次**
+        # ★ 登录后**自动拉一次**（用户要求：不用再点「获取数据」）
         self._busy(False)
         self._on_fetch()
 
@@ -558,13 +612,27 @@ class CharacterBuildPanel(ScrollArea):
         thread.progress.connect(self._say)
         thread.succeeded.connect(self._on_fetched)
         thread.failed.connect(self._on_failed)
+        # ★ 拉到一半也先画出来 —— 43 次请求要几十秒，
+        #   不能等全拉完才有画面（用户会以为卡死了）
+        thread.partial.connect(self._on_fetched)
         self._thread = thread
         thread.start()
 
     def _on_fetched(self, data) -> None:
-        self._busy(False)
+        """收到数据（可能是**阶段性的**，也可能是最终结果）。
+
+        ⚠ ``partial`` 和 ``succeeded`` 都连到这里 —— 阶段性的不能
+        ``self._busy(False)``（那会让用户在还在拉的时候点按钮）。
+        靠线程的 ``isRunning()`` 判断是不是最终结果。
+        """
         self._data = data or {}
         self._render(self._data)
+
+        thread = self._thread
+        running = bool(thread is not None and thread.isRunning())
+        if running:
+            return                              # 还在拉，别解锁按钮
+        self._busy(False)
         self._toast("数据拉取完成")
 
     # ------------------------------------------------------------- 渲染
