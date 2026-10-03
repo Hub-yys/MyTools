@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import json
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -32,6 +33,10 @@ from src.core import kuro_account  # noqa: E402
 
 TOOL = ROOT / "src" / "tools" / "game" / "character_build" / "tool.py"
 PKG = ROOT / "src" / "tools" / "game" / "character_build" / "__init__.py"
+
+#: 真正在用的 token key（和数据终端源码一致）。
+#: ⚠ **不是** ``auth_token`` —— 那个是 App 桥用的，网页登录不写。
+TOKEN_KEY_LITERAL = "token"
 
 
 class TestGeeTestGuard(unittest.TestCase):
@@ -121,20 +126,118 @@ class TestBrowserLogin(unittest.TestCase):
             (ROOT / "src" / "tools" / "game" / "character_build"
              / "login_dialog.py").exists())
 
-    def test_local_storage_keys_match_probe(self):
-        """★★ key 名是**实测**出来的，不能凭感觉改。
+    def test_local_storage_keys_are_the_real_ones(self):
+        """★★★ **本轮的核心修复** —— 用户："刚登陆 怎么提示过期了"。
 
-        用 QtWebEngine 真开一次 kurobbs.com 读 localStorage 得到::
+        ## 事故
 
-            auth / auth_token / dc / isa / mc / ...
+        我第一版读 ``localStorage.auth_token`` —— **那是错的**。
+        ``auth_token`` 是给 **App 桥**用的
+        （``jsBridge.callHandler("getUserInfo")``），**网页登录根本不写它** ——
+        读出来永远是空串，而我把空串当成"已拿到令牌"，服务器回 220。
 
-        ``auth_token`` 就是 token 所在，``dc`` 是动态 devCode。
+        ## 真正在用的（从数据终端源码挖出来）
+
+        数据终端自己的请求拦截器::
+
+            e.headers.token   = localStorage.getItem("token") || "";
+            e.headers.devCode = localStorage.getItem("REQUEST_IP") + ", "
+                                + navigator.userAgent;
+            e.headers.did     = ...
+
+        → 所以 key 是 **``token``**，devCode 要**拼** ``REQUEST_IP`` + UA。
         """
         from src.tools.game.character_build import login_dialog
 
-        self.assertEqual(login_dialog.TOKEN_KEY, "auth_token")
-        self.assertEqual(login_dialog.DEV_CODE_KEY, "dc")
-        self.assertEqual(login_dialog.AUTH_KEY, "auth")
+        self.assertEqual(login_dialog.TOKEN_KEY, "token",
+                         "token 的 key 必须是 'token'")
+        self.assertNotEqual(
+            login_dialog.TOKEN_KEY, "auth_token",
+            "auth_token 是 App 桥用的，网页登录不写它 —— "
+            "读它永远是空串（这就是『刚登录就过期』的原因）")
+        self.assertEqual(login_dialog.REQUEST_IP_KEY, "REQUEST_IP",
+                         "devCode 的前半段来自 REQUEST_IP")
+
+    def test_read_js_handles_the_real_keys(self):
+        """★ 读取脚本要用**真 key**，且 devCode 要**真的拼起来**。
+
+        ⚠ 第一版这条只断言脚本里出现 ``navigator.userAgent`` ——
+        而 ``var ua = navigator.userAgent || ""`` 那**一行声明**就满足了，
+        于是把 ``dev_code`` 改成不再拼 ua（退回旧行为）测试照样通过
+        （实测突变时发现失效）。
+
+        所以现在断言的是**赋值本身**：``dev_code`` 那一行必须用到 ``ua``。
+
+        ⚠ ``auth_token`` 现在**允许出现** —— 它是「主 key 读不到时的兜底」
+        （个别版本也许写那边）。但必须**不是主 key**。
+        """
+        from src.tools.game.character_build import login_dialog
+
+        js = login_dialog._READ_JS
+        self.assertIn(TOKEN_KEY_LITERAL, js)
+        self.assertIn("REQUEST_IP", js)
+
+        # ★ 主 key 必须是 ``token``，不能是 auth_token
+        m = re.search(r'var\s+primary\s*=\s*localStorage\.getItem\(([^)]+)\)',
+                      js)
+        self.assertIsNotNone(m, "读取脚本里没有 primary 的赋值")
+        self.assertIn(TOKEN_KEY_LITERAL, m.group(1),
+                      f"主 key 不是 token（现在读的是 {m.group(1)}）—— "
+                      f"auth_token 是 App 桥用的，网页登录不写它")
+
+        # ★ dev_code 那一行必须真的拼 ua + ip
+        #   ⚠ 表达式是个三元（``ip ? (ip + ", " + ua) : ua``），
+        #     所以用**整行**判断，不能只截到第一个逗号。
+        line = next((ln for ln in js.splitlines()
+                     if "dev_code" in ln and ":" in ln), "")
+        self.assertTrue(line, "读取脚本里没有 dev_code 赋值")
+        self.assertIn("ua", line,
+                      f"dev_code 没有拼 userAgent（现在写的是 {line.strip()!r}）"
+                      f" —— 数据终端的拦截器是 "
+                      f'REQUEST_IP + ", " + navigator.userAgent')
+        self.assertIn("ip", line,
+                      f"dev_code 没有用 REQUEST_IP（现在写的是 "
+                      f"{line.strip()!r}）")
+
+    def test_empty_token_is_not_login_success(self):
+        """★★ 空 token **不能**当成登录成功。
+
+        上一版读到空串也往下走 —— 日志写着"已拿到令牌"，
+        服务器却说"登录已过期"，用户看到的就是自相矛盾的提示。
+
+        ⚠ 用 AST 查：``_on_read`` 里必须有 ``if not token: ... return``
+        （搜索字符串会被注释和变量名骗过 —— 这个坑踩过三次了）。
+        """
+        import ast as _ast
+
+        source = (ROOT / "src" / "tools" / "game" / "character_build"
+                  / "login_dialog.py").read_text(encoding="utf-8")
+        tree = _ast.parse(source)
+        fn = next(n for n in _ast.walk(tree)
+                  if isinstance(n, _ast.FunctionDef) and n.name == "_on_read")
+
+        # 找形如 ``if not <name>:`` 且体内有 return 的分支
+        guarded = False
+        for node in _ast.walk(fn):
+            if not isinstance(node, _ast.If):
+                continue
+            test = node.test
+            if not isinstance(test, _ast.UnaryOp):
+                continue
+            if not isinstance(test.op, _ast.Not):
+                continue
+            if not any(isinstance(s, _ast.Return) for s in node.body):
+                continue
+            # ``not token`` 里的名字必须是个变量（token 或其别名）
+            name = getattr(test.operand, "id", "")
+            if name and "token" in name.lower():
+                guarded = True
+                break
+
+        self.assertTrue(
+            guarded,
+            "_on_read 里没有 `if not token: return` —— "
+            "空令牌会被当成登录成功（上一版就是这么错的）")
 
     def test_uses_separate_profile(self):
         """★ 用**独立** profile —— 不碰用户平时的浏览器数据。

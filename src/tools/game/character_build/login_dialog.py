@@ -19,18 +19,40 @@
 登录成功后官方页面会把 token 写进 ``localStorage.auth_token``
 （实测 key 名，见下），我们从窗口里**读出来存到本地**。之后就不用再登了。
 
-## ★ 实测拿到的 localStorage 结构（2026-10-03）
+## ★ token 到底在哪（2026-10-03 **挖源码**确认）
 
-未登录时就存在的 key::
+我第一版读 ``localStorage.auth_token`` —— **那是错的**，
+症状就是用户报的："**刚登陆 怎么提示过期了**"。
 
-    auth        用户信息 JSON（未登录时是空壳）
-    auth_token  ★ **token 就在这里**（未登录时是空串）
-    dc          ★ **动态 devCode** —— 不是固定值！
-    isa / mc / KJQ_* / Hm_*   其它无关的
+真正的来源是数据终端自己的请求拦截器
+（``web-static.kurobbs.com/mcbox`` 的 JS）::
 
-⚠ **``dc`` 是动态的**：官方页面每次会写一个新的 devCode。
-我第一版把文档里的固定 devcode 硬编码进请求头，那也可能是发不出短信的原因之一。
-登录成功后要把它一起带走，后续请求才和这次会话一致。
+    $axios.interceptors.request.use(e => {
+        e.headers.token   = localStorage.getItem("token") || "";
+        e.headers.devCode = localStorage.getItem("REQUEST_IP") + ", "
+                            + navigator.userAgent;
+        e.headers.did     = ...
+    })
+
+于是::
+
+    localStorage 的 key    用途
+    ─────────────────────  ────────────────────────────────
+    **token**              ★ 真正在用的令牌
+    **REQUEST_IP**         ★ devCode 的前半段（要和 UA 拼）
+    initUserInfo           did 头
+    ─────────────────────  ────────────────────────────────
+    auth / auth_token      ⚠ **App 桥**用的，网页登录**不写**
+                           （``jsBridge.callHandler("getUserInfo")``）
+
+**``auth_token`` 永远是空串** —— 而我把空串当成了"已拿到令牌"，
+服务器回 220「登录已过期」。**两个错叠在一起**：
+读错 key + 没校验非空。
+
+## ⚠ 另外：devCode 不是固定值
+
+拦截器里 ``devCode = REQUEST_IP + ", " + navigator.userAgent`` ——
+**是拼出来的**。我第一版用文档里的固定 devcode，也对不上。
 
 ## 一点安全考虑
 
@@ -106,29 +128,66 @@ _CLICK_LOGIN_JS = r"""
 #: profile 名字 —— 独立于用户平时的浏览器数据
 PROFILE_NAME = "kuro_login"
 
-#: token 在 localStorage 里的 key（**实测**，见模块文档）
-TOKEN_KEY = "auth_token"
-#: 动态 devCode 的 key（**实测**）
-DEV_CODE_KEY = "dc"
-#: 用户信息的 key
-AUTH_KEY = "auth"
+#: ★★★ token 在 localStorage 里的 key。
+#:
+#: ## 2026-10-03：我在这里错过一次 —— 症状是"刚登录就提示过期"
+#:
+#: 我第一版读的是 ``auth_token``，**那是错的**。
+#: 从数据终端的源码里挖出真正在用的
+#: （``web-static.kurobbs.com/mcbox`` 的 JS）::
+#:
+#:     $axios.interceptors.request.use(e => {
+#:         e.headers.token   = localStorage.getItem("token") || "";
+#:         e.headers.devCode = localStorage.getItem("REQUEST_IP") + ", "
+#:                             + navigator.userAgent;
+#:         e.headers.did     = ...
+#:     })
+#:
+#: **``auth_token`` 是给 App 桥用的**（``jsBridge.callHandler("getUserInfo")``），
+#: **网页版登录根本不写它** —— 读出来永远是空串，
+#: 而我把空串当成了"已拿到令牌"，服务器自然回 220「登录已过期」。
+TOKEN_KEY = "token"
+
+#: ★ 动态 devCode 的来源之一 —— 真正的 devCode 是**拼出来的**：
+#: ``REQUEST_IP + ", " + navigator.userAgent``。
+REQUEST_IP_KEY = "REQUEST_IP"
+
+#: 数据终端用来标识设备的头（``e.headers.did``）。
+DID_KEY = "initUserInfo"
+
+#: 下面两个**不要用**（保留只为说明"别再读它们"）：
+#: ``auth`` / ``auth_token`` 是 App 桥用的，网页登录不写。
+LEGACY_AUTH_KEY = "auth"
+LEGACY_AUTH_TOKEN_KEY = "auth_token"
 
 #: 轮询间隔（毫秒）—— 每 1.5 秒看一眼登录了没
 POLL_MS = 1500
 
 #: 读取 localStorage 的脚本。返回 JSON 字符串。
+#:
+#: ★ 同时读**两个**候选 key，谁非空用谁 —— 见 :data:`TOKEN_KEY` 的说明。
+#: 上一版只读 ``auth_token``（空串）却照样往下走，是"刚登录就过期"的根因。
+#: 这次把**用了哪个 key** 也带回来，界面上能看见，出问题好定位。
 _READ_JS = """
 (function () {
     try {
+        var ua = navigator.userAgent || "";
+        var ip = localStorage.getItem(%s) || "";
+        var primary = localStorage.getItem(%s) || "";
+        var legacy = localStorage.getItem(%s) || "";
         return JSON.stringify({
-            token: localStorage.getItem(%s) || "",
-            dc: localStorage.getItem(%s) || "",
-            auth: localStorage.getItem(%s) || ""
+            token: primary,
+            token_legacy: legacy,
+            token_key: primary ? %s : (legacy ? %s : ""),
+            dev_code: ip ? (ip + ", " + ua) : ua,
+            did: localStorage.getItem(%s) || ""
         });
     } catch (e) { return JSON.stringify({error: String(e)}); }
 })();
-""" % (json.dumps(TOKEN_KEY), json.dumps(DEV_CODE_KEY),
-       json.dumps(AUTH_KEY))
+""" % (json.dumps(REQUEST_IP_KEY), json.dumps(TOKEN_KEY),
+       json.dumps(LEGACY_AUTH_TOKEN_KEY),
+       json.dumps(TOKEN_KEY), json.dumps(LEGACY_AUTH_TOKEN_KEY),
+       json.dumps(DID_KEY))
 
 
 class KuroLoginDialog(QDialog):
@@ -152,6 +211,7 @@ class KuroLoginDialog(QDialog):
         self.resize(980, 760)
 
         self.result_token = ""
+        self.result_token_key = ""
         self.result_dev_code = ""
         self.result_auth = ""
         self._closed_by_user = False
@@ -237,13 +297,24 @@ class KuroLoginDialog(QDialog):
             data = json.loads(result)
         except Exception:                      # noqa: BLE001
             return
+
+        # ★★ 用**非空**的那个（``token`` 优先，退回 ``auth_token``）。
+        #    上一版只读 auth_token（永远是空串）却照样往下走 ——
+        #    日志写着"已拿到令牌"，服务器回 220「登录已过期」。
         token = str(data.get("token") or "").strip()
+        key_used = TOKEN_KEY
         if not token:
+            token = str(data.get("token_legacy") or "").strip()
+            key_used = LEGACY_AUTH_TOKEN_KEY
+        if not token:
+            # 还没登录（或者页面还没把 token 写进去）—— 继续轮询
             return
+
         self.result_token = token
-        self.result_dev_code = str(data.get("dc") or "").strip()
-        self.result_auth = str(data.get("auth") or "")
-        self._status.setText("登录成功，正在保存…")
+        self.result_token_key = key_used
+        self.result_dev_code = str(data.get("dev_code") or "").strip()
+        self.result_auth = str(data.get("did") or "")
+        self._status.setText(f"登录成功（令牌来自 {key_used}），正在保存…")
         self._timer.stop()
         self.logged_in.emit(self.result_token, self.result_dev_code,
                             self.result_auth)

@@ -249,6 +249,10 @@ class CharacterBuildPanel(ScrollArea):
         self._dialog = dialog
         dialog.logged_in.connect(self._on_browser_login)
         dialog.exec()
+        # 用户直接关窗（没登录成功）时给个明确说法 —— 不然界面停在
+        # "已打开登录窗口" 那句话上，看不出到底成没成。
+        if not dialog.result_token:
+            self._say("登录窗口已关闭（没有读到令牌）")
 
     def _on_browser_login(self, token: str, dev_code: str,
                           auth_raw: str) -> None:
@@ -267,9 +271,11 @@ class CharacterBuildPanel(ScrollArea):
             self._toast(str(exc), ok=False)
             return
 
+        # ★ 把"用了哪个 key / devCode 长什么样"记下来 —— 出问题好定位。
+        key_used = getattr(self._dialog, "result_token_key", "") or "?"
         self._account = account
-        self._say(f"已拿到令牌（动态 devCode {'有' if dev_code else '无'}），"
-                  f"正在取绑定的游戏角色…")
+        self._say(f"已拿到令牌（来自 localStorage.{key_used}，"
+                  f"长度 {len(token)}），正在取绑定的游戏角色…")
         thread = RolesThread(token, dev_code, self)
         thread.succeeded.connect(self._on_roles)
         thread.failed.connect(self._on_failed)
