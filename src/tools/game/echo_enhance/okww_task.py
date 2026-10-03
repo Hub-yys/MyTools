@@ -84,6 +84,7 @@ _ensure_vendor_on_path()
 
 from okww.task.EnhanceEchoTask import EnhanceEchoTask  # noqa: E402
 
+from . import echo_grid  # noqa: E402
 from .stats import (  # noqa: E402
     DISCARD_CODES,
     EchoStat,
@@ -348,10 +349,56 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
     def lock_and_esc(self):
         super().lock_and_esc()
         self._finalize_echo(kept=True)
+        self._aim_at_next_unenhanced()
 
     def trash_and_esc(self):
         super().trash_and_esc()
         self._finalize_echo(kept=False)
+        self._aim_at_next_unenhanced()
+
+    # ------------------------------------------------- 3.7 声骸堆叠的修正
+    def _aim_at_next_unenhanced(self) -> bool:
+        """★ 把光标**移回一个未强化的声骸** —— 修 3.7 声骸堆叠导致的卡死。
+
+        ## 问题（用户 2026-10-02 报）
+
+        "3.7 更新后，更新了声骸堆叠，导致强化好了一个声骸后，会自动跳到
+        强化好的声骸位置，从而不能继续强化到其他声骸了"
+
+        ## 根因
+
+        ok-ww 的 ``run()`` **从不主动选下一个声骸** —— 它假设
+        "强化完 ESC 回列表，光标还在原位"。**堆叠打破了这个假设**：
+        强化好的被归类重排、光标被带过去 → 下一次循环 ``is_0_level()``
+        读到"不是 0 级" → **直接收工**（不是"不能强化"，是它以为干完了）。
+
+        ## 修法
+
+        用户实测"滚动和方向键都不能移动光标，**只能鼠标点击**"
+        → 所以在两个收尾动作之后，**扫一遍 18 格、点第一个未强化的**。
+
+        判定用 :func:`echo_grid.find_next_unenhanced`（找层叠图标）。
+        找不到（一屏都没有 0 级了）就什么都不做，让 ok-ww 正常收工。
+
+        :return: 是否成功把光标移到了一个未强化的声骸上
+        """
+        try:
+            found = echo_grid.find_next_unenhanced(self)
+        except Exception as exc:              # noqa: BLE001 - 定位失败不该中断任务
+            self.log_debug(f"扫描未强化声骸失败：{type(exc).__name__}: {exc}")
+            return False
+        if not found:
+            self.log_info("一屏内没有未强化的声骸了 —— 交给 ok-ww 收工")
+            return False
+
+        row, col = found
+        rx, ry = echo_grid.card_center_relative(row, col)
+        # ⚠ 索引从 0 起、序数从 1 起 —— 报给用户时要 +1
+        self.log_info(f"声骸堆叠修正：点第 {row + 1} 排第 {col + 1} 个"
+                      f"（未强化）→ 把光标移过去")
+        self.click_relative(rx, ry)
+        self.sleep(0.3)
+        return True
 
     # ------------------------------------------------------------------ 运行
     def run(self) -> None:
