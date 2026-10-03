@@ -47,12 +47,22 @@ sys.stdout.reconfigure(encoding="utf-8")
 from PIL import Image
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+
+from ok_tasks_assets import merge  # noqa: E402
+
 SHOTS = pathlib.Path(r"D:\DeepSeek Work\xin_shots")
 
-#: ★ 上游的扩展目录（不是 assets/ —— 那个会被上游更新覆盖）
+#: ★ 上游的扩展目录（不是 assets/ —— 那个会被上游更新覆盖）。
+#: ⚠ 真正写进去的是 ``ok_tasks_assets.merge()`` —— 它负责合并进
+#:   **唯一会被加载的** ``coco_annotations.json``（见那个模块的说明）。
 EXT_DIR = ROOT / "vendor" / "okww" / "ok_tasks" / "assets"
-COCO_OUT = EXT_DIR / "coco_annotations.json"
-IMAGE_OUT = EXT_DIR / "images" / "xin_templates.png"
+
+#: 这个来源的标签（合并时用来识别并替换上一次的条目）
+SOURCE = "xin"
+
+#: 底图文件名（不含扩展名）
+IMAGE_NAME = "xin_templates"
 
 #: ★ 截图时的**游戏分辨率** —— 用你实际的显示设置。
 #: 1280×720 = 你给的截图分辨率（那台机器就是按它玩的）。
@@ -272,60 +282,30 @@ def build() -> int:
         boxes[category] = (0, y, tile.width, tile.height)
         y += tile.height + gap
 
-    IMAGES_DIR = IMAGE_OUT.parent
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    canvas.save(IMAGE_OUT)
-    print(f"\n底图 -> {IMAGE_OUT}  {canvas.size}"
-          f"（= 游戏分辨率，见代码里 SCREEN 的说明）")
+    # 底图由 ok_tasks_assets.merge() 负责落盘（它还要写 COCO）
+    print(f"\n底图尺寸 {canvas.size}（= 截图分辨率，见 SCREEN 的说明）")
 
-    # ---- 3) 写 COCO ----
+    # ---- 3) 合并进 ok-ww 唯一会加载的那个 COCO 文件 ----
     #
-    # ★★ 关键：**声明成游戏屏幕尺寸（1280×720），不是底图尺寸**
+    # ⚠⚠ 为什么是"合并"而不是"自己写一个 json"：
+    #   ok-script 的 ``FeatureSet.process_data()`` 里文件名是**写死的**：
+    #       ok_tasks_coco = os.path.join('ok_tasks', 'assets',
+    #                                    'coco_annotations.json')
+    #   **只读这一个**。别的名字一律不加载（实测：无声的
+    #   ``Merged 0 features``）。2026-10-03 声骸层叠图标就是这么白做的。
     #
-    # ok-script 的 read_from_json 会按
-    #     scale = min(screen_w / image_w, screen_h / image_h)
-    # 把模板**缩放**到当前分辨率。如果这里写 canvas.size（270×361），
-    # 它会以为模板来自一张 270px 宽的图 → scale = 1280/270 ≈ 4.74，
-    # 把 270px 的模板拉成 539px（实测日志：`resized width 1280`）——
-    # 匹配率直接归零。
+    # ★ 关键：**声明成游戏屏幕尺寸（1280×720），不是底图尺寸**
     #
-    # 声明成 1280×720 后 scale = 1，模板**原样**使用（我们的截图就是
-    # 1280×720，和游戏分辨率一致）。以后换分辨率时改这一个常量即可。
-    categories = [{"id": i + 1, "name": name, "supercategory": "xin"}
-                  for i, (name, _im) in enumerate(pieces)]
-    id_by_name = {c["name"]: c["id"] for c in categories}
-    annotations = []
-    for i, (name, _im) in enumerate(pieces):
-        x, y_, w, h = boxes[name]
-        annotations.append({
-            "id": i + 1,
-            "image_id": 1,
-            "category_id": id_by_name[name],
-            "bbox": [x, y_, w, h],
-            "area": w * h,
-            "iscrowd": 0,
-        })
-
-    coco = {
-        # ⚠ description 必须是**纯 ASCII** —— ok-script 的 load_json 用
-        #   ``open(path, 'r')``（**没指定 encoding**），在中文 Windows 上
-        #   按 GBK 解码，写中文进去会 UnicodeDecodeError 把整个加载搞崩
-        #   （实测踩过：`'gbk' codec can't decode byte 0x83`）。
-        "info": {"description": "MyTools: recognition templates for character Xin "
-                                "(generated from in-game screenshots)"},
-        # ★ 声明成屏幕尺寸（见上面的说明）—— 模板保持原尺寸
-        "images": [{"id": 1, "file_name": "images/xin_templates.png",
-                    "width": SCREEN[0], "height": SCREEN[1]}],
-        "categories": categories,
-        "annotations": annotations,
-    }
-    # ⚠ 落盘时同样**不能用默认编码**，显式 utf-8 + ensure_ascii（双保险）
-    COCO_OUT.write_text(
-        json.dumps(coco, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
-    print(f"标注 -> {COCO_OUT}")
-    for a in annotations:
-        name = next(c["name"] for c in categories if c["id"] == a["category_id"])
-        print(f"   {name:16} bbox={a['bbox']}")
+    #   ok-script 的 read_from_json 会按
+    #       scale = min(screen_w / image_w, screen_h / image_h)
+    #   把模板**缩放**到当前分辨率。而且 image_w 取的是
+    #   **PNG 文件的实际尺寸**（读出来的，不是 json 里写的）。
+    #   如果底图做得很紧凑，模板会被放大好几倍 → 匹配率归零。
+    #   做成 1280×720（= 截图分辨率）后 scale = 1，模板**原样**使用。
+    merge(SOURCE, IMAGE_NAME, canvas,
+          [(name, boxes[name]) for name, _im in pieces])
+    for name, _im in pieces:
+        print(f"   {name:16} bbox={boxes[name]}")
     return 0
 
 

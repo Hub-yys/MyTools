@@ -27,7 +27,7 @@ ok-ww 的循环**从不主动选下一个声骸**：
 
 ## 判据：卡片左下的**层叠图标**
 
-用户给的截图证明：卡片底部有两种形态 ——
+卡片底部有两种形态：
 
 * **层叠图标 + 数字** → 数字是**持有数量**（未强化）
 * **只有 `+N`** → 是**强化等级**（已强化）
@@ -37,59 +37,55 @@ ok-ww 的循环**从不主动选下一个声骸**：
 ========================  ==========================
 未强化（有图标）           已强化（无图标）
 ========================  ==========================
-得分 **0.756 ~ 1.000**    得分 **-0.18 ~ -0.06**
+**0.887 ~ 1.000**         **0.047 ~ 0.085**
 ========================  ==========================
 
 完全不重叠 —— 比 OCR 判 `+N` 可靠得多。
 
-⚠ **模板必须从截图裁（22x18），不能用用户给的放大图（28x26）** ——
-实测放大图匹配得分是负的。
+## ⚠⚠ 两个踩过的坑
 
-产出（和「心」的模板同一套机制，放进上游的扩展目录）：
+**① 模板不能放大。** 第一版把 22x18 放大到 33x27 再存，
+匹配得分掉到 **0.34~0.38**。模板要**按裁剪时的分辨率存**（1280x720）。
+
+**② 搜索框必须大于模板（`SEARCH_PAD=6`，必需）。**
+    放大模板 + pad0 → 漏检 7 格（最低 0.321）
+    原尺寸   + pad6 → 漏检 0 格（最低 0.887）
+``cv2.matchTemplate`` 在"搜索图 == 模板"时只产出一个值、没有滑动余地。
+
+**③ ★ 文件名必须叫 `coco_annotations.json`。**
+ok-script **写死**只读这一个名字；我第一版写成 `echo_stack.json`，
+实机**一次都没生效**（日志里一条"堆叠修正"都没有，
+只有一行无声的 `Merged 0 features`）。
+所以现在走 :mod:`tools.ok_tasks_assets` **合并**进去。
+
+产出（合并进上游的扩展目录）：
     vendor/okww/ok_tasks/assets/images/echo_stack.png
-    vendor/okww/ok_tasks/assets/echo_stack.json
+    vendor/okww/ok_tasks/assets/coco_annotations.json  ← 追加一个类别
 """
 
 from __future__ import annotations
 
-import json
 import pathlib
 import sys
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-import cv2
-import numpy as np
 from PIL import Image
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
 
-#: ★ 上游的扩展目录（不是 assets/ —— 那个会被上游更新覆盖）
-EXT_DIR = ROOT / "vendor" / "okww" / "ok_tasks" / "assets"
-COCO_OUT = EXT_DIR / "echo_stack.json"
-IMAGE_OUT = EXT_DIR / "images" / "echo_stack.png"
+from ok_tasks_assets import merge  # noqa: E402
 
-#: 用户的游戏分辨率（他给过图像设置截图：1920x1080 窗口模式）。
-#: ⚠ 和「心」的模板一致 —— 底图和声明都用这个，保证 scale=1、模板原样使用。
-SCREEN = (1920, 1080)
-
-#: 截图是 **1280x720**（QQ 缩略图）。
+#: 用户给的截图是 **1280x720**。
 #:
-#: ## ⚠⚠ 2026-10-02 实测教训：**不要放大模板**
+#: ## ⚠⚠ 实测教训：**不要放大模板**
 #:
 #: 第一版我把 22x18 的图标放大到 1920 尺度（33x27）再存，
 #: 结果在验证脚本里缩回 1280 匹配时得分只有 **0.34~0.38**（阈值 0.7）
 #: —— 放大再缩小 = 细节全丢。
 #:
-#: **oc-ww 的匹配是"把模板缩放到当前屏幕"**（``read_from_json`` 的
-#: ``adjust_coordinates``），所以：
-#:
-#: * 模板**按原始分辨率存**（1280x720 下裁的就存原尺寸）
-#: * COCO 里声明 **1280x720**
-#: * 用户也是 1280x720 玩 → scale=1，**模板原样使用**
-#:
-#: 这样匹配得分 0.9+（实测）。⭐ 关键：**模板分辨率要匹配"裁剪时"的分辨率**，
-#: 而不是"游戏设置里的分辨率"—— 用户实际是 1280x720 窗口。
+#: **模板要匹配"裁剪时"的分辨率**，而不是"游戏设置里的分辨率"。
 SHOT_RES = (1280, 720)
 
 #: 第一张参考截图（3 排 × 6 列的完整列表）
@@ -102,31 +98,18 @@ SHOT = pathlib.Path(
 #: 量法：卡片 x 115~217.5 / y 87.5~217.5，图标在卡片左下。
 ICON_BOX = (124, 193, 146, 211)      # → 22 x 18
 
-#: ★★ 匹配时搜索框要比模板大这么多像素（**必需，不是保险**）。
-#:
-#: ## 实测（2026-10-02，18 格逐格验证）
-#:
-#: ======================  ==========  ==========
-#: 配置                     漏检格数    未强化最低分
-#: ======================  ==========  ==========
-#: 放大模板(33x27) + pad0   **7 格**     0.321
-#: 原尺寸(22x18)  + pad0    **7 格**     0.321
-#: 原尺寸(22x18)  + **pad6**  **0 格**   **0.887**
-#: ======================  ==========  ==========
-#:
-#: **元凶是 pad**：每张卡的图标位置有 **1~2 像素**偏差，
-#: 而 ``cv2.matchTemplate`` 在"搜索图尺寸 == 模板尺寸"时**只产出一个值**，
-#: 没有滑动余地 → 偏一点就崩（0.36 vs 1.00）。
-#:
-#: ok-ww 的 ``find_one(box=...)`` 正是"在 box 里滑动找模板"，
-#: 所以 box **必须留出滑动余量**。
-#:
-#: ⚠ 这是动手写代码前**验证模板时抓到的**。任何人改这个模板都要重跑
-#: ``_verify_stack.py``（两张截图 × 18 格）。
+#: 匹配时搜索框要比模板大这么多像素（**必需，不是保险**）。
+#: 完整实测表见模块说明。
 SEARCH_PAD = 6
 
 #: 分类名（ok-ww 的 find_one 用这个名字找模板）
 LABEL = "echo_stack_icon"
+
+#: 这个来源的标签（合并时用来识别并替换上一次的条目）
+SOURCE = "echo_stack"
+
+#: 底图文件名（不含扩展名）
+IMAGE_NAME = "echo_stack"
 
 
 def build() -> int:
@@ -148,27 +131,8 @@ def build() -> int:
     canvas = Image.new("RGB", SHOT_RES, (0, 0, 0))
     canvas.paste(icon, (0, 0))
 
-    IMAGE_OUT.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(IMAGE_OUT)
-    print(f"底图 -> {IMAGE_OUT}  {canvas.size}")
-
-    coco = {
-        # ⚠ description 必须纯 ASCII —— ok-script 的 load_json 用
-        #   open(path,'r')（没指定 encoding），中文会 UnicodeDecodeError
-        "info": {"description": "MyTools: echo stack icon (unenhanced marker)"},
-        "images": [{"id": 1, "file_name": "images/echo_stack.png",
-                    "width": SHOT_RES[0], "height": SHOT_RES[1]}],
-        "categories": [{"id": 1, "name": LABEL, "supercategory": "echo"}],
-        "annotations": [{
-            "id": 1, "image_id": 1, "category_id": 1,
-            "bbox": [0, 0, icon.width, icon.height],
-            "area": icon.width * icon.height, "iscrowd": 0,
-        }],
-    }
-    COCO_OUT.write_text(json.dumps(coco, ensure_ascii=True, indent=2) + "\n",
-                        encoding="utf-8")
-    print(f"标注 -> {COCO_OUT}")
-    print(f"   {LABEL}  bbox=[0, 0, {icon.width}, {icon.height}]")
+    merge(SOURCE, IMAGE_NAME, canvas,
+          [(LABEL, (0, 0, icon.width, icon.height))])
     return 0
 
 

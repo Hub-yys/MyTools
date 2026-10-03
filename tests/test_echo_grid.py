@@ -32,6 +32,8 @@ import pathlib
 import sys
 import unittest
 
+import numpy as np
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -283,6 +285,183 @@ class TestWiredIntoTask(unittest.TestCase):
         """判定要复用 echo_grid（别在任务里手写坐标）。"""
         self.assertIn("echo_grid", self.text,
                       "okww_task.py 没引用 echo_grid")
+
+
+class TestTemplateActuallyLoads(unittest.TestCase):
+    """★★ 「模板真的被 ok-ww 加载了吗」—— 这里**踩过一个无声的坑**。
+
+    ## 坑（2026-10-03 实机白做一次）
+
+    我第一版把模板写成 ``ok_tasks/assets/echo_stack.json``，
+    实机跑完**一次都没生效** —— 日志里连"堆叠修正"都没有，
+    只有一行无声的::
+
+        Merged 0 features from ok_tasks\\assets\\coco_annotations.json
+
+    原因：ok-script 的 ``FeatureSet.process_data()`` 里
+    **文件名是写死的**::
+
+        ok_tasks_coco = os.path.join('ok_tasks', 'assets',
+                                     'coco_annotations.json')
+
+    **只读这一个**。别的名字一律不加载。
+
+    → 所以模板必须**合并**进那个文件（走 ``tools/ok_tasks_assets.py``）。
+    """
+
+    COCO = (ROOT / "vendor" / "okww" / "ok_tasks" / "assets"
+            / "coco_annotations.json")
+
+    def test_no_stray_json_files(self):
+        """★ 扩展目录里**不该有别的 json** —— 有就说明有人又写歪了。
+
+        只要出现 ``echo_stack.json`` 这类文件，就说明模板没被合并进去，
+        实机不会生效（而且**没有任何报错**）。
+        """
+        ext = self.COCO.parent
+        if not ext.exists():
+            self.skipTest("扩展目录不存在")
+        stray = [p.name for p in ext.glob("*.json")
+                 if p.name != "coco_annotations.json"]
+        self.assertEqual(
+            stray, [],
+            f"扩展目录里有不该存在的 json：{stray} —— "
+            f"ok-script 只读 coco_annotations.json，别的文件**不会被加载**"
+            f"（实机无声失效）。用 tools/ok_tasks_assets.merge() 合并进去。")
+
+    def test_icon_registered_in_the_one_file(self):
+        """★ ``echo_stack_icon`` 必须在**那个唯一会被读的文件**里。"""
+        import json
+
+        data = json.loads(self.COCO.read_text(encoding="utf-8"))
+        names = {c["name"] for c in data["categories"]}
+        self.assertIn(
+            echo_grid.LABEL, names,
+            f"{echo_grid.LABEL} 不在 coco_annotations.json 里 —— "
+            f"跑 tools/make_echo_stack_template.py 重新生成")
+        # 图像条目也要在
+        files = {i["file_name"] for i in data["images"]}
+        self.assertIn("images/echo_stack.png", files,
+                      "底图没登记进 images")
+
+    def test_coexists_with_xin_templates(self):
+        """★ 合并不能把「心」的模板挤掉（两套模板要共存）。"""
+        import json
+
+        data = json.loads(self.COCO.read_text(encoding="utf-8"))
+        names = {c["name"] for c in data["categories"]}
+        for wanted in ("char_xin", "echo_stack_icon"):
+            with self.subTest(name=wanted):
+                self.assertIn(wanted, names,
+                              f"{wanted} 被挤掉了 —— 合并逻辑有 bug")
+
+    def test_coco_is_pure_ascii(self):
+        """★ 必须纯 ASCII —— ok-script 的 load_json 没指定 encoding。
+
+        中文会 UnicodeDecodeError，把**整个模板加载**搞崩（实测踩过）。
+        """
+        raw = self.COCO.read_bytes()
+        try:
+            raw.decode("ascii")
+        except UnicodeDecodeError as exc:
+            self.fail(f"coco_annotations.json 里有非 ASCII 字符：{exc}")
+
+    def test_loads_through_ok_script(self):
+        """★★ 走 ok-script 的真实加载器 —— 这是最终判据。
+
+        ⚠ 关键：**屏幕尺寸要用游戏真实分辨率**（1280×720）。
+        ok-script 按 ``scale = min(屏幕/底图尺寸)`` 缩放模板，
+        所以屏幕和底图**同尺寸**时模板才原样（scale=1）。
+
+        实测（同一份 coco，不同屏幕）::
+
+            屏幕 1280x720   → 模板 22x18   ✓ 原样（我们的场景）
+            屏幕 1920x1080  → 模板 33x27   （被放大）
+            屏幕  640x360   → 模板 11x9    （被缩小）
+
+        ⚠ **json 里声明的 width/height 不参与缩放** ——
+        真正决定缩放比的是 **PNG 文件的实际像素尺寸**。
+        所以护栏守的是"底图实际尺寸 == 游戏分辨率"。
+        """
+        import logging
+        import os
+
+        logging.disable(logging.CRITICAL)
+        v = str(ROOT / "vendor" / "okww")
+        if v not in sys.path:
+            sys.path.insert(0, v)
+        old = os.getcwd()
+        os.chdir(v)
+        try:
+            from ok.feature.FeatureSet import read_from_json
+
+            feats, _b, _c, _ok, _k = read_from_json(
+                str(self.COCO), echo_grid.BASE_W, echo_grid.BASE_H)
+        finally:
+            os.chdir(old)
+            logging.disable(logging.NOTSET)
+
+        self.assertIn(echo_grid.LABEL, feats,
+                      f"{echo_grid.LABEL} 加载不出来 —— 实机会无声失效")
+        mat = feats[echo_grid.LABEL].mat
+        self.assertEqual(
+            (mat.shape[1], mat.shape[0]),
+            (echo_grid.ICON_W, echo_grid.ICON_H),
+            f"模板在 {echo_grid.BASE_W}x{echo_grid.BASE_H} 下不是 "
+            f"{echo_grid.ICON_W}x{echo_grid.ICON_H} —— 被缩放了。"
+            f"检查底图 PNG 的实际像素尺寸是不是 {echo_grid.BASE_W}x"
+            f"{echo_grid.BASE_H}")
+
+    def test_base_image_has_screen_size(self):
+        """★★ 底图的**实际像素尺寸**必须 == 游戏分辨率。
+
+        这是决定"模板原不原样"的唯一因素（json 声明不参与）。
+        底图做小了（比如紧凑拼图）→ ok-script 把模板放大好几倍
+        → 匹配率归零（「心」的模板踩过：270 宽的底图让模板变成 539）。
+        """
+        from PIL import Image
+
+        png = (self.COCO.parent / "images" / "echo_stack.png")
+        self.assertTrue(png.exists(), f"底图不在：{png}")
+        self.assertEqual(
+            Image.open(png).size,
+            (echo_grid.BASE_W, echo_grid.BASE_H),
+            f"底图尺寸不是 {echo_grid.BASE_W}x{echo_grid.BASE_H} —— "
+            f"ok-script 会缩放模板，匹配率会掉。"
+            f"（⚠ 放大模板也不行 —— 实测得分从 0.99 掉到 0.36）")
+
+
+    def test_template_is_not_blurry(self):
+        """★ 模板得**清晰** —— 别把图标放大过再存。
+
+        ⚠ 第一版我把 22x18 的图标放大到 33x27 再存，
+        匹配得分从 **0.99 掉到 0.36**（放大再缩小 = 细节全丢）。
+
+        判据：底图左上角那块（= 模板本体）的**相邻像素均差**。
+        放大过的图会变平滑，这个值明显偏小。实测::
+
+            原始 22x18（清晰）        38.94
+            放大 2 倍再裁回           26.00
+            放大 4 倍再裁回           12.30
+
+        → 阈值取 **32**（卡在清晰和 2 倍放大之间）。
+
+        ⚠ 这个 1.0 的初版阈值**抓不住放大**（实测护栏失效），
+        所以改成量出来的 32。
+        """
+        from PIL import Image
+
+        png = self.COCO.parent / "images" / "echo_stack.png"
+        # 图标贴在底图左上角（生成脚本里 paste 到 (0,0)）
+        icon = Image.open(png).convert("RGB").crop(
+            (0, 0, echo_grid.ICON_W, echo_grid.ICON_H))
+        arr = np.asarray(icon).astype(np.float64)
+        lap = float(np.abs(np.diff(arr, axis=0)).mean())
+        self.assertGreater(
+            lap, 32.0,
+            f"模板太平滑（相邻像素均差 {lap:.1f}，清晰的约 38.9）—— "
+            f"可能被放大过。⚠ 必须**按裁剪时的分辨率存**"
+            f"（实测放大后匹配得分 0.99→0.36）")
 
 
 class TestVendorUntouched(unittest.TestCase):

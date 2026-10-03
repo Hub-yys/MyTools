@@ -876,13 +876,26 @@ class TestCocoFormat(unittest.TestCase):
                          "底图尺寸和声明不一致 —— 模板会被缩放")
 
     def test_categories_and_annotations_match(self):
+        """★ 「心」的每个类别都要有 bbox。
+
+        ⚠ 2026-10-03 起，这个文件里**还住着**别的模板（``echo_stack_icon``）
+        —— ok-script **写死只读** ``ok_tasks/assets/coco_annotations.json``
+        这一个文件名（见 ``tools/ok_tasks_assets.py`` 的说明），
+        所以各家的模板必须**合并**进去，不能各写各的 json。
+
+        → 断言要改成"**包含**"而不是"相等"，否则会误报。
+        """
         coco = self._coco()
         names = {c["name"] for c in coco["categories"]}
-        self.assertEqual(names, set(XIN_LABELS))
-        # 每个类别都要有 bbox
+        self.assertTrue(
+            set(XIN_LABELS) <= names,
+            f"「心」的模板缺了：{sorted(set(XIN_LABELS) - names)}")
+        # 每个「心」的类别都要有 bbox
         by_cat = {c["id"]: c["name"] for c in coco["categories"]}
         covered = {by_cat[a["category_id"]] for a in coco["annotations"]}
-        self.assertEqual(covered, set(XIN_LABELS), "有类别没有 bbox")
+        self.assertTrue(
+            set(XIN_LABELS) <= covered,
+            f"有类别没有 bbox：{sorted(set(XIN_LABELS) - covered)}")
 
 
 class TestTemplatesLoad(unittest.TestCase):
