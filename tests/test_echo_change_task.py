@@ -49,7 +49,7 @@ class FakeClickOcr:
         self.name = name
 
 
-def make_task(current_main: str = "防御百分比", target: str = DEFAULT_TARGET):
+def make_task(current_main: str = "防御", target: str = DEFAULT_TARGET):
     """不跑 ``__init__``（要 executor/app 两个真对象），造个能调流程的壳。"""
     task = object.__new__(MyToolsChangeEchoTask)
     task.config = {"目标属性": target}
@@ -86,10 +86,13 @@ class TestStatMatching(unittest.TestCase):
         self.assertTrue(stat_matches("攻击", "攻击"))
 
     def test_prefix_must_not_match(self):
-        """`攻击百分比` 与 `攻击` 是**两个不同的主属性**，绝不能互相命中。
+        """`攻击` 与 `攻击百分比` 是**两个不同的主属性**，绝不能互相命中。
 
         原版 ``target in current`` 在这里是 True → 误判"已经相同" →
         抛异常 → **整个任务中断**，而明明该改。
+
+        ⚠ 2026-10-03：游戏 UI 上面板写的是「**攻击**」（用户给了截图），
+        所以工具的目标值是 ``攻击``；而 ``攻击百分比`` 是**另一个**属性。
         """
         self.assertFalse(stat_matches("攻击百分比", "攻击"))
         self.assertFalse(stat_matches("攻击", "攻击百分比"))
@@ -101,26 +104,27 @@ class TestStatMatching(unittest.TestCase):
 
     def test_normalizes_ocr_noise(self):
         """OCR 常见的噪声（前缀 +、空白、主属性字样）不该影响判定。"""
-        for noisy in ("+攻击百分比", "攻击百分比 ", " 攻击百分比",
-                      "主属性 攻击百分比", "主音属性攻击百分比"):
+        for noisy in ("+攻击", "攻击 ", " 攻击",
+                      "主属性 攻击", "主音属性攻击"):
             with self.subTest(noisy=noisy):
-                self.assertTrue(stat_matches(noisy, "攻击百分比"))
+                self.assertTrue(stat_matches(noisy, "攻击"))
 
     def test_strength_suffix_is_ignored(self):
-        """★「攻击力百分比」≡「攻击百分比」—— 游戏 UI 里两种写法都可能出现。
+        """★「攻击力」≡「攻击」—— 游戏 UI 里两种写法都可能出现。
 
-        ok-ww ``FiveToOneTask`` 的主属性表用的就是带「力」的形态，
+        ok-ww ``FiveToOneTask`` 的主属性表用的是带「力」的形态
+        （``攻击力百分比``），而工具面板上是裸名（``攻击``）。
         不带这一层归一化的话，"已经是对的了"会被判成"还没改"，
         白花材料又改一遍（或者反过来，该改的被误判成"已经是目标"）。
         """
-        self.assertTrue(stat_matches("攻击力百分比", "攻击百分比"))
-        self.assertTrue(stat_matches("生命值百分比", "生命百分比"))
-        self.assertTrue(stat_matches("防御力百分比", "防御百分比"))
+        self.assertTrue(stat_matches("攻击力", "攻击"))
+        self.assertTrue(stat_matches("生命值", "生命"))
+        self.assertTrue(stat_matches("防御力", "防御"))
 
     def test_flat_and_percent_still_differ(self):
-        """归一化吃掉「力浮」但**不能**把固定值和百分比混为一谈。"""
-        self.assertFalse(stat_matches("攻击力", "攻击百分比"))
-        self.assertFalse(stat_matches("攻击", "攻击百分比"))
+        """归一化吃掉「力/值」但**不能**把固定值和百分比混为一谈。"""
+        self.assertFalse(stat_matches("攻击百分比", "攻击"))
+        self.assertFalse(stat_matches("攻击力百分比", "攻击"))
 
     def test_full_width_percent(self):
         self.assertTrue(stat_matches("攻击百分比", "攻击百分比"))
@@ -154,7 +158,7 @@ class TestAlreadyTargetIsSkip(unittest.TestCase):
     """「已经是目标属性」必须是**跳过**，不是致命异常（原版会中断整个任务）。"""
 
     def test_raises_internal_signal(self):
-        task = make_task(current_main="防御百分比", target="攻击百分比")   # 不同 → 正常往下走
+        task = make_task(current_main="防御", target="攻击")   # 不同 → 正常往下走
         try:
             task._do_change()
         except mod._AlreadyTarget:
@@ -163,13 +167,13 @@ class TestAlreadyTargetIsSkip(unittest.TestCase):
             pass            # 后续步骤在壳里没打桩，抛别的也算"走过去了"
 
     def test_same_stat_raises_signal(self):
-        task = make_task(current_main="攻击百分比", target="攻击百分比")
+        task = make_task(current_main="攻击", target="攻击")
         with self.assertRaises(mod._AlreadyTarget):
             task._do_change()
 
     def test_strength_variant_also_counts_as_same(self):
-        """「攻击力百分比」也要被认成"已经是目标"——不然会白改一遍。"""
-        task = make_task(current_main="攻击力百分比", target="攻击百分比")
+        """「攻击力」也要被认成"已经是目标"——不然会白改一遍。"""
+        task = make_task(current_main="攻击力", target="攻击")
         with self.assertRaises(mod._AlreadyTarget):
             task._do_change()
 
@@ -264,56 +268,110 @@ class TestWiring(unittest.TestCase):
         self.assertIn(DEFAULT_TARGET, TARGET_STATS)
 
     def test_targets_cover_the_game_list(self):
-        """12 个可选主属性（和 ok-ww 原版一致的**数量**，但名字修正过）。"""
+        """12 个可选主属性，**名字和游戏 UI 上的文案一致**。"""
         self.assertEqual(len(TARGET_STATS), 12)
-        for name in ("攻击百分比", "生命百分比", "防御百分比",
+        for name in ("攻击", "生命", "防御",
                      "暴击", "暴击伤害", "共鸣效率"):
             self.assertIn(name, TARGET_STATS)
 
-    def test_main_stats_are_percent_forms(self):
-        """★ 主属性只有**百分比**形态。
+    def test_names_match_the_game_ui(self):
+        """★★ 选项名必须**一字不差**地对上游戏「可选主音属性」面板。
 
-        ok-ww 原版的选项表写的是 ``攻击`` / ``生命`` / ``防御`` ——
-        那是**副词条**的形态，当主属性目标用的话游戏里根本选不到（2026-09-26 用户指出）。
+        用户 2026-10-03 给了面板截图，上面写的是::
+
+            冷凝伤害加成 / 热熔伤害加成 / 导电伤害加成
+            气动伤害加成 / 衍射伤害加成 / 湮灭伤害加成
+            **攻击 / 生命 / 防御**          ← 就这两个字
+            共鸣效率
+
+        ⚠ **不要**写成 ``攻击百分比`` —— 我 2026-09-26 就是那么改的，
+        理由是看到 ``FiveToOneTask.main_stats`` 用「攻击力百分比」。
+        **那个推断错了**：改完之后攻击/生命/防御/暴击/暴击伤害
+        **五个全都识别不到**（只有属性伤害加成和共鸣效率能用）。
+
+        → 这条测试用**截图上的真实文字**钉住，防的正是"又去改名字"。
+        """
+        # 用户截图里**一字不差**的文字
+        on_screen = [
+            "冷凝伤害加成", "热熔伤害加成", "导电伤害加成",
+            "气动伤害加成", "衍射伤害加成", "湮灭伤害加成",
+            "攻击", "生命", "防御",
+            "共鸣效率",
+        ]
+        # 截图裁掉了暴击那两行，但同一面板、同一列 → 裸名
+        inferred = ["暴击", "暴击伤害"]
+
+        for name in TARGET_STATS:
+            with self.subTest(name=name):
+                pat = target_pattern(name)
+                hit = any(pat.match(t) for t in on_screen + inferred)
+                self.assertTrue(
+                    hit, f"「{name}」在游戏面板上找不到 —— "
+                         f"名字和 UI 文案对不上（见 docstring）")
+
+    def test_flat_names_are_used(self):
+        """★★ 用**裸名**（``攻击``），不是 ``攻击百分比``。
+
+        ⚠ 这是本轮修复的核心。带「百分比」的写法在游戏面板上**不存在**。
         """
         for flat in ("攻击", "生命", "防御"):
-            self.assertNotIn(flat, TARGET_STATS, f"{flat} 不是主属性形态")
+            with self.subTest(flat=flat):
+                self.assertIn(flat, TARGET_STATS,
+                              f"{flat} 不在选项表里 —— 游戏 UI 上就是这个写法")
         for pct in ("攻击百分比", "生命百分比", "防御百分比"):
-            self.assertIn(pct, TARGET_STATS)
-
-    def test_default_is_a_percent_form(self):
-        self.assertIn("百分比", DEFAULT_TARGET)
+            with self.subTest(pct=pct):
+                self.assertNotIn(
+                    pct, TARGET_STATS,
+                    f"{pct} 又跑进选项表了 —— 游戏面板上没有这个文案"
+                    f"（2026-09-26 就是被它坑的，2026-10-03 改回）")
 
 
 class TestTargetPattern(unittest.TestCase):
-    """选项检索要吃得下「攻击力百分比」这种带「力」的写法。
+    """选项检索要吃得下「力 / 值」的写法差异。
 
-    ok-ww 自己的 ``FiveToOneTask`` 用的就是带「力」的形态
-    （``main_stats = ["攻击力百分比", ...]``、``black_list = ["主属性攻击力", ...]``），
-    所以游戏 UI 里很可能是「攻击力百分比」。
-    字面量匹配会**漏掉**（中间多个「力」），必须做成可选。
+    ⚠ 这里**不再假设**游戏 UI 一定写「攻击力百分比」——
+    用户截图证明它写的是「攻击」。
+    但 :func:`target_pattern` 仍把「力 / 值」做成**可选**，
+    这样万一某个游戏版本写成「攻击力」，也照样能命中。
     """
 
     def test_literal_only_would_miss(self):
-        """反证：字面量匹配确实抓不到带「力」的写法。"""
-        self.assertIsNone(re.search("攻击百分比", "攻击力百分比"))
+        """反证：**字面量**匹配确实抓不到带「力」的写法。
+
+        ⚠ 注意方向：``re.search(pat, text)`` —— pat 在前、text 在后。
+        ``re.search("攻击力", "攻击")`` 是 **None**（"攻击" 里没有"攻击力"），
+        这才是"字面量匹配会漏掉"的意思。
+        （第一版我把参数写反了，断言就变成在测别的东西。）
+        """
+        self.assertIsNone(re.search("攻击力", "攻击"))
+        self.assertIsNone(re.search("生命值", "生命"))
 
     def test_pattern_matches_both_forms(self):
-        pat = target_pattern("攻击百分比")
-        for text in ("攻击百分比", "攻击力百分比", "主属性攻击力百分比"):
+        """★ 两种写法都能命中 —— 不赌游戏写哪种。"""
+        pat = target_pattern("攻击")
+        for text in ("攻击", "攻击力", "主属性攻击", "主属性攻击力"):
             with self.subTest(text=text):
                 self.assertIsNotNone(pat.search(text))
 
     def test_pattern_covers_life_and_defense(self):
-        self.assertIsNotNone(target_pattern("生命百分比").search("生命值百分比"))
-        self.assertIsNotNone(target_pattern("防御百分比").search("防御力百分比"))
+        self.assertIsNotNone(target_pattern("生命").search("生命值"))
+        self.assertIsNotNone(target_pattern("防御").search("防御力"))
 
     def test_pattern_still_rejects_different_stats(self):
-        """宽松 ≠ 乱匹配：不能把别的属性也吃进来。"""
-        pat = target_pattern("攻击百分比")
-        self.assertIsNone(pat.search("生命百分比"))
-        self.assertIsNone(pat.search("攻击"))            # 固定值形态不是它
-        self.assertIsNone(pat.search("暴击"))
+        """宽松 ≠ 乱匹配：不能把别的属性也吃进来。
+
+        ⚠ 用**游戏面板上真实存在**的其他属性来测。
+        别写 ``pat.search("攻击")`` 去当"反例" ——
+        ``攻击`` 本来就是目标自己，那样断言是自相矛盾的
+        （第一版就是这么写的，结果自己把自己判失败）。
+        """
+        pat = target_pattern("攻击")
+        for other in ("生命", "防御", "暴击", "暴击伤害",
+                      "共鸣效率", "冷凝伤害加成", "攻击百分比"):
+            with self.subTest(other=other):
+                self.assertIsNone(
+                    pat.search(other),
+                    f"「攻击」的匹配式误命中了「{other}」")
 
     def test_crit_pattern_does_not_hit_crit_dmg(self):
         """★★ 最关键的一条：``暴击`` 的匹配式**不能**碰到 ``暴击伤害``。
