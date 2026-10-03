@@ -62,8 +62,46 @@ from qfluentwidgets import (
 
 logger = logging.getLogger(__name__)
 
-#: 官方网页版登录入口
-LOGIN_URL = "https://www.kurobbs.com/"
+#: ★★ 登录入口 —— **必须是论坛首页**，不能是 ``https://www.kurobbs.com/``。
+#:
+#: ## 2026-10-03 实测（用户："这也没办法登陆啊"）
+#:
+#: 我第一版写的是 ``https://www.kurobbs.com/`` —— 那个地址会**跳转到
+#: ``main.html``，页面上只有页脚**（版权信息 / 友情链接），
+#: **没有任何登录按钮**，用户打开窗口后无从下手。
+#:
+#: 实测对比::
+#:
+#:     https://www.kurobbs.com/          → 跳 main.html，只有页脚，**无登录入口**
+#:     https://www.kurobbs.com/mc/home/9 → ★ 正常渲染，有「立即登录」按钮
+#:
+#: 而 ``/login.html``、``/pc/login.html`` 这些猜出来的地址都返回
+#: ``NoSuchKey``（OSS 错误页）—— 说明**没有独立登录页**，
+#: 登录是论坛首页上的一个弹窗。
+LOGIN_URL = "https://www.kurobbs.com/mc/home/9"
+
+#: 自动点一下「立即登录」，把登录弹窗拉出来。
+#:
+#: ⚠ 不点的话用户还得自己找那个按钮（它在页面顶部，SPA 渲染完才出现）。
+#: 点完页面会出现两个输入框（实测）::
+#:
+#:     请输入手机号码
+#:     请输入6位验证码
+_CLICK_LOGIN_JS = r"""
+(function () {
+    var all = document.querySelectorAll("button,a,div,span");
+    for (var i = 0; i < all.length; i++) {
+        var e = all[i];
+        if (e.children.length > 0) continue;
+        var t = (e.innerText || "").trim();
+        if (t === "立即登录" || t === "登录" || t === "登录/注册") {
+            e.click();
+            return t;
+        }
+    }
+    return "";
+})();
+"""
 
 #: profile 名字 —— 独立于用户平时的浏览器数据
 PROFILE_NAME = "kuro_login"
@@ -156,7 +194,33 @@ class KuroLoginDialog(QDialog):
         self._timer.timeout.connect(self._poll)
         self._timer.start()
 
+        # ★ 页面加载完**自动点一下「立即登录」**，把登录弹窗拉出来 ——
+        #   不然用户得自己在页面顶部找那个按钮（SPA 渲染完才出现，
+        #   上一版就是因为地址不对、压根没这个按钮，用户无从下手）。
+        self._page.loadFinished.connect(self._on_page_loaded)
         self._view.setUrl(QUrl(LOGIN_URL))
+
+    # ------------------------------------------------------------- 页面
+    def _on_page_loaded(self, ok: bool) -> None:
+        """页面加载完 —— 等 SPA 渲染出来再点「立即登录」。"""
+        if not ok:
+            self._status.setText("页面加载失败，点「重新加载」再试")
+            return
+        # SPA 要一会儿才把按钮渲染出来，等 3 秒
+        QTimer.singleShot(3000, self._click_login)
+
+    def _click_login(self) -> None:
+        def report(result) -> None:
+            if result:
+                self._status.setText("登录框已弹出 —— 请填手机号和验证码")
+            else:
+                self._status.setText(
+                    "没找到「立即登录」按钮 —— 请自己在页面上点一下")
+
+        try:
+            self._page.runJavaScript(_CLICK_LOGIN_JS, report)
+        except Exception as exc:               # noqa: BLE001
+            logger.debug("点「立即登录」失败：%s", exc)
 
     # ------------------------------------------------------------- 轮询
     def _poll(self) -> None:

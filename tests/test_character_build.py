@@ -175,7 +175,91 @@ def PROFILE_NAME_CONST(source: str) -> bool:
 
 class TestLoginDialogSource(unittest.TestCase):
 
-    def test_login_url_is_official(self):
+    def test_login_url_is_the_forum_home(self):
+        """★★★ **本轮的核心修复** —— 用户："这也没办法登陆啊"。
+
+        我第一版把登录地址写成 ``https://www.kurobbs.com/`` ——
+        那个地址会**跳转到 ``main.html``，页面上只有页脚**（版权信息、
+        友情链接），**没有任何登录按钮**，用户打开窗口后无从下手。
+
+        实测对比::
+
+            https://www.kurobbs.com/          → 只有页脚，**无登录入口**
+            https://www.kurobbs.com/mc/home/9 → ★ 有「立即登录」按钮
+
+        → 所以地址必须是**论坛首页**。这条测试钉死它，防止又改回去。
+        """
+        from src.tools.game.character_build import login_dialog
+
+        self.assertEqual(
+            login_dialog.LOGIN_URL, "https://www.kurobbs.com/mc/home/9",
+            "登录地址不对 —— 必须是论坛首页（根路径只有页脚，没有登录按钮）")
+        self.assertNotEqual(
+            login_dialog.LOGIN_URL.rstrip("/"), "https://www.kurobbs.com",
+            "根路径没有登录入口，用户会无从下手")
+
+    def test_auto_clicks_login_button(self):
+        """★ 要**自动点**「立即登录」把弹窗拉出来。
+
+        不点的话用户还得自己在页面顶部找那个按钮（SPA 渲染完才出现）。
+        实测点完之后页面上会出现两个输入框：
+
+            请输入手机号码
+            请输入6位验证码
+        """
+        from src.tools.game.character_build import login_dialog
+
+        js = login_dialog._CLICK_LOGIN_JS
+        self.assertIn("立即登录", js)
+        self.assertIn("click", js)
+
+    def test_clicks_after_page_load(self):
+        """★ 点击要真的**接在页面加载之后**，而且真的调用点击脚本。
+
+        ⚠ 第一版这条只搜字符串 ``"_CLICK_LOGIN_JS"`` —— 而那个名字在
+        ``_click_login`` 自己的**方法体里**就出现了，于是把
+        ``_on_page_loaded`` 里那句 ``QTimer.singleShot(3000, self._click_login)``
+        删掉，测试照样通过（**护栏失效**，实测抓到的）。
+
+        所以现在用 AST 查**调用链**：
+        ``_on_page_loaded`` 必须引用 ``_click_login``，
+        且 ``_click_login`` 必须真的执行 ``_CLICK_LOGIN_JS``。
+        """
+        source = (ROOT / "src" / "tools" / "game" / "character_build"
+                  / "login_dialog.py").read_text(encoding="utf-8")
+        self.assertIn("loadFinished", source,
+                      "没接 loadFinished —— 页面还没加载就点，按钮不存在")
+
+        tree = ast.parse(source)
+
+        def method(name):
+            return next(
+                (n for n in ast.walk(tree)
+                 if isinstance(n, ast.FunctionDef) and n.name == name), None)
+
+        loaded = method("_on_page_loaded")
+        self.assertIsNotNone(loaded, "没有 _on_page_loaded")
+        loaded_names = {
+            getattr(n, "id", None) or getattr(n, "attr", None)
+            for n in ast.walk(loaded)
+        }
+        self.assertIn(
+            "_click_login", loaded_names,
+            "★ _on_page_loaded 里没有引用 _click_login —— "
+            "页面加载完不会自动点「立即登录」，用户还是找不到登录入口")
+
+        click = method("_click_login")
+        self.assertIsNotNone(click, "没有 _click_login")
+        click_code = "\n".join(
+            ast.get_source_segment(source, stmt) or ""
+            for stmt in click.body
+            if not (isinstance(stmt, ast.Expr)
+                    and isinstance(stmt.value, ast.Constant)
+                    and isinstance(stmt.value.value, str)))
+        self.assertIn("_CLICK_LOGIN_JS", click_code,
+                      "_click_login 没执行点击脚本")
+
+    def test_login_url_is_correct_host(self):
         from src.tools.game.character_build import login_dialog
 
         self.assertTrue(login_dialog.LOGIN_URL.startswith("https://"))
