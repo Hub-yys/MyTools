@@ -657,8 +657,16 @@ class CharacterBuildPanel(ScrollArea):
             tail = self._account.mobile_tail
             self._login_status.setText(
                 f"已登录（手机号 ****{tail}）" if tail else "已登录")
+            # ★ 已登录时把手机号提示写在 placeholder 里 ——
+            #   我们**只存后 4 位**（隐私），拼不出全号，所以框里是空的。
+            #   但用户看到空框会以为坏了，这里说清楚"不用再填"。
+            if not self._mobile_edit.text().strip():
+                self._mobile_edit.setPlaceholderText(
+                    f"已登录 ****{tail}，换号才要填" if tail
+                    else "已登录，换号才要填")
         else:
             self._login_status.setText("未登录")
+            self._mobile_edit.setPlaceholderText("手机号")
         self._refresh_button.setEnabled(self._account.logged_in)
 
     def _busy(self, busy: bool) -> None:

@@ -647,7 +647,14 @@ class TestFetchThreadPartial(unittest.TestCase):
         self.assertTrue(hasattr(FetchThread, "stop"))
 
     def test_saves_progressively(self):
-        """★ 中途就要落盘（不然被打断就白拉了）。"""
+        """★ 中途就要落盘（不然被打断就白拉了）。
+
+        ⚠⚠ **必须把令牌路径也挡到临时目录**：
+        ``FetchThread`` 结尾会调 ``kuro_account.save_account(acc)`` ——
+        第一版只挡了 ``cache_file``，结果假账号 ``token="t"`` /
+        ``roles=[{'roleId': '1'}]`` 被**写进用户真实的令牌文件**，
+        界面上特征码变成空、手机号也没了。
+        """
         import tempfile
         import time
 
@@ -656,7 +663,9 @@ class TestFetchThreadPartial(unittest.TestCase):
 
         tmp = tempfile.TemporaryDirectory()
         orig_file = T.cache_file
+        orig_token = K.token_file          # ★ 令牌也要挡
         T.cache_file = lambda: pathlib.Path(tmp.name) / "c.json"
+        K.token_file = lambda: pathlib.Path(tmp.name) / "acc.json"
 
         saved = {"n": 0}
         orig_save = T.save_cache
@@ -696,9 +705,68 @@ class TestFetchThreadPartial(unittest.TestCase):
         finally:
             T.save_cache = orig_save
             T.cache_file = orig_file
+            K.token_file = orig_token          # ★ 还原令牌路径
             for name, val in origs.items():
                 setattr(K, name, val)
             tmp.cleanup()
+
+
+class TestNoTestWritesUserData(unittest.TestCase):
+    """★★★ **测试绝不能写用户的真实数据**（令牌 / 缓存）。
+
+    ## 2026-10-03 连续踩了两次
+
+    1. 探索脚本 `save_cache(假数据)` → 把用户拉到的**真实缓存**覆盖成
+       `角色1..角色43`
+    2. `test_saves_progressively` 只挡了 `cache_file`，**没挡 `token_file`**
+       → `FetchThread` 结尾的 `save_account(acc)` 把假账号
+       （`token="t"`、`roles=[{'roleId': '1'}]`）**写进了真实令牌文件**
+       → 用户界面上特征码变成空、手机号也没了
+
+    ## 这条测试做什么
+
+    把**真实路径**记下来，跑完整个模块后检查：那两个文件**不该被创建**。
+    靠 `tearDownModule` 在模块结束时断言。
+    """
+
+    def test_real_paths_are_known(self):
+        from src.core import paths
+        from src.tools.game.character_build import tool as T
+
+        self.assertEqual(T.cache_file.__module__,
+                         "src.tools.game.character_build.tool")
+        self.assertTrue(str(paths.user_data_dir()))
+
+
+def tearDownModule() -> None:
+    """★ 模块跑完检查：用户的真实令牌 / 缓存**没被测试碰过**。
+
+    ⚠ 这个方法读的是**真实路径**，所以必须在所有测试（含它们的
+    ``tearDown``）都跑完、路径被还原之后执行。
+    """
+    import logging
+
+    logging.disable(logging.CRITICAL)
+    try:
+        from src.core import paths
+
+        real_dir = paths.user_data_dir()
+        for name in ("kuro_account.json", "kuro_练度.json"):
+            path = real_dir / name
+            if path.exists():
+                #: 存在是正常的（用户自己的数据）—— 只警告"内容像测试数据"
+                try:
+                    text = path.read_text(encoding="utf-8")
+                    if '"token": "t"' in text or '"roleId": "1"' in text:
+                        logging.disable(logging.NOTSET)
+                        raise AssertionError(
+                            f"★ 用户真实文件 {path} 里出现了**测试数据**"
+                            f"（token='t' / roleId='1'）—— "
+                            f"某个测试没把路径挡到临时目录！")
+                except UnicodeDecodeError:
+                    pass
+    finally:
+        logging.disable(logging.NOTSET)
 
 
 class TestToolPage(unittest.TestCase):
@@ -1017,10 +1085,25 @@ class TestToolPage(unittest.TestCase):
         p._render(p._data)
         self.assertEqual(len(p._cards), 1)
 
-    def test_fetch_disabled_when_logged_out(self):
+    def test_refresh_disabled_when_logged_out(self):
+        """未登录时「刷新数据」要禁用。
+
+        ⚠ 原来叫 ``test_fetch_disabled_when_logged_out`` ——
+        而「获取数据」按钮**已经被删掉**（用户要求：登录后自动拉），
+        这条测试跟着改。
+        """
         p = self._panel()
         if not p._account.logged_in:
-            self.assertFalse(p._fetch_button.isEnabled())
+            self.assertFalse(p._refresh_button.isEnabled())
+
+    def test_no_fetch_button(self):
+        """★ 「获取数据」按钮**不该存在**（用户："登录自动拉，为什么还有"）。
+
+        登录后自动拉，之后想重拉点「刷新数据」—— 三个按钮太多了。
+        """
+        p = self._panel()
+        self.assertFalse(hasattr(p, "_fetch_button"),
+                         "「获取数据」按钮还在 —— 用户要求删掉（登录后自动拉）")
 
     def test_logout_button_exists(self):
         self.assertTrue(hasattr(self._panel(), "_logout_button"))
