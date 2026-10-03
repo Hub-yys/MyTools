@@ -474,6 +474,109 @@ class TestResolveRoleByFeatureCode(unittest.TestCase):
             kuro_account.fetch_roles = orig
 
 
+class TestEchoIssues(unittest.TestCase):
+    """★★ 声骸"待优化"判定 —— 第一版只报**客观事实**。
+
+    ====================  ============================================
+    规则                  说明
+    ====================  ============================================
+    **等级没满**           有声骸 ``level < 25``
+    **套装不统一**         5 个声骸的套装名不止一种
+    **COST 配比不对**      不是 4-3-3-1-1
+    **有效词条太少**       副词条里 ``valid=true`` 的总数 < 10
+    ====================  ============================================
+
+    ⚠ 这些**不掺主观"好不好"** —— 等用户给了按角色的标准再改。
+    """
+
+    @staticmethod
+    def _detail(items) -> dict:
+        return {"phantomData": {"equipPhantomList": items}}
+
+    @staticmethod
+    def _item(cost, level=25, fetter="隐世回光", valid=2, name="x"):
+        return {
+            "cost": cost, "level": level, "quality": 5,
+            "phantomProp": {"name": name},
+            "fetterDetail": {"name": fetter},
+            "mainProps": [{"attributeName": "攻击",
+                           "attributeValue": "18.0%", "valid": True}],
+            "subProps": [{"attributeName": f"c{i}",
+                          "attributeValue": "1%",
+                          "valid": i < valid} for i in range(5)],
+        }
+
+    def _issues(self, items):
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        return CharacterBuildPanel._echo_issues(self._detail(items))
+
+    def test_good_echoes_no_issues(self):
+        """满级 + 同套装 + COST 4-3-3-1-1 + 有效词条够 → 没问题。"""
+        items = [self._item(c, valid=3) for c in (4, 3, 3, 1, 1)]
+        self.assertEqual(self._issues(items), [])
+
+    def test_detects_not_max_level(self):
+        items = [self._item(c, level=20, valid=3) for c in (4, 3, 3, 1, 1)]
+        self.assertTrue(any("没满级" in x for x in self._issues(items)))
+
+    def test_detects_mixed_sets(self):
+        items = [self._item(c, valid=3, fetter="A" if c == 4 else "B")
+                 for c in (4, 3, 3, 1, 1)]
+        self.assertTrue(any("套装不统一" in x for x in self._issues(items)))
+
+    def test_detects_wrong_cost(self):
+        """★ COST 不是 4-3-3-1-1 要报出来（实测见过别的配比）。"""
+        items = [self._item(c, valid=3) for c in (4, 4, 1, 1, 1)]
+        self.assertTrue(any("COST" in x for x in self._issues(items)))
+
+    def test_cost_order_does_not_matter(self):
+        """★ COST 只看**组成**，排序无关。"""
+        items = [self._item(c, valid=3) for c in (1, 4, 1, 3, 3)]
+        self.assertEqual([x for x in self._issues(items) if "COST" in x], [])
+
+    def test_detects_few_valid_substats(self):
+        """★ 有效词条 < 10 要报（`valid` 是库街区自己标的）。"""
+        items = [self._item(c, valid=1) for c in (4, 3, 3, 1, 1)]
+        self.assertTrue(any("有效词条" in x for x in self._issues(items)))
+
+    def test_empty_detail(self):
+        self.assertTrue(self._issues([]))
+
+
+class TestCachePersistence(unittest.TestCase):
+    """★★ 数据持久化 —— 重启后直接显示上次结果，不用重拉。"""
+
+    def test_save_and_load(self):
+        from src.tools.game.character_build import tool as T
+
+        payload = {"at": "x", "base": {"energy": 1}, "roleList": [],
+                   "details": {}}
+        try:
+            T.save_cache(payload)
+            got = T.load_cache()
+            self.assertEqual(got.get("base", {}).get("energy"), 1)
+        finally:
+            T.clear_cache()
+
+    def test_load_missing_returns_empty(self):
+        from src.tools.game.character_build import tool as T
+
+        T.clear_cache()
+        self.assertEqual(T.load_cache(), {})
+
+    def test_load_corrupt_returns_empty(self):
+        from src.tools.game.character_build import tool as T
+
+        try:
+            p = T.cache_file()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("{ 坏的", encoding="utf-8")
+            self.assertEqual(T.load_cache(), {})
+        finally:
+            T.clear_cache()
+
+
 class TestToolPage(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -499,12 +602,80 @@ class TestToolPage(unittest.TestCase):
         """★★ 界面要有**特征码**输入框。
 
         用户："特征码呢，我要是换个号不是没地方输入吗"
-
-        鸣潮工坊的绑定弹窗就是三栏：**特征码 + 手机号 + 验证码**。
         """
         p = self._panel()
         self.assertTrue(hasattr(p, "_feature_edit"),
                         "没有特征码输入框 —— 换号时没地方填")
+
+    def test_has_refresh_button(self):
+        """★ 「刷新数据」按钮（用户要求：登录后自动拉，之后能手动刷）。
+
+        ⚠ 第一版只断言 ``hasattr(p, "_refresh_button")`` —— 而
+        ``PushButton("刷新数据", card)`` **构造时就设了 parent**，
+        所以把 ``addWidget`` 删掉按钮依然存在，测试照样通过
+        （实测突变时发现失效）。
+
+        ⚠ 第二版从 ``p`` 往下找布局 —— 但 ``CharacterBuildPanel`` 是
+        ``ScrollArea``，**它自己没有 layout**（内容在 ``p.widget()`` 里），
+        所以怎么找都找不到。
+
+        现在改成**找父链上有没有那个卡片**：
+        按钮的祖先里必须出现 ``_buildLoginCard`` 建的那个 ``CardWidget``。
+        """
+        p = self._panel()
+        btn = getattr(p, "_refresh_button", None)
+        self.assertIsNotNone(btn, "没有刷新按钮")
+
+        #: 往上走，收集祖先类型
+        chain: list[str] = []
+        node = btn
+        for _ in range(10):
+            parent = node.parent()
+            if parent is None:
+                break
+            chain.append(type(parent).__name__)
+            node = parent
+        self.assertIn("CardWidget", chain,
+                      f"「刷新数据」按钮不在任何卡片里（父链 {chain}）—— "
+                      f"说明没被 addWidget 进布局，界面上看不到")
+
+    def test_log_is_collapsed_by_default(self):
+        """★ 日志默认折叠 —— 用户说"日志后台写"。
+
+        ⚠ 第一版断言 ``not p._log.isVisible()`` —— 而窗口没 ``show()`` 时
+        **所有控件 ``isVisible()`` 都是 False**，把日志改成展开也照样通过
+        （实测突变时发现失效）。
+
+        所以改用 ``isHidden()`` —— 它反映的是**显式隐藏**，和窗口显没显示无关。
+        """
+        p = self._panel()
+        self.assertTrue(p._log.isHidden(),
+                        "日志没被显式隐藏 —— 应该默认折叠，写在后台")
+
+    def test_has_character_grid(self):
+        """★ 要有角色网格（像官方那样展示头像 + 等级 + 共鸣链）。"""
+        p = self._panel()
+        self.assertTrue(hasattr(p, "_roles_grid"))
+        self.assertTrue(hasattr(p, "_cards"))
+
+    def test_has_only_bad_filter(self):
+        """★ 「只看未达标」筛选。"""
+        p = self._panel()
+        self.assertTrue(hasattr(p, "_only_bad"))
+
+    def test_render_shows_cards(self):
+        """★ 给数据能渲染出角色卡片。"""
+        p = self._panel()
+        p._data = {
+            "at": "x",
+            "base": {"energy": 1, "maxEnergy": 2},
+            "roleList": [{"roleId": 1103, "roleName": "白芷", "level": 90,
+                          "attributeName": "冷凝", "weaponTypeName": "音感仪",
+                          "chainUnlockNum": 6, "starLevel": 4}],
+            "details": {},
+        }
+        p._render(p._data)
+        self.assertEqual(len(p._cards), 1)
 
     def test_fetch_disabled_when_logged_out(self):
         p = self._panel()

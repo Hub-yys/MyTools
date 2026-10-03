@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""「查询角色练度」工具页 —— 手机号 + 验证码登录，拉角色/声骸数据。
+"""「查询角色练度」工具页 —— 手机号 + 验证码登录，像官方那样展示角色与声骸。
 
 ## ★★★ 完整流程（2026-10-03 实测跑通）
 
@@ -8,34 +8,32 @@
     ├─ ③ 换「数据令牌」/aki/roleBox/requestToken → accessToken
     └─ ④ 之后所有 /aki/ 请求**只带 b-at 头** → 角色列表 + 声骸详情
 
-## 验证码不用本工具发
+## 界面（对齐官方「共鸣者」卡片的展示方式）
 
-**API 文档明确：验证码 APP 端与 Web 端通用。**
-所以用户在**任意官方入口**（App / 网页）点"获取验证码"，
-把码填到这里就行 —— 我们不需要碰极验。
+    ┌─ ① 登录：特征码 / 手机号 / 验证码（各一行）+ 获取数据
+    ├─ ② 账号概览：结晶波片 | 结晶单质 | 活跃度 | 游戏天数 | 联觉等级 | 解锁角色
+    ├─ ③ **角色网格**：头像 + 等级 + 共鸣链 + 属性 + 名字（像官方那样）
+    │     · 声骸没达标的角色**红框**标出来
+    │     · 点角色 → 展开 5 个声骸明细（COST/等级/名/套装/主属性/副词条/有效数）
+    └─ ④ 日志（后台写，默认折叠）
 
-## ⚠ 为什么不用内嵌浏览器了
+## 数据持久化
 
-之前做过一版内嵌浏览器登录（读 ``localStorage.auth_token``）。
-**那条路拿到的令牌 `/aki/` 不认**（回 `10901 禁止访问`）——
-网页登录和 App 端登录是**两套令牌**。
-现在直接用手机号 + 验证码走 App 端登录，**简单得多也正确**。
-
-## 账号安全
-
-* 令牌只存本地（``data/kuro_account.json``，权限收紧到仅本人可读）
-* **只存手机号后 4 位**用于显示，不存全号
-* 界面上有明确的「退出登录」= 删掉令牌文件
-* 网络请求全在后台线程里跑，不卡界面
+拉到的数据存 ``data/kuro_练度.json`` —— 重启后**直接显示上次结果**，
+不用重新登录/重拉。登录后也会**自动拉一次**。
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import QSize, Qt, QThread, Signal
 from PySide6.QtWidgets import (
+    QGridLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QTextEdit,
     QVBoxLayout,
@@ -54,7 +52,7 @@ from qfluentwidgets import (
     TitleLabel,
 )
 
-from ....core import kuro_account
+from ....core import kuro_account, paths
 from ....core.categories import ToolCategory
 from ....core.registry import registry
 from ....core.tool_base import BaseTool
@@ -67,22 +65,42 @@ TOOL_KEY = "character_build"
 #: 手机号长度（大陆 11 位）
 MOBILE_LEN = 11
 
+#: 缓存文件名（用户数据目录）—— 数据持久化，重启直接显示
+CACHE_NAME = "kuro_练度.json"
+
+#: 角色卡片尺寸
+AVATAR_SIZE = 56
+CARD_W = 112
+CARD_H = 128
+
+#: 角色网格每行几个
+GRID_COLS = 6
+
+
+def cache_file():
+    """缓存文件位置（用户数据目录）。"""
+    return paths.user_data_dir() / CACHE_NAME
+
 
 # --------------------------------------------------------------------- 线程
 
 class LoginThread(QThread):
-    """后台 APP 端登录 + 换数据令牌。"""
+    """后台 APP 端登录 + 换数据令牌 + **自动拉一次数据**。"""
 
+    progress = Signal(str)
     succeeded = Signal(object)                 # Account
     failed = Signal(str)
 
-    def __init__(self, mobile: str, code: str, parent=None):
+    def __init__(self, mobile: str, code: str, feature_code: str = "",
+                 parent=None):
         super().__init__(parent)
         self._mobile = mobile
         self._code = code
+        self._feature = feature_code
 
     def run(self) -> None:                     # noqa: D102
         try:
+            self.progress.emit("正在登录（APP 端）…")
             account = kuro_account.app_login_with_code(self._mobile,
                                                        self._code)
             kuro_account.save_account(account)
@@ -117,15 +135,10 @@ class FetchThread(QThread):
                              if str(r.get("roleId") or "").strip() == want),
                             None)
                 if role is None:
-                    self.progress.emit(
-                        f"特征码 {want} 不在绑定列表里，尝试重新查询…")
                     role = kuro_account.resolve_role(acc.token, want)
                 if role is None:
                     self.failed.emit(
                         f"查不到特征码 {want} 对应的角色。\n"
-                        f"可能原因：① 特征码填错了；"
-                        f"② 这个号没绑定到当前库街区账号"
-                        f"（一个账号只能绑一个号）。\n"
                         f"当前账号绑定的角色："
                         f"{[r.get('roleName') for r in roles] or '（无）'}")
                     return
@@ -138,8 +151,8 @@ class FetchThread(QThread):
 
             role_id = str(role.get("roleId"))
             server_id = str(role.get("serverId"))
-            role_name = role.get("roleName") or role_id
-            self.progress.emit(f"目标角色：{role_name}（特征码 {role_id}）")
+            self.progress.emit(f"目标角色：{role.get('roleName') or role_id}"
+                               f"（特征码 {role_id}）")
 
             self.progress.emit("正在换数据令牌…")
             data_token, _req = kuro_account.request_data_token(
@@ -169,28 +182,156 @@ class FetchThread(QThread):
             except Exception:                  # noqa: BLE001
                 pass
 
-            self.succeeded.emit({
+            payload = {
+                "at": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "role": role, "base": base,
                 "roleList": role_list, "details": details,
-            })
+            }
+            save_cache(payload)
+
+            self.succeeded.emit(payload)
         except kuro_account.RoleNotFound as exc:
             self.failed.emit(str(exc))
         except Exception as exc:               # noqa: BLE001
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
 
+# --------------------------------------------------------------------- 缓存
+
+def save_cache(payload: dict) -> None:
+    """把拉到的数据落盘（重启后直接显示，不用重拉）。"""
+    try:
+        path = cache_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False),
+                        encoding="utf-8")
+    except Exception as exc:                   # noqa: BLE001
+        logger.warning("练度缓存写不进去：%s", exc)
+
+
+def load_cache() -> dict:
+    """读上次拉的数据；没有 / 坏了都返回空 dict。"""
+    try:
+        path = cache_file()
+        if not path.is_file():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:                          # noqa: BLE001
+        return {}
+
+
+def clear_cache() -> None:
+    try:
+        cache_file().unlink()
+    except Exception:                          # noqa: BLE001
+        pass
+
+
+# --------------------------------------------------------------------- 控件
+
+class CharacterCard(QWidget):
+    """一个角色卡片（像官方那样：头像 + 等级 + 共鸣链 + 名字）。
+
+    :param flagged: 声骸没达标 → **红框**标出来
+    """
+
+    clicked = Signal(str)                      # 角色 id
+
+    def __init__(self, role: dict, flagged: bool = False, parent=None):
+        super().__init__(parent)
+        self._cid = str(role.get("roleId"))
+        self.setFixedSize(QSize(CARD_W, CARD_H))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(self._tooltip(role, flagged))
+
+        box = QVBoxLayout(self)
+        box.setContentsMargins(4, 4, 4, 4)
+        box.setSpacing(2)
+
+        # ── 头像
+        holder = QLabel(self)
+        holder.setFixedSize(QSize(AVATAR_SIZE, AVATAR_SIZE))
+        holder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        holder.setPixmap(self._avatar(role.get("roleName")).pixmap(
+            AVATAR_SIZE, AVATAR_SIZE))
+        box.addWidget(holder, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        # ── 等级
+        lv = QLabel(f"Lv.{role.get('level', '?')}", self)
+        lv.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lv.setStyleSheet("font-size: 11px;")
+        box.addWidget(lv)
+
+        # ── 共鸣链 + 属性
+        sub = QLabel(f"{role.get('attributeName', '')}"
+                     f"　{role.get('chainUnlockNum', 0)}链", self)
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub.setStyleSheet("font-size: 10px;")
+        box.addWidget(sub)
+
+        # ── 名字
+        name = QLabel(str(role.get("roleName") or "?"), self)
+        name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        weight = "bold" if flagged else "normal"
+        color = "#c42b1c" if flagged else "inherit"
+        name.setStyleSheet(f"font-size: 12px; font-weight: {weight};"
+                           f"color: {color};")
+        box.addWidget(name)
+
+        # ★ 声骸没达标 → 红框
+        border = "#c42b1c" if flagged else "transparent"
+        width = 2 if flagged else 1
+        self.setStyleSheet(
+            f"CharacterCard {{ border: {width}px solid {border};"
+            f" border-radius: 6px; }}")
+
+    @staticmethod
+    def _avatar(name):
+        """角色头像 —— 拿不到就用首字圆图兜底。"""
+        try:
+            from ....gui.pickers import avatar_icon
+            from ....core import game_data
+
+            info = game_data.find_character(str(name or ""))
+            return avatar_icon(info.avatar if info else "", str(name or ""))
+        except Exception:                      # noqa: BLE001
+            from PySide6.QtGui import QIcon
+
+            return QIcon()
+
+    @staticmethod
+    def _tooltip(role: dict, flagged: bool) -> str:
+        lines = [
+            f"{role.get('roleName')}　Lv{role.get('level')}",
+            f"属性：{role.get('attributeName')}　"
+            f"武器：{role.get('weaponTypeName')}",
+            f"共鸣链：{role.get('chainUnlockNum')}　"
+            f"星级：{role.get('starLevel')}",
+        ]
+        if flagged:
+            lines.append("⚠ 声骸未达标 —— 点开看明细")
+        return "\n".join(lines)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 接口
+        self.clicked.emit(self._cid)
+        super().mousePressEvent(event)
+
+
 # --------------------------------------------------------------------- 面板
 
 class CharacterBuildPanel(ScrollArea):
-    """登录卡片 + 数据卡片 + 日志。"""
+    """登录 + 概览 + 角色网格 + 明细 + 日志（折叠）。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("CharacterBuildPanel")
         self._account = kuro_account.load_account()
         self._thread: QThread | None = None
-        self._data: dict = {}
+        self._data: dict = load_cache()        # ★ 直接显示上次结果
+        self._cards: list[CharacterCard] = []
         self._build()
+        self._render(self._data)               # 有缓存就先显示
 
     # ------------------------------------------------------------- 构建
     def _build(self) -> None:
@@ -199,7 +340,7 @@ class CharacterBuildPanel(ScrollArea):
         self.setWidgetResizable(True)
         root = QVBoxLayout(view)
         root.setContentsMargins(24, 20, 24, 24)
-        root.setSpacing(14)
+        root.setSpacing(12)
 
         root.addWidget(TitleLabel("查询角色练度", view))
         root.addWidget(BodyLabel(
@@ -207,99 +348,145 @@ class CharacterBuildPanel(ScrollArea):
             "用来比对哪些角色的声骸属性需要重刷。", view))
 
         root.addWidget(self._build_login_card(view))
-        root.addWidget(self._build_data_card(view))
+        root.addWidget(self._build_overview_card(view))
+        root.addWidget(self._build_roles_card(view))
+        root.addWidget(self._build_detail_card(view))
         root.addWidget(self._build_log_card(view))
         root.addStretch(1)
-        # ⚠ 登录态最后刷新（它管着「获取数据」按钮，那按钮在后面才建）
         self._refresh_login_state()
 
     def _build_login_card(self, parent) -> CardWidget:
         card = CardWidget(parent)
         box = QVBoxLayout(card)
-        box.setContentsMargins(18, 16, 18, 16)
-        box.setSpacing(10)
+        box.setContentsMargins(18, 14, 18, 14)
+        box.setSpacing(8)
 
-        box.addWidget(SubtitleLabel("① 登录库街区", card))
+        head = QHBoxLayout()
+        head.setSpacing(10)
+        head.addWidget(SubtitleLabel("① 登录库街区", card))
         self._login_status = CaptionLabel("未登录", card)
-        box.addWidget(self._login_status)
-
-        # ── 特征码（★ 用户要求：换号时要有地方填）
-        code_row = QHBoxLayout()
-        code_row.setSpacing(8)
-        code_row.addWidget(CaptionLabel("特征码", card))
-        self._feature_edit = QLineEdit(card)
-        self._feature_edit.setPlaceholderText(
-            "游戏 ID（不填 = 用账号绑定的那个）")
-        self._feature_edit.setFixedWidth(220)
-        code_row.addWidget(self._feature_edit)
-        code_row.addStretch(1)
-        box.addLayout(code_row)
-
-        # ── 手机号 + 验证码
-        row = QHBoxLayout()
-        row.setSpacing(8)
-
-        self._mobile_edit = QLineEdit(card)
-        self._mobile_edit.setPlaceholderText("手机号")
-        self._mobile_edit.setMaxLength(MOBILE_LEN)
-        self._mobile_edit.setFixedWidth(150)
-        row.addWidget(self._mobile_edit)
-
-        self._code_edit = QLineEdit(card)
-        self._code_edit.setPlaceholderText("短信验证码")
-        self._code_edit.setMaxLength(8)
-        self._code_edit.setFixedWidth(120)
-        row.addWidget(self._code_edit)
-
-        self._login_button = PushButton("登录", card)
-        self._login_button.clicked.connect(self._on_login)
-        row.addWidget(self._login_button)
-
+        head.addWidget(self._login_status)
+        head.addStretch(1)
         self._logout_button = PushButton("退出登录", card)
         self._logout_button.clicked.connect(self._on_logout)
-        row.addWidget(self._logout_button)
-        row.addStretch(1)
-        box.addLayout(row)
+        head.addWidget(self._logout_button)
+        box.addLayout(head)
 
-        box.addWidget(CaptionLabel(
-            "★ 验证码请在**任意官方入口**获取（库街区 App，或电脑网页的"
-            "登录框点「获取验证码」）—— 两边通用。\n"
-            "★ **特征码**：想查哪个游戏号就填它的游戏 ID。"
-            "留空则用当前库街区账号绑定的那个号。\n"
-            "⚠ 令牌只存本机（data/kuro_account.json），只记手机号后 4 位。"
-            "「退出登录」会删掉它。", card))
-        return card
+        def field(label: str, placeholder: str, width: int, maxlen: int = 0):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            tag = CaptionLabel(label, card)
+            tag.setFixedWidth(48)
+            row.addWidget(tag)
+            edit = QLineEdit(card)
+            edit.setPlaceholderText(placeholder)
+            edit.setFixedWidth(width)
+            if maxlen:
+                edit.setMaxLength(maxlen)
+            row.addWidget(edit)
+            row.addStretch(1)
+            box.addLayout(row)
+            return edit
 
-    def _build_data_card(self, parent) -> CardWidget:
-        card = CardWidget(parent)
-        box = QVBoxLayout(card)
-        box.setContentsMargins(18, 16, 18, 16)
-        box.setSpacing(10)
+        self._feature_edit = field("特征码", "留空 = 用绑定账号自动获取",
+                                   200)
+        self._mobile_edit = field("手机号", "手机号", 200, MOBILE_LEN)
+        self._code_edit = field("验证码", "短信验证码", 200, 8)
 
-        box.addWidget(SubtitleLabel("② 拉取账号数据", card))
-        row = QHBoxLayout()
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self._login_button = PushButton("登录", card)
+        self._login_button.clicked.connect(self._on_login)
+        btn_row.addWidget(self._login_button)
         self._fetch_button = PushButton("获取数据", card)
         self._fetch_button.clicked.connect(self._on_fetch)
-        row.addWidget(self._fetch_button)
-        row.addStretch(1)
-        box.addLayout(row)
+        btn_row.addWidget(self._fetch_button)
+        self._refresh_button = PushButton("刷新数据", card)
+        self._refresh_button.clicked.connect(self._on_fetch)
+        btn_row.addWidget(self._refresh_button)
+        btn_row.addStretch(1)
+        box.addLayout(btn_row)
 
-        self._summary = StrongBodyLabel("尚未拉取", card)
+        box.addWidget(CaptionLabel(
+            "验证码在任意官方入口获取（库街区 App / 网页登录框）—— 两边通用。"
+            "　登录后会**自动拉一次**数据。", card))
+        return card
+
+    def _build_overview_card(self, parent) -> CardWidget:
+        card = CardWidget(parent)
+        box = QVBoxLayout(card)
+        box.setContentsMargins(18, 14, 18, 14)
+        box.setSpacing(6)
+        box.addWidget(SubtitleLabel("② 账号概览", card))
+        self._summary = StrongBodyLabel("尚未拉取数据", card)
         self._summary.setWordWrap(True)
         box.addWidget(self._summary)
+        return card
+
+    def _build_roles_card(self, parent) -> CardWidget:
+        card = CardWidget(parent)
+        box = QVBoxLayout(card)
+        box.setContentsMargins(18, 14, 18, 14)
+        box.setSpacing(8)
+
+        head = QHBoxLayout()
+        head.addWidget(SubtitleLabel("③ 共鸣者", card))
+        self._roles_hint = CaptionLabel("", card)
+        head.addWidget(self._roles_hint)
+        head.addStretch(1)
+        self._only_bad = PushButton("只看未达标", card)
+        self._only_bad.setCheckable(True)
+        self._only_bad.clicked.connect(lambda: self._render(self._data))
+        head.addWidget(self._only_bad)
+        box.addLayout(head)
+
+        self._roles_host = QWidget(card)
+        self._roles_grid = QGridLayout(self._roles_host)
+        self._roles_grid.setContentsMargins(0, 0, 0, 0)
+        self._roles_grid.setSpacing(6)
+        box.addWidget(self._roles_host)
+        return card
+
+    def _build_detail_card(self, parent) -> CardWidget:
+        card = CardWidget(parent)
+        box = QVBoxLayout(card)
+        box.setContentsMargins(18, 14, 18, 14)
+        box.setSpacing(6)
+        self._detail_title = SubtitleLabel("④ 声骸明细", card)
+        box.addWidget(self._detail_title)
+        self._detail = QTextEdit(card)
+        self._detail.setReadOnly(True)
+        self._detail.setMinimumHeight(200)
+        self._detail.setPlaceholderText("点上面的角色卡片，这里显示它的声骸")
+        box.addWidget(self._detail)
         return card
 
     def _build_log_card(self, parent) -> CardWidget:
         card = CardWidget(parent)
         box = QVBoxLayout(card)
-        box.setContentsMargins(18, 16, 18, 16)
-        box.setSpacing(8)
-        box.addWidget(SubtitleLabel("日志", card))
+        box.setContentsMargins(18, 14, 18, 14)
+        box.setSpacing(6)
+
+        head = QHBoxLayout()
+        head.addWidget(SubtitleLabel("日志", card))
+        head.addStretch(1)
+        self._log_toggle = PushButton("展开", card)
+        self._log_toggle.setCheckable(True)
+        self._log_toggle.clicked.connect(self._toggle_log)
+        head.addWidget(self._log_toggle)
+        box.addLayout(head)
+
         self._log = QTextEdit(card)
         self._log.setReadOnly(True)
-        self._log.setMinimumHeight(180)
+        self._log.setMinimumHeight(120)
+        self._log.setVisible(False)            # ★ 默认折叠
         box.addWidget(self._log)
         return card
+
+    def _toggle_log(self) -> None:
+        show = self._log_toggle.isChecked()
+        self._log.setVisible(show)
+        self._log_toggle.setText("收起" if show else "展开")
 
     # ------------------------------------------------------------- 小工具
     def _say(self, message: str) -> None:
@@ -317,13 +504,14 @@ class CharacterBuildPanel(ScrollArea):
             tail = self._account.mobile_tail
             self._login_status.setText(
                 f"已登录（手机号 ****{tail}）" if tail else "已登录")
-            self._fetch_button.setEnabled(bool(self._account.roles))
         else:
             self._login_status.setText("未登录")
-            self._fetch_button.setEnabled(False)
+        self._fetch_button.setEnabled(self._account.logged_in)
+        self._refresh_button.setEnabled(self._account.logged_in)
 
     def _busy(self, busy: bool) -> None:
-        for b in (self._login_button, self._fetch_button):
+        for b in (self._login_button, self._fetch_button,
+                  self._refresh_button):
             b.setEnabled(not busy)
         if not busy:
             self._refresh_login_state()
@@ -340,7 +528,9 @@ class CharacterBuildPanel(ScrollArea):
             return
         self._busy(True)
         self._say("正在登录（APP 端）…")
-        thread = LoginThread(mobile, code, self)
+        thread = LoginThread(mobile, code,
+                             self._feature_edit.text().strip(), self)
+        thread.progress.connect(self._say)
         thread.succeeded.connect(self._on_logged_in)
         thread.failed.connect(self._on_failed)
         self._thread = thread
@@ -348,11 +538,13 @@ class CharacterBuildPanel(ScrollArea):
 
     def _on_logged_in(self, account) -> None:
         self._account = account
-        self._busy(False)
         names = [str(r.get("roleName") or r.get("roleId"))
                  for r in (account.roles or [])]
         self._say(f"✓ 登录成功。绑定的游戏角色：{names or '（没拿到）'}")
         self._toast("登录成功")
+        # ★ 登录后**自动拉一次**
+        self._busy(False)
+        self._on_fetch()
 
     # ------------------------------------------------------------- 数据
     def _on_fetch(self) -> None:
@@ -372,45 +564,160 @@ class CharacterBuildPanel(ScrollArea):
     def _on_fetched(self, data) -> None:
         self._busy(False)
         self._data = data or {}
-        base = self._data.get("base") or {}
-        role_list = self._data.get("roleList") or []
-        details = self._data.get("details") or {}
-
-        self._summary.setText(self._format_base(base))
-
-        self._say(f"✓ 角色 {len(role_list)} 个，"
-                  f"拿到声骸详情的 {len(details)} 个")
-        # 挑几个角色展示（让用户一眼看到声骸）
-        shown = 0
-        for r in sorted(role_list, key=lambda x: -(x.get("level") or 0)):
-            d = details.get(str(r.get("roleId")))
-            if not d:
-                continue
-            eq = ((d.get("phantomData") or {})
-                  .get("equipPhantomList") or [])
-            self._say(f"── {r.get('roleName')} Lv{r.get('level')}"
-                      f"  COST {((d.get('phantomData') or {}).get('cost'))}"
-                      f"  声骸 {len(eq)} 个")
-            for item in eq:
-                main = (item.get("mainProps") or [{}])[0]
-                subs = item.get("subProps") or []
-                valid = sum(1 for s in subs if s.get("valid"))
-                self._say(
-                    f"     COST{item.get('cost')} +{item.get('level')} "
-                    f"{(item.get('phantomProp') or {}).get('name', '?')}"
-                    f"  主 {main.get('attributeName', '?')}"
-                    f"{main.get('attributeValue', '?')}"
-                    f"  副词条 {len(subs)} 条（有效 {valid}）")
-            shown += 1
-            if shown >= 3:
-                break
+        self._render(self._data)
         self._toast("数据拉取完成")
+
+    # ------------------------------------------------------------- 渲染
+    def _render(self, data: dict) -> None:
+        """把数据画成界面（像官方那样）。"""
+        base = (data or {}).get("base") or {}
+        role_list = (data or {}).get("roleList") or []
+        details = (data or {}).get("details") or {}
+
+        self._summary.setText(self._format_base(base) if base
+                              else "尚未拉取数据")
+
+        # ── 清掉旧卡片
+        for card in self._cards:
+            card.setParent(None)
+            card.deleteLater()
+        self._cards.clear()
+
+        if not role_list:
+            self._roles_hint.setText("（还没数据 —— 登录后点「获取数据」）")
+            return
+
+        # ── 判定哪些角色"声骸未达标"
+        flagged = {cid: self._echo_issues(details.get(cid))
+                   for cid in details}
+
+        shown = 0
+        only_bad = self._only_bad.isChecked()
+        #: 按等级从高到低
+        ordered = sorted(role_list,
+                         key=lambda x: (-(x.get("level") or 0),
+                                        str(x.get("roleName") or "")))
+        for role in ordered:
+            cid = str(role.get("roleId"))
+            issues = flagged.get(cid)
+            if only_bad and not issues:
+                continue
+            card = CharacterCard(role, bool(issues), self._roles_host)
+            card.clicked.connect(self._show_detail)
+            self._roles_grid.addWidget(card, shown // GRID_COLS,
+                                       shown % GRID_COLS)
+            self._cards.append(card)
+            shown += 1
+
+        bad_n = sum(1 for v in flagged.values() if v)
+        total = len(role_list)
+        self._roles_hint.setText(
+            f"共 {total} 个　声骸待优化 {bad_n} 个"
+            + (f"　（显示 {shown} 个）" if only_bad else ""))
+
+        self._say(f"✓ 角色 {total} 个，拿到声骸详情的 {len(details)} 个，"
+                  f"其中 {bad_n} 个需要优化")
+
+    @staticmethod
+    def _echo_issues(detail) -> list[str]:
+        """★ 判断一个角色的声骸有没有问题（返回问题列表）。
+
+        ## 判定规则（第一版，先给硬事实）
+
+        ====================  ============================================
+        规则                  说明
+        ====================  ============================================
+        **等级没满**           有声骸 `level < 25`
+        **套装不统一**         5 个声骸的套装名不止一种
+        **COST 配比不对**      不是 4-3-3-1-1（见过 4-4-1-1-1 之类）
+        **有效词条太少**       副词条里 `valid=true` 的**总数 < 10**
+        ====================  ============================================
+
+        ⚠ 这些是**客观事实**，不掺主观"好不好" ——
+        等用户给了标准再改成按角色配置判定。
+        """
+        issues: list[str] = []
+        ph = (detail or {}).get("phantomData") or {}
+        items = ph.get("equipPhantomList") or []
+        if not items:
+            return ["没拿到声骸数据"]
+
+        # ① 等级
+        not_max = [x for x in items if (x.get("level") or 0) < 25]
+        if not_max:
+            issues.append(f"{len(not_max)} 个声骸没满级")
+
+        # ② 套装
+        sets = {(x.get("fetterDetail") or {}).get("name")
+                for x in items}
+        sets.discard(None)
+        if len(sets) > 1:
+            issues.append(f"套装不统一（{len(sets)} 种）")
+
+        # ③ COST 配比（期望 4-3-3-1-1 = 12）
+        costs = sorted((x.get("cost") or 0 for x in items), reverse=True)
+        if costs != [4, 3, 3, 1, 1]:
+            issues.append("COST 配比 " + "-".join(str(c) for c in costs))
+
+        # ④ 有效词条数
+        valid_n = sum(1 for x in items for s in (x.get("subProps") or [])
+                      if s.get("valid"))
+        if valid_n < 10:
+            issues.append(f"有效词条仅 {valid_n} 条")
+
+        return issues
+
+    def _show_detail(self, char_id: str) -> None:
+        """点角色卡片 → 显示它的声骸明细。"""
+        detail = (self._data.get("details") or {}).get(str(char_id)) or {}
+        role = detail.get("role") or {}
+        ph = detail.get("phantomData") or {}
+        items = ph.get("equipPhantomList") or []
+
+        name = role.get("roleName") or char_id
+        self._detail_title.setText(
+            f"④ 声骸明细 —— {name}　Lv{role.get('level')}"
+            f"　{role.get('attributeName', '')}"
+            f"　{role.get('weaponTypeName', '')}"
+            f"　共鸣链 {role.get('chainUnlockNum')}"
+            f"　COST {ph.get('cost')}")
+
+        if not items:
+            self._detail.setPlainText("（没拿到这个角色的声骸数据）")
+            return
+
+        issues = self._echo_issues(detail)
+        lines: list[str] = []
+        if issues:
+            lines.append("⚠ 待优化：" + "；".join(issues))
+            lines.append("")
+
+        for i, item in enumerate(items, 1):
+            mains = item.get("mainProps") or []
+            subs = item.get("subProps") or []
+            fet = (item.get("fetterDetail") or {}).get("name", "?")
+            pname = (item.get("phantomProp") or {}).get("name", "?")
+            valid_n = sum(1 for s in subs if s.get("valid"))
+
+            lines.append(f"【{i}】COST{item.get('cost')}　+{item.get('level')}"
+                         f"　{pname}　[{fet}]　品质{item.get('quality')}")
+            for m in mains:
+                lines.append(f"     主属性　{m.get('attributeName')}"
+                             f"　{m.get('attributeValue')}")
+            lines.append(f"     副词条（{len(subs)} 条，有效 {valid_n}）:")
+            for s in subs:
+                mark = "✓" if s.get("valid") else "✗"
+                lines.append(f"       {mark} {s.get('attributeName')}"
+                             f"　{s.get('attributeValue')}")
+            lines.append("")
+
+        self._detail.setPlainText("\n".join(lines))
 
     @staticmethod
     def _format_base(base: dict) -> str:
-        """把基础数据拼成一行摘要（字段名来自实测）。"""
+        """账号概览一行（字段名来自实测）。"""
         if not base:
-            return "没拿到基础数据"
+            return "尚未拉取数据"
         parts = [
             f"结晶波片 {base.get('energy', '?')}/{base.get('maxEnergy', '?')}",
             f"结晶单质 {base.get('storeEnergy', '?')}"
@@ -421,15 +728,20 @@ class CharacterBuildPanel(ScrollArea):
             f"联觉等级 {base.get('level', '?')}",
             f"解锁角色 {base.get('roleNum', '?')}",
         ]
-        return "　|　".join(parts)
+        stamp = base.get("__at")
+        return "　|　".join(parts) + (f"　　拉取于 {stamp}" if stamp else "")
 
+    # ------------------------------------------------------------- 收尾
     def _on_logout(self) -> None:
         kuro_account.clear_account()
+        clear_cache()
         self._account = kuro_account.Account()
         self._data = {}
-        self._summary.setText("尚未拉取")
+        self._render({})
+        self._detail.setPlainText("")
+        self._detail_title.setText("④ 声骸明细")
         self._refresh_login_state()
-        self._say("已退出登录（令牌文件已删除）")
+        self._say("已退出登录（令牌 + 缓存都已删除）")
         self._toast("已退出登录")
 
     def _on_failed(self, message: str) -> None:
@@ -451,9 +763,7 @@ class CharacterBuildTool(BaseTool):
     """查询角色练度。"""
 
     key = TOOL_KEY
-    #: ⚠ BaseTool 默认 coming_soon = True（占位页）
     coming_soon = False
-    #: 不参与任务流程：它不操作游戏，是"查数据"的工具
     supports_task_run = False
 
     def create_widget(self, parent=None):
