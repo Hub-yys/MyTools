@@ -276,6 +276,16 @@ class CharacterBuildPanel(ScrollArea):
         self._account = account
         self._say(f"已拿到令牌（来自 localStorage.{key_used}，"
                   f"长度 {len(token)}），正在取绑定的游戏角色…")
+
+        # ★★ 先把令牌**落盘**，再取角色 —— 取角色失败（比如 220）也不丢。
+        #   之前顺序是反的（先取角色、成功才存），于是一失败令牌就没了，
+        #   用户要重新登 —— 而且我永远拿不到真实令牌来排查。
+        try:
+            path = kuro_account.save_account(self._account)
+            self._say(f"令牌已保存到 {path.name}")
+        except Exception as exc:               # noqa: BLE001
+            self._say(f"⚠ 令牌存不下来：{exc}")
+
         thread = RolesThread(token, dev_code, self)
         thread.succeeded.connect(self._on_roles)
         thread.failed.connect(self._on_failed)
@@ -284,12 +294,11 @@ class CharacterBuildPanel(ScrollArea):
 
     def _on_roles(self, roles: list) -> None:
         self._account.roles = roles or []
+        # ★ 角色可能后续才有 —— 把 roles 也写回令牌文件（已经有就先存的）
         try:
-            path = kuro_account.save_account(self._account)
-        except Exception as exc:               # noqa: BLE001
-            self._say(f"⚠ 令牌存不下来：{exc}")
-        else:
-            self._say(f"令牌已保存到 {path.name}")
+            kuro_account.save_account(self._account)
+        except Exception:                      # noqa: BLE001
+            pass
         names = [str(r.get("roleName") or r.get("roleId"))
                  for r in self._account.roles]
         if names:
