@@ -836,10 +836,128 @@ class TestToolPage(unittest.TestCase):
         self.assertTrue(hasattr(p, "_roles_grid"))
         self.assertTrue(hasattr(p, "_cards"))
 
-    def test_has_only_bad_filter(self):
-        """★ 「只看未达标」筛选。"""
+    def test_has_search_box(self):
+        """★ 搜索框（用户："加个下拉列表搜索"）。"""
         p = self._panel()
-        self.assertTrue(hasattr(p, "_only_bad"))
+        self.assertTrue(hasattr(p, "_search_edit"),
+                        "没有搜索框")
+
+    def test_has_filter_dropdown(self):
+        """★ 达标/未达标**下拉**（用户："达标/未达标"）。
+
+        ⚠ 原来是「只看未达标」开关，用户要的是下拉（三态）。
+        """
+        from src.tools.game.character_build.tool import FILTER_CHOICES
+
+        p = self._panel()
+        self.assertTrue(hasattr(p, "_filter_box"), "没有筛选下拉")
+        self.assertEqual(tuple(FILTER_CHOICES), ("全部", "未达标", "达标"))
+
+    def test_search_filters_by_name(self):
+        """★ 搜索能按名字过滤。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1, "roleName": "安可", "level": 90,
+                 "attributeName": "热熔", "weaponTypeName": "音感仪"},
+                {"roleId": 2, "roleName": "白芷", "level": 90,
+                 "attributeName": "冷凝", "weaponTypeName": "音感仪"},
+            ],
+            "details": {},
+        }
+        p._search_edit.setText("安可")
+        p._render(p._data)
+        self.assertEqual(len(p._cards), 1)
+
+    def test_search_filters_by_attribute_and_weapon(self):
+        """★ 搜索也能按**属性 / 武器**过滤（不止名字）。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1, "roleName": "安可", "level": 90,
+                 "attributeName": "热熔", "weaponTypeName": "音感仪"},
+                {"roleId": 2, "roleName": "忌炎", "level": 90,
+                 "attributeName": "气动", "weaponTypeName": "长刃"},
+            ],
+            "details": {},
+        }
+        p._search_edit.setText("气动")
+        p._render(p._data)
+        self.assertEqual(len(p._cards), 1, "按属性搜索没生效")
+
+        p._search_edit.setText("长刃")
+        p._render(p._data)
+        self.assertEqual(len(p._cards), 1, "按武器搜索没生效")
+
+    def test_filter_unmet_only(self):
+        """★ 「未达标」只显示有问题的。"""
+        p = self._panel()
+
+        def item(cost, valid):
+            return {"cost": cost, "level": 25,
+                    "fetterDetail": {"name": "A"},
+                    "phantomProp": {"name": "x"},
+                    "mainProps": [{"attributeName": "攻击",
+                                   "attributeValue": "1%", "valid": True}],
+                    "subProps": [{"attributeName": f"c{i}",
+                                  "attributeValue": "1%",
+                                  "valid": i < valid} for i in range(5)]}
+
+        good = {"phantomData": {"equipPhantomList":
+                                [item(c, 3) for c in (4, 3, 3, 1, 1)]}}
+        bad = {"phantomData": {"equipPhantomList": [item(4, 0)]}}
+        p._data = {
+            "roleList": [
+                {"roleId": 1, "roleName": "好", "level": 90},
+                {"roleId": 2, "roleName": "差", "level": 90},
+            ],
+            "details": {"1": good, "2": bad},
+        }
+        p._filter_box.setCurrentText("未达标")
+        p._render(p._data)
+        self.assertEqual(len(p._cards), 1, "「未达标」筛选不对")
+
+        p._filter_box.setCurrentText("达标")
+        p._render(p._data)
+        self.assertEqual(len(p._cards), 1, "「达标」筛选不对")
+
+    def test_feature_code_not_filled_with_junk(self):
+        """★★ 特征码回填只认**像特征码**的值。
+
+        2026-10-03：我的测试脚本往令牌文件写了假 ``roles``
+        （``roleId: '1'``），界面就回填了一个 `1`，
+        用户问"填个1是啥意思"。
+
+        → 现在只认**纯数字且 >= 6 位**的。
+        """
+        import tempfile
+
+        from src.core import kuro_account as K
+        from src.tools.game.character_build import tool as T
+
+        tmp = tempfile.TemporaryDirectory()
+        orig_token = K.token_file
+        orig_settings = T.tool_settings.settings_file
+        K.token_file = lambda: pathlib.Path(tmp.name) / "acc.json"
+        T.tool_settings.settings_file = lambda: pathlib.Path(tmp.name) / "s.json"
+        try:
+            #: 假账号（roleId='1'）—— 不该被回填
+            K.save_account(K.Account(
+                token="t", roles=[{"roleId": "1", "roleName": "x"}]))
+            p = T.CharacterBuildPanel()
+            self.assertEqual(p._feature_edit.text(), "",
+                             "假的 roleId('1') 被回填了")
+
+            #: 真特征码 → 应该回填
+            K.save_account(K.Account(
+                token="t",
+                roles=[{"roleId": "113152489", "roleName": "银月"}]))
+            p2 = T.CharacterBuildPanel()
+            self.assertEqual(p2._feature_edit.text(), "113152489")
+        finally:
+            K.token_file = orig_token
+            T.tool_settings.settings_file = orig_settings
+            tmp.cleanup()
 
     def test_render_shows_cards(self):
         """★ 给数据能渲染出角色卡片。"""

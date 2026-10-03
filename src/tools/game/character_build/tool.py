@@ -43,8 +43,10 @@ from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     CardWidget,
+    ComboBox,
     InfoBar,
     InfoBarPosition,
+    LineEdit,
     PushButton,
     ScrollArea,
     StrongBodyLabel,
@@ -78,6 +80,9 @@ CARD_H = 128
 
 #: 角色网格每行几个
 GRID_COLS = 6
+
+#: 「达标」筛选下拉的选项（用户："达标/未达标"）
+FILTER_CHOICES = ("全部", "未达标", "达标")
 
 
 def cache_file():
@@ -485,14 +490,28 @@ class CharacterBuildPanel(ScrollArea):
         box.setSpacing(8)
 
         head = QHBoxLayout()
+        head.setSpacing(8)
         head.addWidget(SubtitleLabel("③ 共鸣者", card))
         self._roles_hint = CaptionLabel("", card)
         head.addWidget(self._roles_hint)
         head.addStretch(1)
-        self._only_bad = PushButton("只看未达标", card)
-        self._only_bad.setCheckable(True)
-        self._only_bad.clicked.connect(lambda: self._render(self._data))
-        head.addWidget(self._only_bad)
+
+        # ★ 搜索框（用户："加个下拉列表搜索"）
+        self._search_edit = LineEdit(card)
+        self._search_edit.setPlaceholderText("搜索角色名 / 属性 / 武器")
+        self._search_edit.setFixedWidth(200)
+        self._search_edit.setClearButtonEnabled(True)
+        self._search_edit.textChanged.connect(
+            lambda _t: self._render(self._data))
+        head.addWidget(self._search_edit)
+
+        # ★ 达标筛选下拉（用户："达标/未达标"）
+        self._filter_box = ComboBox(card)
+        self._filter_box.addItems(list(FILTER_CHOICES))
+        self._filter_box.setFixedWidth(120)
+        self._filter_box.currentTextChanged.connect(
+            lambda _t: self._render(self._data))
+        head.addWidget(self._filter_box)
         box.addLayout(head)
 
         self._roles_host = QWidget(card)
@@ -558,16 +577,28 @@ class CharacterBuildPanel(ScrollArea):
             logger.debug("记住输入失败：%s", exc)
 
     def _restore_inputs(self) -> None:
-        """回填上次输入的特征码 / 手机号。"""
+        """回填上次输入的特征码 / 手机号。
+
+        ⚠ 手机号**只存后 4 位**（``mobile_tail``）—— 出于隐私从不存全号，
+        所以这里**拼不出来**，只在"用户真的存过全号"时才回填。
+        界面上用 ``_login_status`` 显示「已登录（****7393）」。
+        """
         try:
             saved = tool_settings.load(SETTINGS_KEY) or {}
         except Exception:                      # noqa: BLE001
             return
         feature = str(saved.get("feature_code") or "").strip()
         mobile = str(saved.get("mobile") or "").strip()
-        #: 没存过就用账号里的（令牌文件带 mobile_tail，补不出全号 → 留空）
+        #: 没存过就用**账号里绑定的**特征码
         if not feature and self._account.roles:
-            feature = str(self._account.roles[0].get("roleId") or "")
+            rid = str(self._account.roles[0].get("roleId") or "").strip()
+            # ⚠ 只认**像特征码**的值（纯数字、够长）。
+            #   防的是"测试脚本写进令牌文件的假 roleId" ——
+            #   2026-10-03 我那个 `_repro_stuck.py` 把 roles 写成
+            #   `[{'roleId': '1'}]`，界面就回填了一个 `1`，
+            #   用户问"填个1是啥意思"。
+            if rid.isdigit() and len(rid) >= 6:
+                feature = rid
         if feature:
             self._feature_edit.setText(feature)
         if mobile and len(mobile) == MOBILE_LEN:
@@ -689,15 +720,18 @@ class CharacterBuildPanel(ScrollArea):
         self._cards.clear()
 
         if not role_list:
-            self._roles_hint.setText("（还没数据 —— 登录后点「获取数据」）")
+            self._roles_hint.setText("（还没数据 —— 登录后会自动拉取）")
             return
 
         # ── 判定哪些角色"声骸未达标"
         flagged = {cid: self._echo_issues(details.get(cid))
                    for cid in details}
 
+        # ── 筛选条件（下拉 + 搜索）
+        choice = self._filter_box.currentText() or "全部"
+        keyword = (self._search_edit.text() or "").strip().lower()
+
         shown = 0
-        only_bad = self._only_bad.isChecked()
         #: 按等级从高到低
         ordered = sorted(role_list,
                          key=lambda x: (-(x.get("level") or 0),
@@ -705,8 +739,18 @@ class CharacterBuildPanel(ScrollArea):
         for role in ordered:
             cid = str(role.get("roleId"))
             issues = flagged.get(cid)
-            if only_bad and not issues:
+            # ★ 达标筛选
+            if choice == "未达标" and not issues:
                 continue
+            if choice == "达标" and issues:
+                continue
+            # ★ 搜索（名字 / 属性 / 武器）
+            if keyword:
+                hay = " ".join(str(role.get(k) or "") for k in
+                               ("roleName", "attributeName",
+                                "weaponTypeName", "acronym")).lower()
+                if keyword not in hay:
+                    continue
             card = CharacterCard(role, bool(issues), self._roles_host)
             card.clicked.connect(self._show_detail)
             self._roles_grid.addWidget(card, shown // GRID_COLS,
@@ -716,9 +760,11 @@ class CharacterBuildPanel(ScrollArea):
 
         bad_n = sum(1 for v in flagged.values() if v)
         total = len(role_list)
+        extra = ""
+        if choice != "全部" or keyword:
+            extra = f"　（筛出 {shown} 个）"
         self._roles_hint.setText(
-            f"共 {total} 个　声骸待优化 {bad_n} 个"
-            + (f"　（显示 {shown} 个）" if only_bad else ""))
+            f"共 {total} 个　声骸待优化 {bad_n} 个{extra}")
 
         self._say(f"✓ 角色 {total} 个，拿到声骸详情的 {len(details)} 个，"
                   f"其中 {bad_n} 个需要优化")
@@ -773,7 +819,18 @@ class CharacterBuildPanel(ScrollArea):
         return issues
 
     def _show_detail(self, char_id: str) -> None:
-        """点角色卡片 → 显示它的声骸明细。"""
+        """点角色卡片 → 显示它的明细（**按官方那个布局**）。
+
+        官方截图（用户给的）的结构::
+
+            🐎 共鸣者信息   名字 Lv.90 ★★★★★
+            ⚔ 共鸣者属性   生命/攻击/防御/暴击/暴击伤害/共鸣效率/…
+            🔨 武器        名字 Lv.90 精炼1阶 + 攻击/暴击
+            🎯 属性展示    声骸提供的属性汇总
+            💠 声骸 COST 12/12
+               ✦ 推荐辅音词条命中  【命中数】
+               ✦ 装配声骸详情      5 个卡片（主属性 + 副词条，命中标黄）
+        """
         detail = (self._data.get("details") or {}).get(str(char_id)) or {}
         role = detail.get("role") or {}
         ph = detail.get("phantomData") or {}
@@ -781,11 +838,11 @@ class CharacterBuildPanel(ScrollArea):
 
         name = role.get("roleName") or char_id
         self._detail_title.setText(
-            f"④ 声骸明细 —— {name}　Lv{role.get('level')}"
+            f"④ {name}　Lv{role.get('level')}"
             f"　{role.get('attributeName', '')}"
             f"　{role.get('weaponTypeName', '')}"
             f"　共鸣链 {role.get('chainUnlockNum')}"
-            f"　COST {ph.get('cost')}")
+            f"　声骸 COST {ph.get('cost', '?')}")
 
         if not items:
             self._detail.setPlainText("（没拿到这个角色的声骸数据）")
@@ -793,10 +850,50 @@ class CharacterBuildPanel(ScrollArea):
 
         issues = self._echo_issues(detail)
         lines: list[str] = []
+
+        # ── 待优化提示
         if issues:
             lines.append("⚠ 待优化：" + "；".join(issues))
+        else:
+            lines.append("✓ 声骸达标")
+        lines.append("")
+
+        # ── 共鸣者属性（roleAttributeList）
+        attrs = detail.get("roleAttributeList") or []
+        if attrs:
+            lines.append("── 共鸣者属性 " + "─" * 40)
+            for a in attrs:
+                lines.append(f"   {a.get('attributeName', '?'):14}"
+                             f"{a.get('attributeValue', '')}")
             lines.append("")
 
+        # ── 武器
+        wd = detail.get("weaponData") or {}
+        if wd:
+            lines.append("── 武器 " + "─" * 44)
+            lines.append(f"   {wd.get('weaponName') or wd.get('name') or '?'}"
+                         f"　Lv{wd.get('level', '?')}"
+                         f"　{wd.get('weaponTypeName', '')}")
+            lines.append("")
+
+        # ── 声骸汇总属性
+        add_props = detail.get("equipPhantomAddPropList") or []
+        if add_props:
+            lines.append(f"── 声骸提供的属性（COST {ph.get('cost', '?')}/12）"
+                         + "─" * 24)
+            for a in add_props:
+                lines.append(f"   {a.get('attributeName', '?'):14}"
+                             f"{a.get('attributeValue', '')}")
+            lines.append("")
+
+        # ── 推荐辅音词条命中（★ 官方那个黄色数字）
+        hit, total_slots = self._substat_hits(items)
+        lines.append("── 装配声骸详情 " + "─" * 34)
+        lines.append(f"   推荐辅音词条命中：{hit} / {total_slots} 条"
+                     f"（库街区标 valid 的条数）")
+        lines.append("")
+
+        # ── 每个声骸（★ 按官方卡片的样子）
         for i, item in enumerate(items, 1):
             mains = item.get("mainProps") or []
             subs = item.get("subProps") or []
@@ -804,19 +901,33 @@ class CharacterBuildPanel(ScrollArea):
             pname = (item.get("phantomProp") or {}).get("name", "?")
             valid_n = sum(1 for s in subs if s.get("valid"))
 
-            lines.append(f"【{i}】COST{item.get('cost')}　+{item.get('level')}"
-                         f"　{pname}　[{fet}]　品质{item.get('quality')}")
+            lines.append(f"【{i}】{pname}　COST{item.get('cost')}"
+                         f"　+{item.get('level')}　[{fet}]"
+                         f"　{valid_n}/{len(subs)} 有效")
             for m in mains:
-                lines.append(f"     主属性　{m.get('attributeName')}"
-                             f"　{m.get('attributeValue')}")
-            lines.append(f"     副词条（{len(subs)} 条，有效 {valid_n}）:")
+                lines.append(f"     主属性　{m.get('attributeName', '?')}"
+                             f"　{m.get('attributeValue', '')}")
             for s in subs:
-                mark = "✓" if s.get("valid") else "✗"
-                lines.append(f"       {mark} {s.get('attributeName')}"
-                             f"　{s.get('attributeValue')}")
+                mark = "✓" if s.get("valid") else "·"
+                lines.append(f"       {mark} {s.get('attributeName', '?')}"
+                             f"　{s.get('attributeValue', '')}")
             lines.append("")
 
         self._detail.setPlainText("\n".join(lines))
+
+    @staticmethod
+    def _substat_hits(items) -> tuple[int, int]:
+        """推荐辅音词条命中数（官方那个黄色数字）。
+
+        库街区用 ``valid`` 标"是不是推荐词条" —— 直接数它。
+        """
+        hit = total = 0
+        for item in items:
+            for s in (item.get("subProps") or []):
+                total += 1
+                if s.get("valid"):
+                    hit += 1
+        return hit, total
 
     @staticmethod
     def _format_base(base: dict) -> str:
