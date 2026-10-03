@@ -408,6 +408,184 @@ class TestDevCodeIsDynamic(unittest.TestCase):
             self.assertEqual(kuro_account.load_account(path).dev_code, "dyn")
 
 
+class TestStaleTokenIsIgnored(unittest.TestCase):
+    """★★★ **本轮的核心修复** —— 用户："打开登陆窗口就提示登陆过期"。
+
+    ## 事故经过
+
+    日志（用户截图）::
+
+        已打开登录窗口，请在窗口里完成登录…
+        已拿到令牌（来自 localStorage.auth_token, 长度 123），正在取绑定的游戏角色…
+        失败：TokenExpired: [220] 登录已过期，请重新登录
+
+    **窗口一打开就"拿到令牌"了** —— 那是**上次登录留下的旧令牌**。
+    profile 是**持久的**（实测 ``isOffTheRecord() == False``），
+    旧令牌一直在 localStorage 里。
+
+    我的代码"看到非空令牌就关窗" → **窗口立刻自己关掉，用户没机会登录**
+    → 拿旧令牌去请求 → 220。
+
+    ## 修法
+
+    1. 窗口打开后**先等 ``SETTLE_MS``** 再开始判定
+    2. 记下打开时的令牌当**基线**
+    3. 只有拿到**和基线不同**的令牌才算这次登录成功
+    """
+
+    def setUp(self):
+        from PySide6.QtWidgets import QApplication
+
+        self.app = QApplication.instance() or QApplication([])
+
+    def _dialog(self):
+        from src.tools.game.character_build import login_dialog
+
+        return login_dialog.KuroLoginDialog()
+
+    def test_has_settle_delay(self):
+        """★ 必须有"先等一会儿"的机制。"""
+        from src.tools.game.character_build import login_dialog
+
+        self.assertGreater(
+            login_dialog.SETTLE_MS, 0,
+            "没有稳定期 —— 窗口一打开就会拿旧令牌判定")
+
+    def test_tracks_baseline_token(self):
+        """★ 基线令牌必须**真的被记下来**（走真实回调，不是直接赋值）。
+
+        ⚠ 第一版这条只断言 ``hasattr(dlg, "_baseline_token")`` ——
+        把赋值改成常量（``self._baseline_token = "DISABLED"``）测试照样通过
+        （实测突变时发现失效）。**"有属性"不等于"在用"**。
+
+        所以现在走 **``_record_baseline``**（``_settle`` 的真实回调）：
+        页面里有什么令牌，基线就得是什么。
+        """
+        dlg = self._dialog()
+        self.assertTrue(hasattr(dlg, "_baseline_token"))
+        self.assertTrue(hasattr(dlg, "_settled"))
+        self.assertFalse(dlg._settled, "构造完不该已稳定")
+
+        # ★ 走真实回调：页面里有 OLD_TOKEN → 基线必须是它
+        dlg._record_baseline(json.dumps({"token": "OLD_TOKEN"}))
+
+        self.assertTrue(dlg._settled, "记录基线后没有置 _settled")
+        self.assertEqual(dlg._baseline_token, "OLD_TOKEN",
+                         "基线没真的记下来 —— 分不清新旧令牌")
+        dlg.close()
+
+    def test_baseline_empty_when_no_token(self):
+        """页面里没令牌时基线是空串（表示"没登录过"，第一个令牌就该接受）。"""
+        dlg = self._dialog()
+        dlg._record_baseline(json.dumps({"token": "", "token_legacy": ""}))
+        self.assertEqual(dlg._baseline_token, "")
+        self.assertTrue(dlg._settled)
+        dlg.close()
+
+    def test_baseline_really_used(self):
+        """★★ 基线**相同**要拒绝、**不同**要接受 —— 同一个对话框上验证。"""
+        dlg = self._dialog()
+        dlg._settled = True
+        dlg._baseline_token = "OLD"
+        got = []
+        dlg.logged_in.connect(lambda *a: got.append(a))
+
+        dlg._on_read(json.dumps({"token": "OLD", "dev_code": ""}))
+        self.assertEqual(got, [], "基线相同的旧令牌被接受了")
+
+        dlg._on_read(json.dumps({"token": "NEW", "dev_code": ""}))
+        self.assertEqual(len(got), 1, "新令牌没被接受")
+        dlg.close()
+
+    def test_not_settled_yet_ignores_token(self):
+        """★★ 还没稳定时，读到令牌**不能**关窗。"""
+        dlg = self._dialog()
+        dlg._settled = False
+        dlg._baseline_token = None
+        emitted = []
+        dlg.logged_in.connect(lambda *a: emitted.append(a))
+
+        # 模拟"页面刚打开，localStorage 里就有旧令牌"
+        dlg._on_read(json.dumps({"token": "OLD_TOKEN", "dev_code": ""}))
+
+        self.assertEqual(emitted, [],
+                         "稳定期之前就认了令牌 —— 窗口会一打开就自己关掉")
+        self.assertEqual(dlg.result_token, "")
+        dlg.close()
+
+    def test_same_as_baseline_is_ignored(self):
+        """★★★ 和基线**相同**的令牌（= 旧令牌）必须忽略。
+
+        这是用户那个 bug 的直接复现。
+        """
+        dlg = self._dialog()
+        dlg._settled = True
+        dlg._baseline_token = "OLD_TOKEN"
+        emitted = []
+        dlg.logged_in.connect(lambda *a: emitted.append(a))
+
+        dlg._on_read(json.dumps({"token": "OLD_TOKEN", "dev_code": ""}))
+
+        self.assertEqual(emitted, [],
+                         "又把旧令牌当成登录成功了 —— 就是用户报的那个 bug")
+        self.assertEqual(dlg.result_token, "")
+        dlg.close()
+
+    def test_new_token_is_accepted(self):
+        """★ 和基线**不同**的令牌 = 这次登录换来的 → 接受。"""
+        dlg = self._dialog()
+        dlg._settled = True
+        dlg._baseline_token = "OLD_TOKEN"
+        emitted = []
+        dlg.logged_in.connect(lambda *a: emitted.append(a))
+
+        dlg._on_read(json.dumps({"token": "NEW_TOKEN", "dev_code": "d"}))
+
+        self.assertEqual(len(emitted), 1, "新令牌没被接受")
+        self.assertEqual(dlg.result_token, "NEW_TOKEN")
+        dlg.close()
+
+    def test_no_baseline_then_first_token_accepted(self):
+        """没登录过（基线为空）时，第一次读到就接受。"""
+        dlg = self._dialog()
+        dlg._settled = True
+        dlg._baseline_token = ""
+        emitted = []
+        dlg.logged_in.connect(lambda *a: emitted.append(a))
+
+        dlg._on_read(json.dumps({"token": "FIRST_TOKEN", "dev_code": ""}))
+
+        self.assertEqual(len(emitted), 1)
+        self.assertEqual(dlg.result_token, "FIRST_TOKEN")
+        dlg.close()
+
+    def test_empty_token_still_ignored(self):
+        """空令牌依然不能算成功。"""
+        dlg = self._dialog()
+        dlg._settled = True
+        dlg._baseline_token = ""
+        emitted = []
+        dlg.logged_in.connect(lambda *a: emitted.append(a))
+
+        dlg._on_read(json.dumps({"token": "", "token_legacy": "",
+                                 "dev_code": ""}))
+
+        self.assertEqual(emitted, [])
+        dlg.close()
+
+
+class TestSmsHintOnStaleToken(unittest.TestCase):
+    """★ 提示要能让用户明白"该做什么"。"""
+
+    def test_status_mentions_relogin(self):
+        from src.tools.game.character_build import login_dialog
+
+        source = (ROOT / "src" / "tools" / "game" / "character_build"
+                  / "login_dialog.py").read_text(encoding="utf-8")
+        self.assertIn("旧令牌", source,
+                      "界面没提'旧令牌' —— 用户看不懂为什么没反应")
+
+
 class TestEndpoints(unittest.TestCase):
     """★ 接口路径 —— 抄错一个字符就整个功能不可用。"""
 

@@ -163,6 +163,14 @@ LEGACY_AUTH_TOKEN_KEY = "auth_token"
 #: 轮询间隔（毫秒）—— 每 1.5 秒看一眼登录了没
 POLL_MS = 1500
 
+#: ★ 窗口打开后**先等这么久**才开始判定登录（毫秒）。
+#:
+#: 页面加载完时 profile 里可能还留着**上次登录的旧令牌** ——
+#: 立刻判定的话窗口会"一打开就自己关掉"，用户没机会登录
+#: （2026-10-03 的实际事故）。这段时间用来让页面稳定 +
+#: 记下基线令牌。
+SETTLE_MS = 6000
+
 #: 读取 localStorage 的脚本。返回 JSON 字符串。
 #:
 #: ★ 同时读**两个**候选 key，谁非空用谁 —— 见 :data:`TOKEN_KEY` 的说明。
@@ -190,6 +198,43 @@ _READ_JS = """
        json.dumps(DID_KEY))
 
 
+def _parse_read_result(result) -> dict:
+    """把 ``_READ_JS`` 的返回值解析成 dict（坏了就空 dict）。"""
+    if not result:
+        return {}
+    try:
+        data = json.loads(result)
+    except Exception:                          # noqa: BLE001
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _token_from(result) -> str:
+    """从 ``_READ_JS`` 的返回里取令牌 —— ``token`` 优先，退回 ``auth_token``。
+
+    ⚠ 两个 key 都要认：
+      * ``token`` —— ★ 数据终端真正在用的（见 :data:`TOKEN_KEY`）
+      * ``auth_token`` —— App 桥用的；网页登录一般**不写**，
+        但万一某个版本写了，也能兜住
+    """
+    data = _parse_read_result(result)
+    for key in ("token", "token_legacy"):
+        value = str(data.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _token_key_from(result) -> str:
+    """令牌是从哪个 key 读到的（只用于显示 / 排查）。"""
+    data = _parse_read_result(result)
+    if str(data.get("token") or "").strip():
+        return TOKEN_KEY
+    if str(data.get("token_legacy") or "").strip():
+        return LEGACY_AUTH_TOKEN_KEY
+    return ""
+
+
 class KuroLoginDialog(QDialog):
     """内嵌浏览器登录框。
 
@@ -199,7 +244,18 @@ class KuroLoginDialog(QDialog):
         if dlg.exec() == QDialog.Accepted:
             account = dlg.result_account      # 已经落盘的 Account
 
-    登录成功（检测到 localStorage 里有 token）会自动关窗。
+    ## ★★ 只在**新令牌出现**时才关窗（2026-10-03 修）
+
+    上一版"看到 localStorage 里有非空 token 就关窗"。而 profile 是**持久的** ——
+    上次登录留下的**旧令牌还在**，于是**窗口一打开就立刻自己关掉**，
+    用户根本没机会登录，接着拿旧令牌去请求 → 220「登录已过期」。
+    用户的原话："**打开登陆窗口就提示登陆过期**"。
+
+    所以现在：
+
+    1. 窗口打开后**先等页面稳定**（``SETTLE_MS``），期间不判定；
+    2. 记下**打开时已有的令牌**当基线；
+    3. 只有当令牌**变成一个新的值**（用户这次登录换来的）才关窗。
     """
 
     #: 检测到登录成功 —— 参数是 ``(token, dev_code, auth_raw)``
@@ -215,6 +271,12 @@ class KuroLoginDialog(QDialog):
         self.result_dev_code = ""
         self.result_auth = ""
         self._closed_by_user = False
+        #: ★ 打开窗口时**已经存在**的令牌（基线）。
+        #: 只有拿到和它**不同**的令牌才算"这次登录成功了" ——
+        #: 否则上次登录留下的旧令牌会让窗口一打开就自己关掉。
+        self._baseline_token: str | None = None
+        #: 页面稳定了没（稳定前不判定登录）
+        self._settled = False
 
         # ---- 布局 ----
         root = QVBoxLayout(self)
@@ -260,6 +322,35 @@ class KuroLoginDialog(QDialog):
         self._page.loadFinished.connect(self._on_page_loaded)
         self._view.setUrl(QUrl(LOGIN_URL))
 
+        # ★★ 先等一会儿再开始判定登录。
+        #    profile 是持久的 —— 上次登录的旧令牌还在，
+        #    立刻判定会让窗口"一打开就自己关掉"（用户报的就是这个）。
+        QTimer.singleShot(SETTLE_MS, self._settle)
+
+    def _settle(self) -> None:
+        """页面稳定了 —— 记下**基线令牌**，从此只认"新出现的令牌"。"""
+        try:
+            self._page.runJavaScript(_READ_JS, self._record_baseline)
+        except Exception as exc:               # noqa: BLE001
+            logger.debug("读基线令牌失败：%s", exc)
+            self._record_baseline(None)
+
+    def _record_baseline(self, result) -> None:
+        """把读到的令牌记成基线（:meth:`_settle` 的回调）。
+
+        ★ 单独拆成方法是为了**可测** —— 回调逻辑要是混在 ``_settle``
+        里（写成内嵌函数），单测就只能断言"属性存不存在"，
+        而**"有属性"不等于"在用"**（实测：把赋值改成常量那种测试照样通过）。
+        """
+        token = _token_from(result)
+        self._baseline_token = token or ""
+        self._settled = True
+        if token:
+            self._status.setText(
+                "检测到上次登录的令牌 —— 已忽略。请重新登录。")
+        else:
+            self._status.setText("请登录")
+
     # ------------------------------------------------------------- 页面
     def _on_page_loaded(self, ok: bool) -> None:
         """页面加载完 —— 等 SPA 渲染出来再点「立即登录」。"""
@@ -298,18 +389,26 @@ class KuroLoginDialog(QDialog):
         except Exception:                      # noqa: BLE001
             return
 
-        # ★★ 用**非空**的那个（``token`` 优先，退回 ``auth_token``）。
-        #    上一版只读 auth_token（永远是空串）却照样往下走 ——
-        #    日志写着"已拿到令牌"，服务器回 220「登录已过期」。
-        token = str(data.get("token") or "").strip()
-        key_used = TOKEN_KEY
-        if not token:
-            token = str(data.get("token_legacy") or "").strip()
-            key_used = LEGACY_AUTH_TOKEN_KEY
-        if not token:
-            # 还没登录（或者页面还没把 token 写进去）—— 继续轮询
+        # ★ 页面还没稳定 → 不判定（这段是"记基线"的时间）
+        if not self._settled:
             return
 
+        token = _token_from(result)
+        if not token:
+            return
+
+        # ★★ 只认**新出现**的令牌。
+        #
+        #    profile 是持久的 —— 上次登录留下的旧令牌还在 localStorage 里。
+        #    上一版看到非空就关窗，于是**窗口一打开就自己关掉**，
+        #    用户根本没机会登录，接着拿旧令牌去请求 → 220。
+        #    用户的原话："打开登陆窗口就提示登陆过期"。
+        if token == self._baseline_token:
+            self._status.setText(
+                "这是上次登录留下的旧令牌 —— 请重新登录（或点「退出登录」清掉）")
+            return
+
+        key_used = _token_key_from(result)
         self.result_token = token
         self.result_token_key = key_used
         self.result_dev_code = str(data.get("dev_code") or "").strip()
