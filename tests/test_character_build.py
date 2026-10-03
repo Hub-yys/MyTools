@@ -34,6 +34,193 @@ TOOL = ROOT / "src" / "tools" / "game" / "character_build" / "tool.py"
 PKG = ROOT / "src" / "tools" / "game" / "character_build" / "__init__.py"
 
 
+class TestGeeTestGuard(unittest.TestCase):
+    """★★★ **本轮的核心修复** —— 用户："我手机没收到短信"。
+
+    ## 事故经过（2026-10-03）
+
+    我第一版 ``send_sms_code`` 只检查 ``code == 200``。而库街区要求人机验证时
+    返回的**恰恰**是::
+
+        {"code":200, "data":{"geeTest":true}, "msg":"请求成功", "success":true}
+
+    **状态码和业务码都像成功**，短信却根本没发 —— 界面上写着"验证码已发送"，
+    用户手机一条都没有。
+
+    所以现在必须**额外检查 ``data.geeTest``**。
+    """
+
+    def test_real_response_raises(self):
+        """★ 用**真实抓到的那条响应**验证（不是编的）。"""
+        real = {"code": 200, "data": {"geeTest": True},
+                "msg": "请求成功", "success": True,
+                "traceId": "6d174dbb-e2f2-4962-9f72-aca9391ba450"}
+        with self.assertRaises(kuro_account.NeedHumanVerify):
+            kuro_account.check_sms_result(real)
+
+    def test_plain_success_passes(self):
+        """不要求人机验证时**不该**误报。"""
+        ok = {"code": 200, "data": {"geeTest": False},
+              "msg": "请求成功", "success": True}
+        kuro_account.check_sms_result(ok)      # 不该抛
+
+    def test_missing_data_field_passes(self):
+        """没有 ``data`` 字段时按成功处理（不同版本可能不给）。"""
+        kuro_account.check_sms_result({"code": 200, "msg": "请求成功"})
+
+    def test_business_error_still_raises(self):
+        with self.assertRaises(kuro_account.KuroError) as ctx:
+            kuro_account.check_sms_result(
+                {"code": 10000, "msg": "手机号格式有误"})
+        self.assertEqual(ctx.exception.code, 10000)
+
+    def test_need_human_verify_is_a_kuro_error(self):
+        self.assertTrue(issubclass(kuro_account.NeedHumanVerify,
+                                   kuro_account.KuroError))
+
+    def test_message_says_sms_not_sent(self):
+        """★ 提示必须**明说短信没发** —— 不然用户会一直等短信。"""
+        exc = kuro_account.NeedHumanVerify()
+        self.assertIn("没有发", str(exc))
+
+    def test_send_sms_code_checks_geetest(self):
+        """★ ``send_sms_code`` 本体也要查（不能只在纯函数里查）。
+
+        ⚠ **必须用 AST 剥掉 docstring** —— 第一版我搜字符串 "geeTest"，
+        而 ``send_sms_code`` 的**文档字符串里就写着 geeTest**
+        （因为它记录的正是这个事故）→ 把代码删掉测试照样通过。
+        （这个坑我在「心」那边踩过一次：**搜索式断言会被注释和 docstring 骗过**。）
+        """
+        source = (ROOT / "src" / "core" / "kuro_account.py").read_text(
+            encoding="utf-8")
+        tree = ast.parse(source)
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "send_sms_code")
+
+        # ★ 只看**代码**：把 docstring 摘掉
+        body = [stmt for stmt in fn.body
+                if not (isinstance(stmt, ast.Expr)
+                        and isinstance(stmt.value, ast.Constant)
+                        and isinstance(stmt.value.value, str))]
+        code = "\n".join(ast.get_source_segment(source, stmt) or ""
+                         for stmt in body)
+
+        self.assertIn("geeTest", code,
+                      "send_sms_code 的**代码**里没检查 geeTest —— "
+                      "又会把「要求人机验证」当成发送成功")
+        self.assertIn("NeedHumanVerify", code,
+                      "检查了却没抛 NeedHumanVerify")
+
+
+class TestBrowserLogin(unittest.TestCase):
+    """★ 内嵌浏览器登录（现在**真正在用**的路径）。"""
+
+    def test_login_dialog_module_exists(self):
+        self.assertTrue(
+            (ROOT / "src" / "tools" / "game" / "character_build"
+             / "login_dialog.py").exists())
+
+    def test_local_storage_keys_match_probe(self):
+        """★★ key 名是**实测**出来的，不能凭感觉改。
+
+        用 QtWebEngine 真开一次 kurobbs.com 读 localStorage 得到::
+
+            auth / auth_token / dc / isa / mc / ...
+
+        ``auth_token`` 就是 token 所在，``dc`` 是动态 devCode。
+        """
+        from src.tools.game.character_build import login_dialog
+
+        self.assertEqual(login_dialog.TOKEN_KEY, "auth_token")
+        self.assertEqual(login_dialog.DEV_CODE_KEY, "dc")
+        self.assertEqual(login_dialog.AUTH_KEY, "auth")
+
+    def test_uses_separate_profile(self):
+        """★ 用**独立** profile —— 不碰用户平时的浏览器数据。
+
+        ⚠ 第一版只断言源码里有 ``QWebEngineProfile`` 这个词，
+        而 ``QWebEngineProfile.defaultProfile()`` **也含这个词** →
+        换成默认 profile（会污染用户浏览器数据）测试照样通过。
+
+        所以现在用 AST 查：必须**构造**一个带名字的 profile，
+        且不能出现 ``defaultProfile``。
+        """
+        source = (ROOT / "src" / "tools" / "game" / "character_build"
+                  / "login_dialog.py").read_text(encoding="utf-8")
+        self.assertNotIn("defaultProfile", source,
+                         "用了默认 profile —— 会读写用户平时的浏览器数据")
+
+        tree = ast.parse(source)
+        # 必须有一处 QWebEngineProfile(名字, ...) 的构造调用
+        constructed = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and (getattr(n.func, "id", "") == "QWebEngineProfile"
+                 or getattr(n.func, "attr", "") == "QWebEngineProfile")
+        ]
+        self.assertTrue(constructed,
+                        "没有自己构造 QWebEngineProfile —— 没隔离浏览器数据")
+        self.assertTrue(PROFILE_NAME_CONST(source),
+                        "profile 名字不是常量 —— 没法保证隔离")
+
+
+def PROFILE_NAME_CONST(source: str) -> bool:
+    """源码里有没有 ``PROFILE_NAME = "..."`` 这样的常量。"""
+    import re
+
+    return bool(re.search(r'^PROFILE_NAME\s*=\s*["\'][^"\']+["\']',
+                          source, re.M))
+
+
+class TestLoginDialogSource(unittest.TestCase):
+
+    def test_login_url_is_official(self):
+        from src.tools.game.character_build import login_dialog
+
+        self.assertTrue(login_dialog.LOGIN_URL.startswith("https://"))
+
+    def test_account_from_browser(self):
+        """★ 从浏览器拿到的东西能组装出 Account。"""
+        acc = kuro_account.account_from_browser(
+            "tok_abc", "dev_xyz", {"userName": "某人", "mobile": "13800138000"})
+        self.assertEqual(acc.token, "tok_abc")
+        self.assertEqual(acc.dev_code, "dev_xyz")
+        self.assertEqual(acc.mobile_tail, "8000")
+        self.assertTrue(acc.logged_in)
+
+    def test_account_from_browser_rejects_empty_token(self):
+        with self.assertRaises(kuro_account.KuroError):
+            kuro_account.account_from_browser("", "dev")
+
+    def test_account_from_browser_drops_full_mobile(self):
+        """★★ **只留后 4 位** —— 完整号码不能留在 profile 里。"""
+        acc = kuro_account.account_from_browser(
+            "tok", "", {"mobile": "13800138000"})
+        self.assertEqual(acc.mobile_tail, "8000")
+        self.assertNotIn("mobile", acc.profile,
+                         "完整手机号还留在 profile 里 —— 隐私问题")
+
+
+class TestDevCodeIsDynamic(unittest.TestCase):
+    """★ devCode 不能硬编码（实测官方网页版会写一个动态值）。"""
+
+    def test_headers_accept_dev_code(self):
+        h = kuro_account._headers("tok", "dynamic_dev_code")
+        self.assertEqual(h["devcode"], "dynamic_dev_code")
+
+    def test_falls_back_when_empty(self):
+        h = kuro_account._headers("tok", "")
+        self.assertEqual(h["devcode"], kuro_account.DEV_CODE_FALLBACK)
+
+    def test_account_stores_dev_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "a.json"
+            kuro_account.save_account(
+                kuro_account.Account(token="t", dev_code="dyn"), path)
+            self.assertEqual(kuro_account.load_account(path).dev_code, "dyn")
+
+
 class TestEndpoints(unittest.TestCase):
     """★ 接口路径 —— 抄错一个字符就整个功能不可用。"""
 

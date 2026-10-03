@@ -108,8 +108,24 @@ CHANNEL_ID = 19
 #: 隍陇 = 1（国服默认）
 COUNTRY_CODE_DEFAULT = 1
 
-#: 官方 APP 的 ``devcode``（API 文档里给的固定值）
-DEV_CODE = "2fba3859fe9bfe9099f2696b8648c2c6"
+#: 官方 APP 的 ``devcode``。
+#:
+#: ## ⚠⚠ 2026-10-03 实测：这个**不该硬编码**
+#:
+#: 用 QtWebEngine 真开一次 kurobbs.com，读它的 ``localStorage`` 发现官方网页版
+#: 会往 ``dc`` 这个 key 写一个**动态 devCode**（每次会话不同）::
+#:
+#:     {"dc": "lhgTkfVoZTfbLmY07NUp4Bv6e8EGOQRd", ...}
+#:
+#: 用文档里那个固定值虽然有时也能通，但和真实会话不一致 ——
+#: 是"发不出短信"的可疑原因之一。
+#:
+#: 所以 ``devCode`` 现在是**可传入的**（见 :func:`_headers`）：
+#: 登录时从浏览器拿到什么就用什么，拿不到才退回这个文档值。
+DEV_CODE_FALLBACK = "2fba3859fe9bfe9099f2696b8648c2c6"
+
+#: 兼容旧名字
+DEV_CODE = DEV_CODE_FALLBACK
 
 #: 单请求超时（秒）
 TIMEOUT = 30
@@ -146,6 +162,31 @@ class TokenExpired(KuroError):
     """令牌失效 —— 需要重新登录（``code`` 220 / 1002 等）。"""
 
 
+class NeedHumanVerify(KuroError):
+    """★ 服务端要求**人机验证**（``data.geeTest == true``）—— 短信**没有发出去**。
+
+    ## 这是 2026-10-03 踩的坑
+
+    ``POST /user/getSmsCode`` 在要求人机验证时，仍然返回::
+
+        {"code":200, "data":{"geeTest":true}, "msg":"请求成功", "success":true}
+
+    **状态码和 ``code`` 都是成功的样子** —— 只看 ``code == 200`` 就会报
+    "验证码已发送"，而用户手机一条短信都没有（用户就是这么反馈的）。
+
+    极验要跑 JS + 采集行为轨迹，**纯 Python 绕不过去**，也不该绕。
+    正路是内嵌浏览器让用户本人过验证，见
+    ``src/tools/game/character_build/login_dialog.py``。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            None,
+            "库街区要求先过人机验证，短信**没有发出去**。"
+            "请用「打开登录窗口」在浏览器里完成登录。",
+            path=API_SMS_CODE)
+
+
 #: 需要重新登录的响应码
 AUTH_CODES = frozenset({220, 1002, 10900})
 
@@ -156,11 +197,15 @@ def _ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
-def _headers(token: str = "") -> dict[str, str]:
-    """库街区 APP 的请求头（实测够用的最小集）。"""
+def _headers(token: str = "", dev_code: str = "") -> dict[str, str]:
+    """库街区 APP 的请求头（实测够用的最小集）。
+
+    :param token: 登录令牌（没有就不带这个头）
+    :param dev_code: 动态 devCode；空则退回 :data:`DEV_CODE_FALLBACK`
+    """
     h = {
         "osversion": "Android",
-        "devcode": DEV_CODE,
+        "devcode": dev_code or DEV_CODE_FALLBACK,
         "countrycode": "CN",
         "source": "android",
         "lang": "zh-Hans",
@@ -176,13 +221,14 @@ def _headers(token: str = "") -> dict[str, str]:
     return h
 
 
-def _post(path: str, body: dict, token: str = "",
+def _post(path: str, body: dict, token: str = "", dev_code: str = "",
           timeout: int = TIMEOUT) -> dict:
     """POST 一个接口，返回解析后的 JSON（**不做业务码判断**）。"""
     url = API_ROOT + path
     data = urllib.parse.urlencode(
         {k: v for k, v in body.items() if v is not None}).encode()
-    req = urllib.request.Request(url, data=data, headers=_headers(token))
+    req = urllib.request.Request(url, data=data,
+                                 headers=_headers(token, dev_code))
     try:
         with urllib.request.urlopen(req, timeout=timeout,
                                     context=_ssl_context()) as resp:
@@ -206,13 +252,14 @@ def _post(path: str, body: dict, token: str = "",
                         path=path) from exc
 
 
-def _call(path: str, body: dict, token: str = "") -> object:
+def _call(path: str, body: dict, token: str = "",
+          dev_code: str = "") -> object:
     """POST 并**检查业务码**，成功时返回 ``data``。
 
     ``data`` 有时是**字符串形式的 JSON**（``baseData`` 就是），这里统一解开，
     调用方不用管。
     """
-    payload = _post(path, body, token)
+    payload = _post(path, body, token, dev_code)
     code = payload.get("code")
     if code != 200:
         msg = str(payload.get("msg") or "")
@@ -235,6 +282,9 @@ class Account:
     """登录后存下来的账号信息。"""
 
     token: str = ""
+    #: ★ **动态 devCode** —— 内嵌浏览器登录时从 ``localStorage.dc`` 取到。
+    #: 空则请求时退回 :data:`DEV_CODE_FALLBACK`。
+    dev_code: str = ""
     #: 登录用的手机号（只存后 4 位用于显示，**不存全号**）
     mobile_tail: str = ""
     #: ``{"userId":..., "nickname":..., ...}`` —— 接口返回什么存什么
@@ -256,6 +306,7 @@ def save_account(account: Account, path: Path | None = None) -> Path:
     payload = {
         "version": 1,
         "token": account.token,
+        "dev_code": account.dev_code,
         "mobile_tail": account.mobile_tail,
         "profile": account.profile,
         "roles": account.roles,
@@ -289,6 +340,7 @@ def load_account(path: Path | None = None) -> Account:
         return Account()
     return Account(
         token=str(raw.get("token") or ""),
+        dev_code=str(raw.get("dev_code") or ""),
         mobile_tail=str(raw.get("mobile_tail") or ""),
         profile=raw.get("profile") or {},
         roles=raw.get("roles") or [],
@@ -312,27 +364,66 @@ def clear_account(path: Path | None = None) -> None:
 def send_sms_code(mobile: str) -> None:
     """给手机号发短信验证码。
 
-    ⚠ 会**真的发短信**。UI 上要有防连点。
+    ## ★★ 2026-10-03：我在这里犯过一个错，用户"手机没收到短信"
+
+    实测响应::
+
+        {"code":200, "data":{"geeTest":true}, "msg":"请求成功", "success":true}
+
+    **``code`` 是 200，但短信根本没发** —— ``geeTest: true`` 表示服务端
+    要求先过「极验」人机验证。我第一版只看 ``code == 200`` 就报"已发送"，
+    界面上写着成功、用户手机一条短信都没有。
+
+    **所以现在必须检查 ``data.geeTest``**，为真就抛 :class:`NeedHumanVerify`。
+
+    ⚠ 这条路（自带短信登录）实际上**走不通**了 —— 极验要跑 JS + 采行为轨迹，
+    纯 Python 做不到。真正能用的是内嵌浏览器登录（见
+    ``src/tools/game/character_build/login_dialog.py``），
+    人机验证由用户本人完成。
+
+    :raises NeedHumanVerify: 服务端要求人机验证（**短信没发出去**）
     """
     payload = _post(API_SMS_CODE, {
-        "mobile": mobile, "devCode": DEV_CODE, "gameList": "",
+        "mobile": mobile, "devCode": DEV_CODE_FALLBACK, "gameList": "",
     })
     code = payload.get("code")
     if code != 200:
         raise KuroError(code, str(payload.get("msg") or ""))
 
+    # ★★ 关键：code=200 也可能是"要求人机验证"，此时短信**没有发**
+    data = payload.get("data")
+    if isinstance(data, dict) and data.get("geeTest"):
+        raise NeedHumanVerify()
 
-def login_with_code(mobile: str, code: str) -> Account:
+
+def check_sms_result(payload: dict) -> None:
+    """给测试用的纯函数版：判断一个 getSmsCode 响应是不是"真发出去了"。
+
+    :raises NeedHumanVerify: ``data.geeTest`` 为真（短信没发）
+    :raises KuroError: 业务码不是 200
+    """
+    code = payload.get("code")
+    if code != 200:
+        raise KuroError(code, str(payload.get("msg") or ""))
+    data = payload.get("data")
+    if isinstance(data, dict) and data.get("geeTest"):
+        raise NeedHumanVerify()
+
+
+def login_with_code(mobile: str, code: str,
+                    dev_code: str = "") -> Account:
     """用验证码换 token，成功返回 :class:`Account`（**不落盘**，由调用方决定）。
 
-    ## 返回结构（实测 + 文档）
+    ⚠ **这条路现在基本走不通** —— 发验证码那一步要先过极验，见
+    :class:`NeedHumanVerify`。真正能用的是内嵌浏览器登录
+    （``src/tools/game/character_build/login_dialog.py``）。
 
-    ``data`` 里有 ``token`` / ``userId`` / ``userName`` 等。这里**原样收着**
-    再去取一次绑定的游戏角色（``roleId`` 后面所有查询都要用）。
+    保留这个函数是因为：① 极验以后可能取消；② 万一有别的渠道能拿到验证码。
     """
     data = _call(API_SDK_LOGIN, {
-        "mobile": mobile, "code": code, "devCode": DEV_CODE, "gameList": "",
-    })
+        "mobile": mobile, "code": code,
+        "devCode": dev_code or DEV_CODE_FALLBACK, "gameList": "",
+    }, dev_code=dev_code)
     if not isinstance(data, dict):
         raise KuroError(None, f"登录返回的结构不认识：{str(data)[:120]}")
 
@@ -342,17 +433,48 @@ def login_with_code(mobile: str, code: str) -> Account:
 
     account = Account(
         token=token,
+        dev_code=dev_code,
         mobile_tail=mobile[-4:] if len(mobile) >= 4 else "",
         profile={k: v for k, v in data.items() if k != "token"},
         login_at=time.time(),
     )
-    account.roles = fetch_roles(token)
+    account.roles = fetch_roles(token, dev_code)
     return account
 
 
-def fetch_roles(token: str) -> list:
+def account_from_browser(token: str, dev_code: str = "",
+                         auth: dict | None = None) -> Account:
+    """★ **从内嵌浏览器拿到的东西**组装一个 :class:`Account`（不落盘）。
+
+    这是现在**真正在用**的登录路径：用户自己在浏览器窗口里过人机验证 +
+    短信验证码，之后官方页面把 token 写进 ``localStorage.auth_token``，
+    我们读出来（见 ``login_dialog.KuroLoginDialog``）。
+
+    :param token: ``localStorage.auth_token``
+    :param dev_code: ``localStorage.dc``（动态 devCode）
+    :param auth: ``localStorage.auth`` 解出来的用户信息（可选）
+    """
+    token = str(token or "").strip()
+    if not token:
+        raise KuroError(None, "浏览器里没读到 token —— 可能还没登录成功")
+
+    account = Account(
+        token=token,
+        dev_code=str(dev_code or "").strip(),
+        profile=dict(auth or {}),
+        login_at=time.time(),
+    )
+    # 手机号只留后 4 位（信息里可能带 mobile）
+    mobile = str(account.profile.get("mobile") or "")
+    if mobile:
+        account.mobile_tail = mobile[-4:]
+        account.profile.pop("mobile", None)     # ★ 不存完整号码
+    return account
+
+
+def fetch_roles(token: str, dev_code: str = "") -> list:
     """取账号绑定的游戏角色（``roleId`` / ``serverId`` 从这来）。"""
-    data = _call(API_ROLE_LIST, {}, token)
+    data = _call(API_ROLE_LIST, {}, token, dev_code)
     if isinstance(data, dict):
         for key in ("list", "roles", "roleList"):
             if isinstance(data.get(key), list):
@@ -365,7 +487,8 @@ def fetch_roles(token: str) -> list:
 # --------------------------------------------------------------------- 查询
 
 def fetch_base_data(token: str, role_id, server_id,
-                    country_code: int = COUNTRY_CODE_DEFAULT) -> dict:
+                    country_code: int = COUNTRY_CODE_DEFAULT,
+                    dev_code: str = "") -> dict:
     """账号基础数据：结晶波片 / 活跃度 / 游戏天数 / 联觉等级 / 角色数。
 
     ⚠ ``energy`` = 结晶波片、``storeEnergy`` = 结晶单质、
@@ -373,18 +496,20 @@ def fetch_base_data(token: str, role_id, server_id,
     ``level`` = 联觉等级、``roleNum`` = 解锁角色数。
     """
     return _base_body_call(API_BASE_DATA, token, role_id, server_id,
-                           country_code)
+                           country_code, dev_code)
 
 
 def fetch_role_data(token: str, role_id, server_id,
-                    country_code: int = COUNTRY_CODE_DEFAULT) -> object:
+                    country_code: int = COUNTRY_CODE_DEFAULT,
+                    dev_code: str = "") -> object:
     """共鸣者列表（等级 / 共鸣链 / 武器）。"""
     return _base_body_call(API_ROLE_DATA, token, role_id, server_id,
-                           country_code)
+                           country_code, dev_code)
 
 
 def fetch_role_detail(token: str, role_id, server_id, char_id,
-                      country_code: int = COUNTRY_CODE_DEFAULT) -> dict:
+                      country_code: int = COUNTRY_CODE_DEFAULT,
+                      dev_code: str = "") -> dict:
     """**单个角色的详情 —— 含 ``phantomList``（身上那 5 个声骸）。**
 
     这是"练度对比"的数据来源：``phantomList`` 里每一项是
@@ -395,12 +520,12 @@ def fetch_role_detail(token: str, role_id, server_id, char_id,
     if char_id is not None:
         body["roleId"] = role_id
         body["charId"] = char_id
-    return _call(API_ROLE_DETAIL, body, token)
+    return _call(API_ROLE_DETAIL, body, token, dev_code)
 
 
-def fetch_all_sub_props(token: str, role_id) -> object:
+def fetch_all_sub_props(token: str, role_id, dev_code: str = "") -> object:
     """副词条列表 —— 网页 JS 里看到它带 ``recommend`` 字段（官方推荐）。"""
-    return _call(API_ALL_SUB_PROPS, {"roleId": role_id}, token)
+    return _call(API_ALL_SUB_PROPS, {"roleId": role_id}, token, dev_code)
 
 
 def _base_body(token: str, role_id, server_id, country_code: int) -> dict:
@@ -414,6 +539,6 @@ def _base_body(token: str, role_id, server_id, country_code: int) -> dict:
 
 
 def _base_body_call(path: str, token: str, role_id, server_id,
-                    country_code: int) -> object:
+                    country_code: int, dev_code: str = "") -> object:
     return _call(path, _base_body(token, role_id, server_id, country_code),
-                 token)
+                 token, dev_code)
