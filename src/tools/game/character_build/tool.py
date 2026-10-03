@@ -52,7 +52,7 @@ from qfluentwidgets import (
     TitleLabel,
 )
 
-from ....core import kuro_account, paths
+from ....core import kuro_account, paths, tool_settings
 from ....core.categories import ToolCategory
 from ....core.registry import registry
 from ....core.tool_base import BaseTool
@@ -61,6 +61,9 @@ logger = logging.getLogger(__name__)
 
 #: 工具 key
 TOOL_KEY = "character_build"
+
+#: 设置节名（记特征码 / 手机号）
+SETTINGS_KEY = "character_build"
 
 #: 手机号长度（大陆 11 位）
 MOBILE_LEN = 11
@@ -436,13 +439,15 @@ class CharacterBuildPanel(ScrollArea):
             box.addLayout(row)
             return edit
 
-        # ⚠ 特征码**不给输入框**（用户 2026-10-03 要求）：
-        #   登录后自动从「绑定的游戏角色」拿到，没必要手填。
+        # ⚠ 特征码**保留输入框**（用户 2026-10-03 要求）：
+        #   留空 = 登录后自动用「绑定的游戏角色」；填了 = 就查那个号。
+        #   （我先删掉它是错的 —— 用户明确说"特征码呢"）
+        self._feature_edit = field("特征码", "留空 = 自动用绑定账号",
+                                   200)
         self._mobile_edit = field("手机号", "手机号", 200, MOBILE_LEN)
         self._code_edit = field("验证码", "短信验证码", 200, 8)
-        #: 兼容老测试 / 老配置：特征码恒为空（永远走"自动获取"）
-        self._feature_edit = QLineEdit(card)
-        self._feature_edit.setVisible(False)
+        # ★ 三个输入框都**记住上次的值**（用户要求：登录一次后默认保存）
+        self._restore_inputs()
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
@@ -538,6 +543,36 @@ class CharacterBuildPanel(ScrollArea):
         self._log.setVisible(show)
         self._log_toggle.setText("收起" if show else "展开")
 
+    # ----------------------------------------------------- 输入框记忆
+    def _remember_inputs(self) -> None:
+        """记住输入的**特征码 + 手机号**（用户要求：登录一次后默认保存）。
+
+        ⚠ **不存验证码** —— 那个是一次性的，留着没用还占地方。
+        """
+        try:
+            tool_settings.save(SETTINGS_KEY, {
+                "feature_code": self._feature_edit.text().strip(),
+                "mobile": self._mobile_edit.text().strip(),
+            })
+        except Exception as exc:               # noqa: BLE001
+            logger.debug("记住输入失败：%s", exc)
+
+    def _restore_inputs(self) -> None:
+        """回填上次输入的特征码 / 手机号。"""
+        try:
+            saved = tool_settings.load(SETTINGS_KEY) or {}
+        except Exception:                      # noqa: BLE001
+            return
+        feature = str(saved.get("feature_code") or "").strip()
+        mobile = str(saved.get("mobile") or "").strip()
+        #: 没存过就用账号里的（令牌文件带 mobile_tail，补不出全号 → 留空）
+        if not feature and self._account.roles:
+            feature = str(self._account.roles[0].get("roleId") or "")
+        if feature:
+            self._feature_edit.setText(feature)
+        if mobile and len(mobile) == MOBILE_LEN:
+            self._mobile_edit.setText(mobile)
+
     # ------------------------------------------------------------- 小工具
     def _say(self, message: str) -> None:
         self._log.append(message)
@@ -592,6 +627,8 @@ class CharacterBuildPanel(ScrollArea):
             kuro_account.save_account(account)  # ★ 先落盘（下次打开就是已登录）
         except Exception:                      # noqa: BLE001
             pass
+        # ★ 记住输入的手机号 + 特征码
+        self._remember_inputs()
         names = [str(r.get("roleName") or r.get("roleId"))
                  for r in (account.roles or [])]
         self._say(f"✓ 登录成功。绑定的游戏角色：{names or '（没拿到）'}")

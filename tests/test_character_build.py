@@ -726,10 +726,64 @@ class TestToolPage(unittest.TestCase):
         """★★ 界面要有**特征码**输入框。
 
         用户："特征码呢，我要是换个号不是没地方输入吗"
+
+        ⚠ 我一度**删掉了**它（以为"登录自动获取"就够），
+        用户当场纠正："气死了，乱改，特征码呢"。
+        **特征码必须留着** —— 留空才自动。
         """
         p = self._panel()
         self.assertTrue(hasattr(p, "_feature_edit"),
                         "没有特征码输入框 —— 换号时没地方填")
+        self.assertFalse(p._feature_edit.isHidden(),
+                         "特征码输入框被藏起来了 —— 用户要看得见")
+
+    def test_inputs_are_remembered(self):
+        """★ 特征码 / 手机号要**记住上次的值**（用户：登录一次后默认保存）。
+
+        ⚠ 光测 ``_remember_inputs()`` 本身不够 —— 把调用点从
+        ``_on_logged_in`` 里删掉，那种测试照样通过（实测突变时发现）。
+        所以这里**也查调用点**。
+        """
+        import ast as _ast
+
+        p = self._panel()
+        self.assertTrue(hasattr(p, "_remember_inputs"))
+        self.assertTrue(hasattr(p, "_restore_inputs"))
+
+        # ★ 调用点：_on_logged_in 里必须调它
+        src = TOOL.read_text(encoding="utf-8")
+        tree = _ast.parse(src)
+        fn = next((n for n in _ast.walk(tree)
+                   if isinstance(n, _ast.FunctionDef)
+                   and n.name == "_on_logged_in"), None)
+        self.assertIsNotNone(fn, "没有 _on_logged_in")
+        names = {getattr(n, "id", None) or getattr(n, "attr", None)
+                 for n in _ast.walk(fn)}
+        self.assertIn("_remember_inputs", names,
+                      "登录成功后没调 _remember_inputs —— 下次打开不会回填")
+
+        #: 存 → 读 往返（走临时设置文件，别污染用户配置）
+        import tempfile
+
+        from src.core import tool_settings as TS
+        from src.tools.game.character_build import tool as T
+
+        tmp = tempfile.TemporaryDirectory()
+        orig = TS.settings_file
+        TS.settings_file = lambda: pathlib.Path(tmp.name) / "s.json"
+        try:
+            p._feature_edit.setText("113152489")
+            p._mobile_edit.setText("15927967393")
+            p._remember_inputs()
+            saved = TS.load(T.SETTINGS_KEY)
+            self.assertEqual(saved.get("feature_code"), "113152489")
+            self.assertEqual(saved.get("mobile"), "15927967393")
+            #: ★ 验证码**不该**被存（一次性的）
+            self.assertNotIn("code", saved,
+                             "验证码被存下来了 —— 那个是一次性的")
+        finally:
+            TS.settings_file = orig
+            tmp.cleanup()
 
     def test_has_refresh_button(self):
         """★ 「刷新数据」按钮（用户要求：登录后自动拉，之后能手动刷）。
