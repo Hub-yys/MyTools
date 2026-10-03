@@ -532,8 +532,45 @@ def fetch_roles(token: str, dev_code: str = "") -> list:
     return []
 
 
-def fetch_user_id(token: str, role_id, server_id,
-                  dev_code: str = "") -> str:
+def resolve_role(token: str, feature_code: str,
+                 dev_code: str = "") -> dict | None:
+    """★★ 用**特征码**定位一个游戏角色（返回 ``{roleId, serverId, ...}``）。
+
+    ## 为什么要这个
+
+    界面要支持用户**手填特征码**（鸣潮工坊就是这么做的：
+    弹窗第一栏是特征码，第二三栏才是手机号 + 验证码）。
+
+    而 ``serverId`` 是**必须**的 —— 光有特征码拿不到数据::
+
+        {"gameId":3, "roleId":"113152489"}                    → 10000 服务器id不能为空
+        {"gameId":3, "roleId":"113152489", "serverId":""}     → 200（但可能是空壳）
+
+    所以流程是：**用特征码反查 serverId**。
+
+    ## 怎么反查
+
+    调 ``/gamer/role/list {gameId:3}`` 拿"绑定到本账号的角色"，
+    再按 ``roleId == feature_code`` 匹配。
+
+    ⚠ **实测：一个库街区账号只能绑一个鸣潮角色** ——
+    所以只能查到"自己账号绑的那个"。
+    **别人的特征码查不到 ``serverId``**（那不是绑定关系），
+    此时返回 ``None``，由调用方给出明确提示。
+
+    :return: 匹配到的角色 dict；查不到返回 ``None``
+    """
+    try:
+        roles = fetch_roles(token, dev_code)
+    except KuroError:
+        return None
+    want = str(feature_code or "").strip()
+    if not want:
+        return None
+    for role in roles or []:
+        if str(role.get("roleId") or "").strip() == want:
+            return role
+    return None
     """★ 拿**权威 userId** —— :func:`request_data_token` 要用它。
 
     ⚠ 实测：这个接口用**网页头**（``source=h5``）能通，
@@ -672,27 +709,66 @@ def app_login_with_code(mobile: str, code: str,
 #     而且**不能同时带**普通 ``token``（带了会变 10000 参数错误）。
 #     数据令牌由 :func:`request_data_token` 换（见模块文档的流程）。
 
-def _aki(payload_target, data_token: str, body: dict) -> object:
+class RoleNotFound(KuroError):
+    """★★ 角色查不到 —— 服务端回 ``200`` 但 ``data`` 是 ``None``。
+
+    ## 为什么必须单独一个异常（2026-10-03 实测）
+
+    用**别人的 / 瞎编的**特征码调 ``/aki/`` 接口时，服务端的返回是::
+
+        {"code": 200, "msg": "请求成功", "data": null, "success": true}
+
+    **``code`` 是 200，``msg`` 是"请求成功"** —— 但数据是空的。
+
+    如果不特判，界面会**报成功却什么都不显示**，用户完全看不出发生了什么
+    （这正是"换个号查不到"时的表现）。
+
+    实测对照::
+
+        roleId=113152489（自己的） → data 有完整内容（name/id/energy…）
+        roleId=113152490（别人的） → code=200, data=None
+        roleId=123456789（瞎编的） → code=200, data=None
+    """
+
+    def __init__(self, path: str = "", role_id: str = "") -> None:
+        self.role_id = role_id
+        hint = (f"（特征码 {role_id}）" if role_id else "")
+        super().__init__(
+            200,
+            f"查不到这个角色的数据{hint}。"
+            f"常见原因：特征码填错了、或者对方没有开放「角色展示」。",
+            path=path)
+
+
+def _aki(payload_target, data_token: str, body: dict,
+         *, role_id: str = "", empty_ok: bool = False) -> object:
     """调一个 `/aki/` 接口 —— 只带 ``b-at``。
 
     ⚠ 实测：带 ``token`` 会变 ``10000 参数错误``；带 ``source=h5`` 会
     ``10901 禁止访问``。所以这里**固定** ``source=android`` 且不带 token。
+
+    :param role_id: 只用于错误提示（特征码）
+    :param empty_ok: ``data`` 为 None 时是否算正常。
+        ★ 默认**不算** —— 实测服务端对"查不到的号"会回
+        ``200 + "请求成功" + data:null``，不特判就会"报成功却没数据"。
     """
     payload = _post(payload_target, body, token="", dev_code="",
                     data_token=data_token, source="android")
     code = payload.get("code")
     if code != 200:
+        msg = str(payload.get("msg") or "")
         if code in AUTH_CODES:
-            raise TokenExpired(code, str(payload.get("msg") or ""),
-                               path=payload_target)
-        raise KuroError(code, str(payload.get("msg") or ""),
-                        path=payload_target)
+            raise TokenExpired(code, msg, path=payload_target)
+        raise KuroError(code, msg, path=payload_target)
     data = payload.get("data")
     if isinstance(data, str):
         try:
             data = json.loads(data)
         except Exception:                      # noqa: BLE001
             pass
+    # ★★ code=200 但 data 为空 → 那是"查不到"，不是"查到了空的"
+    if data is None and not empty_ok:
+        raise RoleNotFound(path=payload_target, role_id=role_id)
     return data
 
 
@@ -703,10 +779,13 @@ def fetch_base_data(data_token: str, role_id, server_id,
     ⚠ 实测字段：``energy`` = 结晶波片、``storeEnergy`` = 结晶单质、
     ``liveness`` = 活跃度、``activeDays`` = 游戏天数、
     ``level`` = 联觉等级、``roleNum`` = 解锁角色数。
+
+    :raises RoleNotFound: 特征码查不到（服务端回 ``200 + data:null``）
     """
     return _aki(API_BASE_DATA, data_token,
                 {"gameId": GAME_ID_WUWA, "roleId": role_id,
-                 "serverId": server_id, "countryCode": country_code})
+                 "serverId": server_id, "countryCode": country_code},
+                role_id=str(role_id))
 
 
 def fetch_role_data(data_token: str, role_id, server_id,
@@ -721,7 +800,8 @@ def fetch_role_data(data_token: str, role_id, server_id,
     """
     return _aki(API_ROLE_DATA, data_token,
                 {"gameId": GAME_ID_WUWA, "roleId": role_id,
-                 "serverId": server_id, "countryCode": country_code})
+                 "serverId": server_id, "countryCode": country_code},
+                role_id=str(role_id))
 
 
 def fetch_role_detail(data_token: str, account_role_id, server_id,

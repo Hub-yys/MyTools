@@ -99,21 +99,47 @@ class FetchThread(QThread):
     succeeded = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, account, parent=None):
+    def __init__(self, account, feature_code: str = "", parent=None):
         super().__init__(parent)
         self._account = account
+        self._feature_code = (feature_code or "").strip()
 
     def run(self) -> None:                     # noqa: D102
         try:
             acc = self._account
             roles = acc.roles or []
-            if not roles:
-                self.failed.emit("没拿到绑定的游戏角色")
+
+            # ★★ 特征码：用户填了就以它为准
+            role = None
+            want = self._feature_code
+            if want:
+                role = next((r for r in roles
+                             if str(r.get("roleId") or "").strip() == want),
+                            None)
+                if role is None:
+                    self.progress.emit(
+                        f"特征码 {want} 不在绑定列表里，尝试重新查询…")
+                    role = kuro_account.resolve_role(acc.token, want)
+                if role is None:
+                    self.failed.emit(
+                        f"查不到特征码 {want} 对应的角色。\n"
+                        f"可能原因：① 特征码填错了；"
+                        f"② 这个号没绑定到当前库街区账号"
+                        f"（一个账号只能绑一个号）。\n"
+                        f"当前账号绑定的角色："
+                        f"{[r.get('roleName') for r in roles] or '（无）'}")
+                    return
+            elif roles:
+                role = next((r for r in roles
+                             if str(r.get("gameId")) == "3"), roles[0])
+            if role is None:
+                self.failed.emit("没拿到任何游戏角色 —— 请先登录")
                 return
-            role = next((r for r in roles
-                         if str(r.get("gameId")) == "3"), roles[0])
+
             role_id = str(role.get("roleId"))
             server_id = str(role.get("serverId"))
+            role_name = role.get("roleName") or role_id
+            self.progress.emit(f"目标角色：{role_name}（特征码 {role_id}）")
 
             self.progress.emit("正在换数据令牌…")
             data_token, _req = kuro_account.request_data_token(
@@ -147,6 +173,8 @@ class FetchThread(QThread):
                 "role": role, "base": base,
                 "roleList": role_list, "details": details,
             })
+        except kuro_account.RoleNotFound as exc:
+            self.failed.emit(str(exc))
         except Exception as exc:               # noqa: BLE001
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
@@ -195,6 +223,19 @@ class CharacterBuildPanel(ScrollArea):
         self._login_status = CaptionLabel("未登录", card)
         box.addWidget(self._login_status)
 
+        # ── 特征码（★ 用户要求：换号时要有地方填）
+        code_row = QHBoxLayout()
+        code_row.setSpacing(8)
+        code_row.addWidget(CaptionLabel("特征码", card))
+        self._feature_edit = QLineEdit(card)
+        self._feature_edit.setPlaceholderText(
+            "游戏 ID（不填 = 用账号绑定的那个）")
+        self._feature_edit.setFixedWidth(220)
+        code_row.addWidget(self._feature_edit)
+        code_row.addStretch(1)
+        box.addLayout(code_row)
+
+        # ── 手机号 + 验证码
         row = QHBoxLayout()
         row.setSpacing(8)
 
@@ -223,6 +264,8 @@ class CharacterBuildPanel(ScrollArea):
         box.addWidget(CaptionLabel(
             "★ 验证码请在**任意官方入口**获取（库街区 App，或电脑网页的"
             "登录框点「获取验证码」）—— 两边通用。\n"
+            "★ **特征码**：想查哪个游戏号就填它的游戏 ID。"
+            "留空则用当前库街区账号绑定的那个号。\n"
             "⚠ 令牌只存本机（data/kuro_account.json），只记手机号后 4 位。"
             "「退出登录」会删掉它。", card))
         return card
@@ -316,9 +359,10 @@ class CharacterBuildPanel(ScrollArea):
         if not self._account.logged_in:
             self._toast("请先登录", ok=False)
             return
+        feature = self._feature_edit.text().strip()
         self._busy(True)
-        self._say("开始拉取数据…")
-        thread = FetchThread(self._account, self)
+        self._say("开始拉取数据…" + (f"（特征码 {feature}）" if feature else ""))
+        thread = FetchThread(self._account, feature, self)
         thread.progress.connect(self._say)
         thread.succeeded.connect(self._on_fetched)
         thread.failed.connect(self._on_failed)

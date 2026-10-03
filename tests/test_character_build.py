@@ -357,6 +357,123 @@ class TestAppLogin(unittest.TestCase):
                       "APP 端登录没调 sdkLogin")
 
 
+class TestRoleNotFoundGuard(unittest.TestCase):
+    """★★★ **``code=200`` 但 ``data=None`` 不能算成功** —— 用户问"换个号"引出的坑。
+
+    ## 实测（2026-10-03）
+
+    用**别人的 / 瞎编的**特征码调 ``/aki/`` 接口，服务端回的是::
+
+        {"code": 200, "msg": "请求成功", "data": null, "success": true}
+
+    **``code`` 是 200、``msg`` 是"请求成功"，但数据是空的。**
+
+    不特判的话，界面会**报成功却什么都不显示** ——
+    用户完全看不出"是网络问题还是这个号查不到"。
+
+    实测对照::
+
+        roleId=113152489（自己的） → data 有完整内容
+        roleId=113152490（别人的） → code=200, data=None
+        roleId=123456789（瞎编的） → code=200, data=None
+    """
+
+    def test_exception_exists(self):
+        self.assertTrue(hasattr(kuro_account, "RoleNotFound"))
+        self.assertTrue(issubclass(kuro_account.RoleNotFound,
+                                   kuro_account.KuroError))
+
+    def test_message_mentions_feature_code(self):
+        exc = kuro_account.RoleNotFound(path="/aki/x", role_id="123456789")
+        self.assertIn("123456789", str(exc),
+                      "报错要带上特征码 —— 不然用户不知道是哪个号查不到")
+
+    def test_message_mentions_role_display(self):
+        """★ 提示要点出"角色展示"这个可能原因。
+
+        鸣潮工坊的弹窗写明「必须在库街区中开放[角色展示]」。
+        """
+        exc = kuro_account.RoleNotFound()
+        self.assertIn("角色展示", str(exc))
+
+    def test_aki_raises_on_null_data(self):
+        """★ ``data=None`` 要抛 ``RoleNotFound``（默认行为）。"""
+        def fake_post(path, body, **kw):
+            return {"code": 200, "msg": "请求成功", "data": None,
+                    "success": True}
+
+        orig = kuro_account._post
+        kuro_account._post = fake_post
+        try:
+            with self.assertRaises(kuro_account.RoleNotFound):
+                kuro_account.fetch_base_data("DT", "113152489", "srv")
+        finally:
+            kuro_account._post = orig
+
+    def test_aki_ok_when_data_present(self):
+        """有数据时不抛。"""
+        def fake_post(path, body, **kw):
+            return {"code": 200, "msg": "请求成功",
+                    "data": {"name": "银月"}}
+
+        orig = kuro_account._post
+        kuro_account._post = fake_post
+        try:
+            got = kuro_account.fetch_base_data("DT", "113152489", "srv")
+        finally:
+            kuro_account._post = orig
+        self.assertEqual(got.get("name"), "银月")
+
+
+class TestResolveRoleByFeatureCode(unittest.TestCase):
+    """★★ 用**特征码**定位角色（界面要支持手填特征码）。"""
+
+    def test_function_exists(self):
+        self.assertTrue(hasattr(kuro_account, "resolve_role"))
+
+    def test_matches_exact_feature_code(self):
+        def fake_fetch(token, dev_code=""):
+            return [{"roleId": "113152489", "serverName": "鸣潮"},
+                    {"roleId": "58420274", "serverName": "星火服"}]
+
+        orig = kuro_account.fetch_roles
+        kuro_account.fetch_roles = fake_fetch
+        try:
+            got = kuro_account.resolve_role("tok", "58420274")
+        finally:
+            kuro_account.fetch_roles = orig
+        self.assertIsNotNone(got)
+        self.assertEqual(got["roleId"], "58420274")
+
+    def test_returns_none_when_not_bound(self):
+        """★★ 别人的特征码查不到 —— **一个账号只能绑一个号**（实测）。"""
+        def fake_fetch(token, dev_code=""):
+            return [{"roleId": "113152489"}]
+
+        orig = kuro_account.fetch_roles
+        kuro_account.fetch_roles = fake_fetch
+        try:
+            got = kuro_account.resolve_role("tok", "999999999")
+        finally:
+            kuro_account.fetch_roles = orig
+        self.assertIsNone(got)
+
+    def test_empty_code_returns_none(self):
+        self.assertIsNone(kuro_account.resolve_role("tok", ""))
+
+    def test_network_failure_returns_none(self):
+        """★ 网络失败返回 None，不该把异常抛给界面。"""
+        def boom(token, dev_code=""):
+            raise kuro_account.KuroError(220, "登录已过期")
+
+        orig = kuro_account.fetch_roles
+        kuro_account.fetch_roles = boom
+        try:
+            self.assertIsNone(kuro_account.resolve_role("tok", "113152489"))
+        finally:
+            kuro_account.fetch_roles = orig
+
+
 class TestToolPage(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -377,6 +494,17 @@ class TestToolPage(unittest.TestCase):
         p = self._panel()
         self.assertTrue(hasattr(p, "_mobile_edit"))
         self.assertTrue(hasattr(p, "_code_edit"))
+
+    def test_has_feature_code_input(self):
+        """★★ 界面要有**特征码**输入框。
+
+        用户："特征码呢，我要是换个号不是没地方输入吗"
+
+        鸣潮工坊的绑定弹窗就是三栏：**特征码 + 手机号 + 验证码**。
+        """
+        p = self._panel()
+        self.assertTrue(hasattr(p, "_feature_edit"),
+                        "没有特征码输入框 —— 换号时没地方填")
 
     def test_fetch_disabled_when_logged_out(self):
         p = self._panel()
