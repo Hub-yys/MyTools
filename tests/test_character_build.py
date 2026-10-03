@@ -921,6 +921,50 @@ class TestToolPage(unittest.TestCase):
         p._render(p._data)
         self.assertEqual(len(p._cards), 1, "「达标」筛选不对")
 
+    def test_grid_is_two_columns(self):
+        """★★ **一行只放 2 个**（用户给的参考图是两列大卡片）。
+
+        用户原话："不是说了一行展示所有的共鸣者吗，点击一下就展示该共鸣者
+        的属性、声骸信息"
+
+        ⚠ 我做 6 列时卡片太小（112px），名字被压两行，用户不满意。
+        参考图是**两列大卡片** → 改成 2 列。
+        """
+        from src.tools.game.character_build import tool as T
+
+        self.assertEqual(T.GRID_COLS, 2,
+                         "不是 2 列 —— 参考图是两列大卡片")
+        self.assertGreaterEqual(T.CARD_W, 200, "卡片太窄")
+        self.assertGreaterEqual(T.AVATAR_SIZE, 64, "头像太小")
+
+    def test_card_shows_issues_without_clicking(self):
+        """★ 卡片上**直接显示问题**（不用点开就知道哪里不对）。"""
+        from src.tools.game.character_build.tool import CharacterCard
+
+        role = {"roleId": 1, "roleName": "测试", "level": 90,
+                "attributeName": "热熔", "weaponTypeName": "音感仪",
+                "chainUnlockNum": 6, "starLevel": 5}
+        card = CharacterCard(role, True, ["套装不统一（2 种）"], (10, 25))
+        self.assertIn("套装不统一", card.toolTip())
+        #: 卡片上应该有那个 ⚠ 标签
+        from PySide6.QtWidgets import QLabel
+
+        texts = [w.text() for w in card.findChildren(QLabel)]
+        self.assertTrue(any("⚠" in t and "套装不统一" in t for t in texts),
+                        f"卡片上没显示问题（找到 {texts}）")
+
+    def test_card_shows_substat_hits(self):
+        """★ 卡片上显示「声骸有效词条 N/M」。"""
+        from PySide6.QtWidgets import QLabel
+
+        from src.tools.game.character_build.tool import CharacterCard
+
+        role = {"roleId": 1, "roleName": "测试", "level": 90}
+        card = CharacterCard(role, False, [], (10, 25))
+        texts = [w.text() for w in card.findChildren(QLabel)]
+        self.assertTrue(any("10/25" in t for t in texts),
+                        f"卡片上没显示有效词条数（找到 {texts}）")
+
     def test_feature_code_not_filled_with_junk(self):
         """★★ 特征码回填只认**像特征码**的值。
 

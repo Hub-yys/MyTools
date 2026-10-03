@@ -73,13 +73,18 @@ MOBILE_LEN = 11
 #: 缓存文件名（用户数据目录）—— 数据持久化，重启直接显示
 CACHE_NAME = "kuro_练度.json"
 
-#: 角色卡片尺寸
-AVATAR_SIZE = 56
-CARD_W = 112
-CARD_H = 128
+#: 角色卡片尺寸（用户要求：**一行只放 2 个**，大卡片）
+#:
+#: 用户给的参考图里，声骸/角色卡片是**两列大卡片**：
+#: 每张卡有头像 + 名字 + 等级，点开看详情。
+#: 之前我做 6 列 → 卡片太小、名字被压成两行，用户说
+#: "不是说了一行展示所有的共鸣者吗"（意思是一眼能看清，不是挤成小格子）。
+AVATAR_SIZE = 96
+CARD_W = 300
+CARD_H = 168
 
-#: 角色网格每行几个
-GRID_COLS = 6
+#: 角色网格每行几个（★ 2）
+GRID_COLS = 2
 
 #: 「达标」筛选下拉的选项（用户："达标/未达标"）
 FILTER_CHOICES = ("全部", "未达标", "达标")
@@ -272,23 +277,40 @@ def clear_cache() -> None:
 # --------------------------------------------------------------------- 控件
 
 class CharacterCard(QWidget):
-    """一个角色卡片（像官方那样：头像 + 等级 + 共鸣链 + 名字）。
+    """一个角色卡片（**大卡片，一行两个** —— 按用户给的参考图）。
+
+    ::
+
+        ┌──────────────────────────────────┐
+        │  ┌────┐  名字          Lv.90     │
+        │  │头像│  属性 · 武器             │
+        │  └────┘  共鸣链 6                │
+        │  ──────────────────────────────  │
+        │  声骸 5 个 · 有效词条 10/25      │
+        │  ⚠ 套装不统一（2 种）            │   ← 未达标才显示
+        └──────────────────────────────────┘
+
+    点一下 → 下面展开它的属性 + 声骸明细。
 
     :param flagged: 声骸没达标 → **红框**标出来
+    :param issues: 具体问题（显示在卡片上，不用点开就知道）
     """
 
     clicked = Signal(str)                      # 角色 id
 
-    def __init__(self, role: dict, flagged: bool = False, parent=None):
+    def __init__(self, role: dict, flagged: bool = False,
+                 issues: list[str] | None = None, hits: tuple = (0, 0),
+                 parent=None):
         super().__init__(parent)
         self._cid = str(role.get("roleId"))
-        self.setFixedSize(QSize(CARD_W, CARD_H))
+        self.setFixedHeight(CARD_H)
+        self.setMinimumWidth(CARD_W)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(self._tooltip(role, flagged))
+        self.setToolTip(self._tooltip(role, flagged, issues or []))
 
-        box = QVBoxLayout(self)
-        box.setContentsMargins(4, 4, 4, 4)
-        box.setSpacing(2)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 8, 10, 8)
+        row.setSpacing(10)
 
         # ── 头像
         holder = QLabel(self)
@@ -296,36 +318,50 @@ class CharacterCard(QWidget):
         holder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         holder.setPixmap(self._avatar(role.get("roleName")).pixmap(
             AVATAR_SIZE, AVATAR_SIZE))
-        box.addWidget(holder, 0, Qt.AlignmentFlag.AlignHCenter)
+        row.addWidget(holder, 0, Qt.AlignmentFlag.AlignTop)
 
-        # ── 等级
-        lv = QLabel(f"Lv.{role.get('level', '?')}", self)
-        lv.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lv.setStyleSheet("font-size: 11px;")
-        box.addWidget(lv)
+        # ── 右侧文字
+        col = QVBoxLayout()
+        col.setSpacing(2)
 
-        # ── 共鸣链 + 属性
-        sub = QLabel(f"{role.get('attributeName', '')}"
-                     f"　{role.get('chainUnlockNum', 0)}链", self)
-        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setStyleSheet("font-size: 10px;")
-        box.addWidget(sub)
+        name = QLabel(f"{role.get('roleName') or '?'}", self)
+        name.setStyleSheet(
+            f"font-size: 15px; font-weight: bold;"
+            f"color: {'#c42b1c' if flagged else 'inherit'};")
+        col.addWidget(name)
 
-        # ── 名字
-        name = QLabel(str(role.get("roleName") or "?"), self)
-        name.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        weight = "bold" if flagged else "normal"
-        color = "#c42b1c" if flagged else "inherit"
-        name.setStyleSheet(f"font-size: 12px; font-weight: {weight};"
-                           f"color: {color};")
-        box.addWidget(name)
+        lv = QLabel(f"Lv.{role.get('level', '?')}　"
+                    f"{role.get('attributeName', '')}　"
+                    f"{role.get('weaponTypeName', '')}", self)
+        lv.setStyleSheet("font-size: 12px;")
+        col.addWidget(lv)
 
-        # ★ 声骸没达标 → 红框
-        border = "#c42b1c" if flagged else "transparent"
+        chain = QLabel(f"共鸣链 {role.get('chainUnlockNum', 0)}　"
+                       f"★{role.get('starLevel', '?')}", self)
+        chain.setStyleSheet("font-size: 12px;")
+        col.addWidget(chain)
+
+        hit, total = hits
+        sub = QLabel(f"声骸有效词条 {hit}/{total}" if total
+                     else "声骸数据待拉取", self)
+        sub.setStyleSheet("font-size: 12px;")
+        col.addWidget(sub)
+
+        # ★ 问题直接写在卡片上（不用点开就知道哪里不对）
+        if issues:
+            tip = QLabel("⚠ " + "；".join(issues[:2]), self)
+            tip.setWordWrap(True)
+            tip.setStyleSheet("font-size: 11px; color: #c42b1c;")
+            col.addWidget(tip)
+        col.addStretch(1)
+        row.addLayout(col, 1)
+
+        # ★ 未达标 → 红框加粗
+        border = "#c42b1c" if flagged else "rgba(0,0,0,0.10)"
         width = 2 if flagged else 1
         self.setStyleSheet(
             f"CharacterCard {{ border: {width}px solid {border};"
-            f" border-radius: 6px; }}")
+            f" border-radius: 8px; }}")
 
     @staticmethod
     def _avatar(name):
@@ -342,16 +378,17 @@ class CharacterCard(QWidget):
             return QIcon()
 
     @staticmethod
-    def _tooltip(role: dict, flagged: bool) -> str:
+    def _tooltip(role: dict, flagged: bool, issues: list[str]) -> str:
         lines = [
             f"{role.get('roleName')}　Lv{role.get('level')}",
             f"属性：{role.get('attributeName')}　"
             f"武器：{role.get('weaponTypeName')}",
             f"共鸣链：{role.get('chainUnlockNum')}　"
             f"星级：{role.get('starLevel')}",
+            "点一下看声骸明细",
         ]
-        if flagged:
-            lines.append("⚠ 声骸未达标 —— 点开看明细")
+        if issues:
+            lines.append("⚠ " + "；".join(issues))
         return "\n".join(lines)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 接口
@@ -751,7 +788,8 @@ class CharacterBuildPanel(ScrollArea):
                                 "weaponTypeName", "acronym")).lower()
                 if keyword not in hay:
                     continue
-            card = CharacterCard(role, bool(issues), self._roles_host)
+            card = CharacterCard(role, bool(issues), issues,
+                                 self._role_hits(cid), self._roles_host)
             card.clicked.connect(self._show_detail)
             self._roles_grid.addWidget(card, shown // GRID_COLS,
                                        shown % GRID_COLS)
@@ -928,6 +966,13 @@ class CharacterBuildPanel(ScrollArea):
                 if s.get("valid"):
                     hit += 1
         return hit, total
+
+    def _role_hits(self, char_id: str) -> tuple[int, int]:
+        """某个角色的「有效词条 / 总词条」—— 画在卡片上。"""
+        detail = (self._data.get("details") or {}).get(str(char_id)) or {}
+        items = ((detail.get("phantomData") or {})
+                 .get("equipPhantomList") or [])
+        return self._substat_hits(items)
 
     @staticmethod
     def _format_base(base: dict) -> str:
