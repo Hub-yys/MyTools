@@ -535,10 +535,18 @@ class TestEchoIssues(unittest.TestCase):
         items = [self._item(c, valid=3) for c in (1, 4, 1, 3, 3)]
         self.assertEqual([x for x in self._issues(items) if "COST" in x], [])
 
-    def test_detects_few_valid_substats(self):
-        """★ 有效词条 < 10 要报（`valid` 是库街区自己标的）。"""
+    def test_valid_substat_rule_is_gone(self):
+        """★★ "有效词条 < 10" 这条规则**删掉了**。
+
+        ⚠ 那个 10 是**我瞎定的** —— 用户 2026-10-05 给了官方攻略站，
+        现在改用**官方推荐属性**（每个角色各自的达标线）判定。
+
+        → 所以"词条少"本身**不再**是问题（除非官方标准里有）。
+        """
         items = [self._item(c, valid=1) for c in (4, 3, 3, 1, 1)]
-        self.assertTrue(any("有效词条" in x for x in self._issues(items)))
+        self.assertEqual(
+            [x for x in self._issues(items) if "有效词条" in x], [],
+            "「有效词条 < 10」这条瞎定的规则还在 —— 应该改用官方标准")
 
     def test_empty_detail(self):
         self.assertTrue(self._issues([]))
@@ -1489,6 +1497,136 @@ class TestExcludedRoles(unittest.TestCase):
         p._filter_box.setCurrentText("未达标")
         p._render(p._data)
         self.assertEqual([c._cid for c in p._cards], ["1103"])
+
+
+class TestStandardComparison(unittest.TestCase):
+    """★★★ 用**官方推荐属性**判达标（用户 2026-10-05 给出的标准）。
+
+    用户给了官方攻略站的截图和链接::
+
+        属性        当前数值    推荐数值
+        暴击        78.4%       ≥70.0%  ✓
+        暴击伤害    281.0%      ≥260.0% ✓
+        共鸣效率    128.4%      ≥120.0% ✓
+
+    数据来源 :mod:`src.core.wuwa_guide`（每个角色的标准都不同）::
+
+        白芷      共鸣效率 ≥260.0% / 治疗效果加成 ≥40.0% / 生命 ≥24000
+        今汐      暴击 ≥70.0% / 暴击伤害 ≥275.0% / 共鸣技能伤害加成 ≥20.0%
+        安可      暴击 >65.0% / 暴击伤害 >250.0%     ← 注意是严格大于
+
+    ⚠ 这条测试替代了原来"有效词条 < 10"那条**瞎定的**规则。
+    """
+
+    @staticmethod
+    def _detail_with_attrs(attrs: dict) -> dict:
+        """造一份带 ``roleAttributeList`` 的详情（够跑判定）。
+
+        ⚠ ``equipPhantomList`` **不能是空的** —— 空了会先短路成
+        "没拿到声骸数据"，属性那段就轮不到跑（第一版就栽在这）。
+        这里给一套**结构完美**的声骸（满级 / 同套装 / COST 4-3-3-1-1），
+        这样判定里只有"属性达标"这一项会出结果。
+        """
+        def item(cost):
+            return {
+                "cost": cost, "level": 25, "quality": 5,
+                "phantomProp": {"name": "声骸"},
+                "fetterDetail": {"name": "套装"},
+                "mainProps": [{"attributeName": "攻击",
+                               "attributeValue": "1%", "valid": True}],
+                "subProps": [{"attributeName": "x",
+                              "attributeValue": "1%", "valid": True}],
+            }
+
+        return {
+            "role": {"roleName": "测试", "level": 90},
+            "roleAttributeList": [
+                {"attributeName": k, "attributeValue": v}
+                for k, v in attrs.items()
+            ],
+            "phantomData": {"cost": 12,
+                            "equipPhantomList": [item(c)
+                                                 for c in (4, 3, 3, 1, 1)]},
+        }
+
+    @staticmethod
+    def _standard(pairs) -> dict:
+        return {"attrs": [
+            {"name": n, "recommend": f"{v}%", "value": v, "unit": "%",
+             "symbol": sym, "operation": 6}
+            for n, sym, v in pairs
+        ]}
+
+    def _issues(self, attrs, pairs):
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        return CharacterBuildPanel._echo_issues(
+            self._detail_with_attrs(attrs), self._standard(pairs))
+
+    def test_meets_standard_no_issue(self):
+        got = self._issues({"暴击": "78.4%", "暴击伤害": "281.0%"},
+                           [("暴击", "≥", 70.0), ("暴击伤害", "≥", 260.0)])
+        self.assertEqual(got, [])
+
+    def test_below_standard_is_reported(self):
+        got = self._issues({"暴击": "55.0%"}, [("暴击", "≥", 70.0)])
+        self.assertTrue(any("暴击" in x and "70" in x for x in got),
+                        f"没报出暴击不达标（{got}）")
+
+    def test_strict_greater_than(self):
+        """★★ 安可那条是 ``>65%`` —— **等于不算过**。
+
+        ⚠ 这就是我第一版猜错枚举值的地方（把 ``4`` 当成 ``<=``）。
+        """
+        #: 正好 65 → > 不满足
+        got = self._issues({"暴击": "65.0%"}, [("暴击", ">", 65.0)])
+        self.assertTrue(any("暴击" in x for x in got),
+                        "正好等于不该算过（> 是严格大于）")
+        #: 65.1 → 过
+        got2 = self._issues({"暴击": "65.1%"}, [("暴击", ">", 65.0)])
+        self.assertEqual(got2, [])
+
+    def test_absolute_value_standard(self):
+        """★ 绝对值属性（生命/攻击）也能比。"""
+        got = self._issues({"生命": "22166"}, [("生命", "≥", 24000.0)])
+        self.assertTrue(any("生命" in x for x in got))
+        got2 = self._issues({"生命": "24000"}, [("生命", "≥", 24000.0)])
+        self.assertEqual(got2, [])
+
+    def test_skips_attributes_not_on_panel(self):
+        """★ 面板里没有的属性**跳过**（不瞎报）。"""
+        got = self._issues({"暴击": "80.0%"},
+                           [("暴击", "≥", 70.0), ("重击伤害加成", "≥", 20.0)])
+        self.assertEqual(got, [], "面板里没有的属性不该被报成不达标")
+
+    def test_no_standard_is_fine(self):
+        """★ 没拿到标准（官方没出攻略）→ 不报属性问题。"""
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        detail = self._detail_with_attrs({"暴击": "10.0%"})
+        for std in (None, {}, {"attrs": []}):
+            with self.subTest(std=std):
+                self.assertEqual(
+                    CharacterBuildPanel._echo_issues(detail, std), [])
+
+    def test_no_attrs_is_fine(self):
+        """★ 面板里一个属性都没有 → 不报属性问题（但结构性检查照跑）。"""
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        detail = self._detail_with_attrs({})
+        got = CharacterBuildPanel._echo_issues(
+            detail, self._standard([("暴击", "≥", 70.0)]))
+        self.assertEqual([x for x in got if "暴击" in x], [],
+                         "没有属性面板数据时不该报属性不达标")
+
+    def test_attr_map_parses_percent_and_plain(self):
+        from src.tools.game.character_build import tool as T
+
+        got = T._attr_map(self._detail_with_attrs(
+            {"暴击": "78.4%", "生命": "15465", "坏的": "abc"}))
+        self.assertEqual(got.get("暴击"), 78.4)
+        self.assertEqual(got.get("生命"), 15465.0)
+        self.assertNotIn("坏的", got, "解析不了的不该进 map")
 
 
 class TestToolPage(unittest.TestCase):

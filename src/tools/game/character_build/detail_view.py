@@ -537,6 +537,99 @@ def _show_text_dialog(parent, title: str, text: str) -> None:
     dlg.exec()
 
 
+def _num(text) -> float | None:
+    """``"70.0%"`` → ``70.0``（本地版，不依赖 core 模块）。"""
+    s = str(text or "").strip().replace("%", "").replace(",", "")
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _meets(have: float, need: float, symbol: str) -> bool:
+    """按官方给的比较符判断达标。
+
+    ⚠ 这张符号表是**从官方 JS 挖出来的**（``4`` 是 ``>`` 不是 ``<=``）——
+    别在这儿再写一份，统一走 :mod:`src.core.wuwa_guide`。
+    """
+    from ....core import wuwa_guide
+
+    return wuwa_guide.meets(have, need, symbol)
+
+
+def _standard_block(standard, current: dict, parent) -> QWidget:
+    """★★ 「属性推荐」块 —— **当前值 vs 官方推荐值**（用户要的达标标准）。
+
+    用户 2026-10-05 给了官方攻略站的截图::
+
+        属性        当前数值    推荐数值
+        暴击        78.4%       ≥70.0%  ✓
+        暴击伤害    281.0%      ≥260.0% ✓
+        共鸣效率    128.4%      ≥120.0% ✓
+
+    数据来自 :mod:`src.core.wuwa_guide`（官方攻略站）。
+    """
+    host = QWidget(parent)
+    grid = QGridLayout(host)
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(12)
+    grid.setVerticalSpacing(3)
+
+    #: 表头
+    for col, text in enumerate(("属性", "当前数值", "推荐数值")):
+        head = QLabel(text, host)
+        head.setStyleSheet("font-size: 12px; font-weight: bold; color: #666;")
+        if col:
+            head.setAlignment(Qt.AlignmentFlag.AlignRight
+                              | Qt.AlignmentFlag.AlignVCenter)
+        grid.addWidget(head, 0, col)
+
+    for i, a in enumerate((standard or {}).get("attrs") or [], start=1):
+        name = str(a.get("name") or "?")
+        have = current.get(name)
+        need_raw = str(a.get("recommend") or "")
+        symbol = str(a.get("symbol") or ">=")
+        ok = have is not None and _meets(have, a.get("value") or 0, symbol)
+
+        cell = QWidget(host)
+        cell.setObjectName("stdRow")
+        cell.setStyleSheet(
+            f"#stdRow {{ background: {'' if ok else SUB_HIT_BG};"
+            f" border-radius: 3px; }}")
+        row = QHBoxLayout(cell)
+        row.setContentsMargins(4, 2, 4, 2)
+        row.setSpacing(6)
+
+        _add_icon(row, a.get("icon_url"), PROP_ICON, cell)
+        nm = QLabel(name, cell)
+        nm.setStyleSheet("font-size: 12px;")
+        row.addWidget(nm)
+        row.addStretch(1)
+
+        cur = QLabel(f"{have:g}{a.get('unit') or ''}" if have is not None
+                     else "—", cell)
+        cur.setStyleSheet("font-size: 12px; font-weight: bold;")
+        row.addWidget(cur)
+
+        want = QLabel(f"{symbol}{need_raw}", cell)
+        want.setStyleSheet(
+            f"font-size: 12px; font-weight: bold;"
+            f"color: {MAIN_FG if ok else BAD_FG};")
+        row.addWidget(want)
+
+        mark = QLabel("✓" if ok else "✗", cell)
+        mark.setStyleSheet(
+            f"font-size: 12px; font-weight: bold;"
+            f"color: {'#2e7d32' if ok else BAD_FG};")
+        row.addWidget(mark)
+
+        grid.addWidget(cell, i, 0, 1, 3)
+    grid.setColumnStretch(0, 1)
+    return host
+
+
 def _skills_block(skills, parent) -> QWidget:
     """「技能」块：一排图标 + 名称 + 等级。
 
@@ -788,8 +881,14 @@ class EchoDetailView(QScrollArea):
                 w.deleteLater()
         self._title.setText("（选一个共鸣者看详情）")
 
-    def show_detail(self, detail: dict, issues=None) -> None:
-        """把 ``detail``（``getRoleDetail`` 的返回）画出来。"""
+    def show_detail(self, detail: dict, issues=None,
+                    standard=None) -> None:
+        """把 ``detail``（``getRoleDetail`` 的返回）画出来。
+
+        :param issues: 待优化项（红字提示）
+        :param standard: ★ 官方推荐标准（:mod:`src.core.wuwa_guide`），
+            有就多画一块「属性推荐：当前 vs 推荐」
+        """
         self.clear()
         detail = detail or {}
         role = detail.get("role") or {}
@@ -804,6 +903,19 @@ class EchoDetailView(QScrollArea):
             warn.setWordWrap(True)
             warn.setStyleSheet(f"color: {BAD_FG};")
             self._body_box.addWidget(warn)
+
+        # ★★ 属性推荐（当前 vs 官方推荐）—— 放在最前面，这是核心判据
+        current = {}
+        for item in detail.get("roleAttributeList") or []:
+            if isinstance(item, dict):
+                nm = str(item.get("attributeName") or "").strip()
+                val = _num(item.get("attributeValue"))
+                if nm and val is not None:
+                    current[nm] = val
+        if (standard or {}).get("attrs"):
+            host, inner = _section("✦ 属性推荐", self._body)
+            inner.addWidget(_standard_block(standard, current, host))
+            self._body_box.addWidget(host)
 
         # ── 共鸣者属性
         attrs = detail.get("roleAttributeList") or []

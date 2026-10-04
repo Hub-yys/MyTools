@@ -54,6 +54,7 @@ from qfluentwidgets import (
 )
 
 from ....core import icon_cache, kuro_account, paths, tool_settings
+from ....core import wuwa_guide
 from ....core.categories import ToolCategory
 from ....core.registry import registry
 from ....core.tool_base import BaseTool
@@ -113,6 +114,62 @@ def is_excluded(role: dict) -> bool:
 def visible_roles(role_list) -> list:
     """过滤掉不显示的角色（漂泊者）。"""
     return [r for r in (role_list or []) if not is_excluded(r)]
+
+
+def _attr_map(detail: dict) -> dict[str, float]:
+    """角色当前属性 → ``{属性名: 数值}``（取 ``roleAttributeList``）。
+
+    ⚠ 官方推荐里的 ``%`` 值和这里的百分比是**同名同单位**，直接比；
+    绝对值（生命/攻击）同理。
+    """
+    out: dict[str, float] = {}
+    for item in (detail or {}).get("roleAttributeList") or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("attributeName") or "").strip()
+        val = wuwa_guide.parse_amount(item.get("attributeValue"))
+        if name and val is not None:
+            out[name] = val
+    return out
+
+
+def _meets(have: float, need: float, symbol: str) -> bool:
+    """按官方给的比较符判断达标 —— 直接转发到 :mod:`src.core.wuwa_guide`。
+
+    ⚠ 别在这儿再写一份 —— 那张符号表是**从官方 JS 挖出来的**
+    （``4`` 是 ``>`` 不是 ``<=``，我第一版猜错过）。
+    """
+    return wuwa_guide.meets(have, need, symbol)
+
+
+def _compare_standard(detail: dict, standard) -> list[str]:
+    """★★ 拿**角色当前属性**跟**官方推荐**比，返回不达标的项。
+
+    :param standard: :func:`src.core.wuwa_guide.fetch_recommend` 的返回
+    :return: 例如 ``["暴击 55% 没到 70%", "暴击伤害 210% 没到 260%"]``
+
+    ⚠ 比较方向看官方给的 ``symbol``（实测都是 ``>=``）——
+    不写死"越大越好"，免得以后出个"越低越好"的属性就错了。
+    """
+    attrs = (standard or {}).get("attrs") or []
+    if not attrs:
+        return []
+    current = _attr_map(detail)
+    if not current:
+        return []
+
+    bad: list[str] = []
+    for a in attrs:
+        name = str(a.get("name") or "")
+        need = a.get("value")
+        have = current.get(name)
+        if have is None or need is None:
+            continue                           #: 面板里没这个属性 → 不比
+        if not _meets(have, need, a.get("symbol") or "≥"):
+            unit = a.get("unit") or ""
+            bad.append(f"{name} {have:g}{unit} 没到 "
+                       f"{a.get('symbol') or '≥'}{need:g}{unit}")
+    return bad
 
 
 def cache_file():
@@ -253,6 +310,38 @@ class FetchThread(QThread):
             except Exception:                  # noqa: BLE001
                 pass
 
+            # ★★ 拉**官方推荐属性**（达标标准）—— 用户 2026-10-05 给的来源
+            #
+            # 攻略站是公开接口，不需要令牌；每个角色两次请求
+            # （先列表拿 strategy_id，再详情拿 roleAttribute）。
+            # ⚠ 查不到不该让整体失败（官方可能还没出新角色的攻略）。
+            try:
+                self.progress.emit(f"正在拉官方推荐标准（{total} 个角色）…")
+                standards: dict = {}
+                for i, r in enumerate(role_list, 1):
+                    if self._stop:
+                        break
+                    cid = r.get("roleId")
+                    try:
+                        got = wuwa_guide.fetch_recommend(cid)
+                    except Exception:          # noqa: BLE001
+                        continue
+                    if got.get("attrs"):
+                        standards[str(cid)] = got
+                    if i % 10 == 0 or i == total:
+                        self.progress.emit(f"  推荐标准 {i}/{total}")
+                        payload = self._payload(role, base, role_list,
+                                                details, standards)
+                        save_cache(payload)
+                        self.partial.emit(payload)
+                payload = self._payload(role, base, role_list, details,
+                                        standards)
+                save_cache(payload)
+                self.progress.emit(
+                    f"  推荐标准：{len(standards)}/{total} 个角色拿到")
+            except Exception as exc:           # noqa: BLE001
+                self.progress.emit(f"  推荐标准跳过：{exc}")
+
             # ★ 顺手把详情要用的图标下下来（**在后台线程里**，不卡界面）
             try:
                 urls: list[str] = []
@@ -276,11 +365,13 @@ class FetchThread(QThread):
             self.failed.emit(f"{type(exc).__name__}: {exc}")
 
     @staticmethod
-    def _payload(role, base, role_list, details) -> dict:
+    def _payload(role, base, role_list, details, standards=None) -> dict:
         return {
             "at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "role": role, "base": base,
             "roleList": role_list, "details": details,
+            #: ★ 官方推荐属性（每个角色的达标线）—— 见 ``wuwa_guide``
+            "standards": standards or {},
         }
 
 
@@ -710,6 +801,8 @@ class CharacterBuildPanel(ScrollArea):
         base = (data or {}).get("base") or {}
         role_list = (data or {}).get("roleList") or []
         details = (data or {}).get("details") or {}
+        #: ★ 官方推荐标准（每个角色的达标线）—— 见 :mod:`src.core.wuwa_guide`
+        standards = (data or {}).get("standards") or {}
 
         # ★ 漂泊者（主角）**彻底不显示** —— 详情也一起滤掉，
         #   否则"待优化数"还会把他算进去（见 EXCLUDED_ROLE_NAMES）。
@@ -734,7 +827,8 @@ class CharacterBuildPanel(ScrollArea):
         role_list = visible_roles(role_list)
 
         # ── 判定哪些角色"声骸未达标"
-        flagged = {cid: self._echo_issues(details.get(cid))
+        flagged = {cid: self._echo_issues(details.get(cid),
+                                          standards.get(cid))
                    for cid in details}
 
         # ── 筛选条件（下拉 + 搜索）
@@ -796,51 +890,60 @@ class CharacterBuildPanel(ScrollArea):
             self._show_detail(self._cards[0]._cid)
 
     @staticmethod
-    def _echo_issues(detail) -> list[str]:
+    def _echo_issues(detail, standard=None) -> list[str]:
         """★ 判断一个角色的声骸有没有问题（返回问题列表）。
 
-        ## 判定规则（第一版，先给硬事实）
+        ## 判定分两类（用户 2026-10-05 给了官方标准后重写）
+
+        **① 官方推荐属性（★★ 主要判据）**
+
+        用户给了官方攻略站，那里每个角色都有「属性推荐」::
+
+            白芷      共鸣效率 ≥260.0% / 治疗效果加成 ≥40.0% / 生命 ≥24000
+            今汐      暴击 ≥70.0% / 暴击伤害 ≥275.0% / 共鸣技能伤害加成 ≥20.0%
+
+        ``standard`` 就是那份标准（见 :mod:`src.core.wuwa_guide`）。
+        拿**角色当前属性**（``roleAttributeList``）跟它比，不达标就报出来。
+
+        **② 结构性问题（客观事实，和标准无关）**
 
         ====================  ============================================
         规则                  说明
         ====================  ============================================
-        **等级没满**           有声骸 `level < 25`
+        **等级没满**           有声骸 ``level < 25``
         **套装不统一**         5 个声骸的套装名不止一种
-        **COST 配比不对**      不是 4-3-3-1-1（见过 4-4-1-1-1 之类）
-        **有效词条太少**       副词条里 `valid=true` 的**总数 < 10**
+        **COST 配比不对**      不是 4-3-3-1-1
         ====================  ============================================
 
-        ⚠ 这些是**客观事实**，不掺主观"好不好" ——
-        等用户给了标准再改成按角色配置判定。
+        ⚠ 原来那条"有效词条 < 10"**删掉了** —— 那个 10 是我瞎定的，
+        现在改用官方推荐属性（有依据）。
         """
         issues: list[str] = []
-        ph = (detail or {}).get("phantomData") or {}
+        detail = detail or {}
+        ph = detail.get("phantomData") or {}
         items = ph.get("equipPhantomList") or []
         if not items:
             return ["没拿到声骸数据"]
 
-        # ① 等级
+        # ① ★★ 官方推荐属性
+        issues.extend(_compare_standard(detail, standard))
+
+        # ② 等级
         not_max = [x for x in items if (x.get("level") or 0) < 25]
         if not_max:
             issues.append(f"{len(not_max)} 个声骸没满级")
 
-        # ② 套装
+        # ③ 套装
         sets = {(x.get("fetterDetail") or {}).get("name")
                 for x in items}
         sets.discard(None)
         if len(sets) > 1:
             issues.append(f"套装不统一（{len(sets)} 种）")
 
-        # ③ COST 配比（期望 4-3-3-1-1 = 12）
+        # ④ COST 配比（期望 4-3-3-1-1 = 12）
         costs = sorted((x.get("cost") or 0 for x in items), reverse=True)
         if costs != [4, 3, 3, 1, 1]:
             issues.append("COST 配比 " + "-".join(str(c) for c in costs))
-
-        # ④ 有效词条数
-        valid_n = sum(1 for x in items for s in (x.get("subProps") or [])
-                      if s.get("valid"))
-        if valid_n < 10:
-            issues.append(f"有效词条仅 {valid_n} 条")
 
         return issues
 
@@ -853,11 +956,13 @@ class CharacterBuildPanel(ScrollArea):
         """
         self._selected = str(char_id)
         detail = (self._data.get("details") or {}).get(str(char_id))
+        standard = (self._data.get("standards") or {}).get(str(char_id))
         if not detail:
             self._detail.show_detail(
                 {}, ["这个角色还没拿到声骸数据（可能没开放展示）"])
         else:
-            self._detail.show_detail(detail, self._echo_issues(detail))
+            self._detail.show_detail(
+                detail, self._echo_issues(detail, standard), standard)
         # ★ 重画网格 → 选中的格子高亮
         self._render(self._data)
 
