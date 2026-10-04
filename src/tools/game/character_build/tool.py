@@ -54,7 +54,7 @@ from qfluentwidgets import (
     TitleLabel,
 )
 
-from ....core import kuro_account, paths, tool_settings
+from ....core import icon_cache, kuro_account, paths, tool_settings
 from ....core.categories import ToolCategory
 from ....core.registry import registry
 from ....core.tool_base import BaseTool
@@ -73,18 +73,18 @@ MOBILE_LEN = 11
 #: 缓存文件名（用户数据目录）—— 数据持久化，重启直接显示
 CACHE_NAME = "kuro_练度.json"
 
-#: 角色卡片尺寸（用户要求：**一行只放 2 个**，大卡片）
+#: 角色格子尺寸（用户参考图：**头像 + 名字**，一排多个）
 #:
-#: 用户给的参考图里，声骸/角色卡片是**两列大卡片**：
-#: 每张卡有头像 + 名字 + 等级，点开看详情。
-#: 之前我做 6 列 → 卡片太小、名字被压成两行，用户说
-#: "不是说了一行展示所有的共鸣者吗"（意思是一眼能看清，不是挤成小格子）。
-AVATAR_SIZE = 96
-CARD_W = 300
-CARD_H = 168
+#: 用户："这里一排就展示所有的共鸣者，只展示头像+名称，点击后才展示详情"
+#:
+#: ⚠ 我先后试过 6 列小格子（名字被压两行）和 2 列大卡片（一屏看不了几个），
+#: 用户都不满意。参考图里是 **一排 6~8 个、只有头像+名字**。
+TILE_SIZE = 72
+TILE_W = 96
+TILE_H = 132
 
-#: 角色网格每行几个（★ 2）
-GRID_COLS = 2
+#: 角色格子每行几个（参考图里一排 6~8 个）
+GRID_COLS = 8
 
 #: 「达标」筛选下拉的选项（用户："达标/未达标"）
 FILTER_CHOICES = ("全部", "未达标", "达标")
@@ -227,6 +227,23 @@ class FetchThread(QThread):
                 kuro_account.save_account(acc)
             except Exception:                  # noqa: BLE001
                 pass
+
+            # ★ 顺手把详情要用的图标下下来（**在后台线程里**，不卡界面）
+            try:
+                urls: list[str] = []
+                for d in details.values():
+                    urls.extend(icon_cache.collect_urls(d))
+                for r in role_list:
+                    if r.get("roleIconUrl"):
+                        urls.append(r["roleIconUrl"])
+                if urls:
+                    self.progress.emit(f"正在缓存图标（{len(urls)} 个）…")
+                    ok, bad = icon_cache.ensure_many(
+                        urls, log=lambda m: self.progress.emit(m))
+                    self.progress.emit(f"  图标缓存完成（{ok} 成功）")
+            except Exception as exc:           # noqa: BLE001 - 少图不该失败
+                self.progress.emit(f"  图标缓存跳过：{exc}")
+
             self.succeeded.emit(payload)
         except kuro_account.RoleNotFound as exc:
             self.failed.emit(str(exc))
@@ -275,125 +292,10 @@ def clear_cache() -> None:
 
 
 # --------------------------------------------------------------------- 控件
+#
+# 角色格子 / 详情视图在 detail_view.py 里（那边是图文并茂的官方布局）。
 
-class CharacterCard(QWidget):
-    """一个角色卡片（**大卡片，一行两个** —— 按用户给的参考图）。
-
-    ::
-
-        ┌──────────────────────────────────┐
-        │  ┌────┐  名字          Lv.90     │
-        │  │头像│  属性 · 武器             │
-        │  └────┘  共鸣链 6                │
-        │  ──────────────────────────────  │
-        │  声骸 5 个 · 有效词条 10/25      │
-        │  ⚠ 套装不统一（2 种）            │   ← 未达标才显示
-        └──────────────────────────────────┘
-
-    点一下 → 下面展开它的属性 + 声骸明细。
-
-    :param flagged: 声骸没达标 → **红框**标出来
-    :param issues: 具体问题（显示在卡片上，不用点开就知道）
-    """
-
-    clicked = Signal(str)                      # 角色 id
-
-    def __init__(self, role: dict, flagged: bool = False,
-                 issues: list[str] | None = None, hits: tuple = (0, 0),
-                 parent=None):
-        super().__init__(parent)
-        self._cid = str(role.get("roleId"))
-        self.setFixedHeight(CARD_H)
-        self.setMinimumWidth(CARD_W)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(self._tooltip(role, flagged, issues or []))
-
-        row = QHBoxLayout(self)
-        row.setContentsMargins(10, 8, 10, 8)
-        row.setSpacing(10)
-
-        # ── 头像
-        holder = QLabel(self)
-        holder.setFixedSize(QSize(AVATAR_SIZE, AVATAR_SIZE))
-        holder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        holder.setPixmap(self._avatar(role.get("roleName")).pixmap(
-            AVATAR_SIZE, AVATAR_SIZE))
-        row.addWidget(holder, 0, Qt.AlignmentFlag.AlignTop)
-
-        # ── 右侧文字
-        col = QVBoxLayout()
-        col.setSpacing(2)
-
-        name = QLabel(f"{role.get('roleName') or '?'}", self)
-        name.setStyleSheet(
-            f"font-size: 15px; font-weight: bold;"
-            f"color: {'#c42b1c' if flagged else 'inherit'};")
-        col.addWidget(name)
-
-        lv = QLabel(f"Lv.{role.get('level', '?')}　"
-                    f"{role.get('attributeName', '')}　"
-                    f"{role.get('weaponTypeName', '')}", self)
-        lv.setStyleSheet("font-size: 12px;")
-        col.addWidget(lv)
-
-        chain = QLabel(f"共鸣链 {role.get('chainUnlockNum', 0)}　"
-                       f"★{role.get('starLevel', '?')}", self)
-        chain.setStyleSheet("font-size: 12px;")
-        col.addWidget(chain)
-
-        hit, total = hits
-        sub = QLabel(f"声骸有效词条 {hit}/{total}" if total
-                     else "声骸数据待拉取", self)
-        sub.setStyleSheet("font-size: 12px;")
-        col.addWidget(sub)
-
-        # ★ 问题直接写在卡片上（不用点开就知道哪里不对）
-        if issues:
-            tip = QLabel("⚠ " + "；".join(issues[:2]), self)
-            tip.setWordWrap(True)
-            tip.setStyleSheet("font-size: 11px; color: #c42b1c;")
-            col.addWidget(tip)
-        col.addStretch(1)
-        row.addLayout(col, 1)
-
-        # ★ 未达标 → 红框加粗
-        border = "#c42b1c" if flagged else "rgba(0,0,0,0.10)"
-        width = 2 if flagged else 1
-        self.setStyleSheet(
-            f"CharacterCard {{ border: {width}px solid {border};"
-            f" border-radius: 8px; }}")
-
-    @staticmethod
-    def _avatar(name):
-        """角色头像 —— 拿不到就用首字圆图兜底。"""
-        try:
-            from ....gui.pickers import avatar_icon
-            from ....core import game_data
-
-            info = game_data.find_character(str(name or ""))
-            return avatar_icon(info.avatar if info else "", str(name or ""))
-        except Exception:                      # noqa: BLE001
-            from PySide6.QtGui import QIcon
-
-            return QIcon()
-
-    @staticmethod
-    def _tooltip(role: dict, flagged: bool, issues: list[str]) -> str:
-        lines = [
-            f"{role.get('roleName')}　Lv{role.get('level')}",
-            f"属性：{role.get('attributeName')}　"
-            f"武器：{role.get('weaponTypeName')}",
-            f"共鸣链：{role.get('chainUnlockNum')}　"
-            f"星级：{role.get('starLevel')}",
-            "点一下看声骸明细",
-        ]
-        if issues:
-            lines.append("⚠ " + "；".join(issues))
-        return "\n".join(lines)
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 接口
-        self.clicked.emit(self._cid)
-        super().mousePressEvent(event)
+from .detail_view import CharacterTile, EchoDetailView  # noqa: E402
 
 
 # --------------------------------------------------------------------- 面板
@@ -408,7 +310,8 @@ class CharacterBuildPanel(ScrollArea):
         self._thread: QThread | None = None
         self._login_thread: QThread | None = None   # ★ 单独持有，别被覆盖
         self._data: dict = load_cache()        # ★ 直接显示上次结果
-        self._cards: list[CharacterCard] = []
+        self._cards: list = []
+        self._selected: str = ""               # 当前选中的角色 id
         self._auto_fetched = False
         self._build()
         self._render(self._data)               # 有缓存就先显示
@@ -559,16 +462,17 @@ class CharacterBuildPanel(ScrollArea):
         return card
 
     def _build_detail_card(self, parent) -> CardWidget:
+        """④ 共鸣者详情 —— **图文并茂**（按用户给的官方参考图）。"""
         card = CardWidget(parent)
         box = QVBoxLayout(card)
         box.setContentsMargins(18, 14, 18, 14)
-        box.setSpacing(6)
-        self._detail_title = SubtitleLabel("④ 声骸明细", card)
-        box.addWidget(self._detail_title)
-        self._detail = QTextEdit(card)
-        self._detail.setReadOnly(True)
-        self._detail.setMinimumHeight(200)
-        self._detail.setPlaceholderText("点上面的角色卡片，这里显示它的声骸")
+        box.setSpacing(8)
+        box.addWidget(SubtitleLabel("④ 共鸣者详情", card))
+
+        self._detail = EchoDetailView(card)
+        #: ★ 给足高度 —— 官方那个详情页很长（属性/武器/声骸/技能/共鸣链），
+        #: 太矮的话用户得在小框里滚，很难看。
+        self._detail.setMinimumHeight(720)
         box.addWidget(self._detail)
         return card
 
@@ -796,12 +700,14 @@ class CharacterBuildPanel(ScrollArea):
                                 "weaponTypeName", "acronym")).lower()
                 if keyword not in hay:
                     continue
-            card = CharacterCard(role, bool(issues), issues,
-                                 self._role_hits(cid), self._roles_host)
-            card.clicked.connect(self._show_detail)
-            self._roles_grid.addWidget(card, shown // GRID_COLS,
+            tile = CharacterTile(role, flagged=bool(issues),
+                                 selected=(cid == self._selected),
+                                 size=TILE_SIZE, parent=self._roles_host)
+            tile.setFixedSize(QSize(TILE_W, TILE_H))
+            tile.clicked.connect(self._show_detail)
+            self._roles_grid.addWidget(tile, shown // GRID_COLS,
                                        shown % GRID_COLS)
-            self._cards.append(card)
+            self._cards.append(tile)
             shown += 1
 
         bad_n = sum(1 for v in flagged.values() if v)
@@ -865,101 +771,21 @@ class CharacterBuildPanel(ScrollArea):
         return issues
 
     def _show_detail(self, char_id: str) -> None:
-        """点角色卡片 → 显示它的明细（**按官方那个布局**）。
+        """点角色格子 → 展示完整详情（**图文并茂**，官方那个布局）。
 
-        官方截图（用户给的）的结构::
-
-            🐎 共鸣者信息   名字 Lv.90 ★★★★★
-            ⚔ 共鸣者属性   生命/攻击/防御/暴击/暴击伤害/共鸣效率/…
-            🔨 武器        名字 Lv.90 精炼1阶 + 攻击/暴击
-            🎯 属性展示    声骸提供的属性汇总
-            💠 声骸 COST 12/12
-               ✦ 推荐辅音词条命中  【命中数】
-               ✦ 装配声骸详情      5 个卡片（主属性 + 副词条，命中标黄）
+        ⚠ 画法全在 :class:`~.detail_view.EchoDetailView` 里 ——
+        这里只管"选谁 + 传数据"。之前是在这里拼一大段文字，
+        用户要的是官方那种**带图**的排版。
         """
-        detail = (self._data.get("details") or {}).get(str(char_id)) or {}
-        role = detail.get("role") or {}
-        ph = detail.get("phantomData") or {}
-        items = ph.get("equipPhantomList") or []
-
-        name = role.get("roleName") or char_id
-        self._detail_title.setText(
-            f"④ {name}　Lv{role.get('level')}"
-            f"　{role.get('attributeName', '')}"
-            f"　{role.get('weaponTypeName', '')}"
-            f"　共鸣链 {role.get('chainUnlockNum')}"
-            f"　声骸 COST {ph.get('cost', '?')}")
-
-        if not items:
-            self._detail.setPlainText("（没拿到这个角色的声骸数据）")
-            return
-
-        issues = self._echo_issues(detail)
-        lines: list[str] = []
-
-        # ── 待优化提示
-        if issues:
-            lines.append("⚠ 待优化：" + "；".join(issues))
+        self._selected = str(char_id)
+        detail = (self._data.get("details") or {}).get(str(char_id))
+        if not detail:
+            self._detail.show_detail(
+                {}, ["这个角色还没拿到声骸数据（可能没开放展示）"])
         else:
-            lines.append("✓ 声骸达标")
-        lines.append("")
-
-        # ── 共鸣者属性（roleAttributeList）
-        attrs = detail.get("roleAttributeList") or []
-        if attrs:
-            lines.append("── 共鸣者属性 " + "─" * 40)
-            for a in attrs:
-                lines.append(f"   {a.get('attributeName', '?'):14}"
-                             f"{a.get('attributeValue', '')}")
-            lines.append("")
-
-        # ── 武器
-        wd = detail.get("weaponData") or {}
-        if wd:
-            lines.append("── 武器 " + "─" * 44)
-            lines.append(f"   {wd.get('weaponName') or wd.get('name') or '?'}"
-                         f"　Lv{wd.get('level', '?')}"
-                         f"　{wd.get('weaponTypeName', '')}")
-            lines.append("")
-
-        # ── 声骸汇总属性
-        add_props = detail.get("equipPhantomAddPropList") or []
-        if add_props:
-            lines.append(f"── 声骸提供的属性（COST {ph.get('cost', '?')}/12）"
-                         + "─" * 24)
-            for a in add_props:
-                lines.append(f"   {a.get('attributeName', '?'):14}"
-                             f"{a.get('attributeValue', '')}")
-            lines.append("")
-
-        # ── 推荐辅音词条命中（★ 官方那个黄色数字）
-        hit, total_slots = self._substat_hits(items)
-        lines.append("── 装配声骸详情 " + "─" * 34)
-        lines.append(f"   推荐辅音词条命中：{hit} / {total_slots} 条"
-                     f"（库街区标 valid 的条数）")
-        lines.append("")
-
-        # ── 每个声骸（★ 按官方卡片的样子）
-        for i, item in enumerate(items, 1):
-            mains = item.get("mainProps") or []
-            subs = item.get("subProps") or []
-            fet = (item.get("fetterDetail") or {}).get("name", "?")
-            pname = (item.get("phantomProp") or {}).get("name", "?")
-            valid_n = sum(1 for s in subs if s.get("valid"))
-
-            lines.append(f"【{i}】{pname}　COST{item.get('cost')}"
-                         f"　+{item.get('level')}　[{fet}]"
-                         f"　{valid_n}/{len(subs)} 有效")
-            for m in mains:
-                lines.append(f"     主属性　{m.get('attributeName', '?')}"
-                             f"　{m.get('attributeValue', '')}")
-            for s in subs:
-                mark = "✓" if s.get("valid") else "·"
-                lines.append(f"       {mark} {s.get('attributeName', '?')}"
-                             f"　{s.get('attributeValue', '')}")
-            lines.append("")
-
-        self._detail.setPlainText("\n".join(lines))
+            self._detail.show_detail(detail, self._echo_issues(detail))
+        # ★ 重画网格 → 选中的格子高亮
+        self._render(self._data)
 
     @staticmethod
     def _substat_hits(items) -> tuple[int, int]:
@@ -1032,6 +858,12 @@ class CharacterBuildTool(BaseTool):
     """查询角色练度。"""
 
     key = TOOL_KEY
+    #: ★ 自带图标 —— 和另外 5 个工具**同一套风格**
+    #: （深色圆角底 + 金色边框 + 发光紫线条；512x512。
+    #:  用户 2026-10-04："这个图标不能设计跟前面的风格一样吗"）
+    #: 用 ``tools/make_character_build_icon.py`` 生成。
+    icon_path = str(paths.resource_dir("assets", "icons",
+                                       "character_build.png"))
     coming_soon = False
     supports_task_run = False
 

@@ -769,6 +769,219 @@ def tearDownModule() -> None:
         logging.disable(logging.NOTSET)
 
 
+class TestIconCache(unittest.TestCase):
+    """★ 图标缓存 —— 详情页要图文并茂就得先把接口给的 ``iconUrl`` 拿下来。"""
+
+    def test_local_path_is_stable_and_unique(self):
+        from src.core import icon_cache as IC
+
+        u1 = "https://x/a/1.png"
+        u2 = "https://x/a/2.png"
+        self.assertEqual(IC.local_path(u1), IC.local_path(u1),
+                         "同一个 URL 必须映射到同一路径")
+        self.assertNotEqual(IC.local_path(u1), IC.local_path(u2),
+                            "不同 URL 撞名了")
+
+    def test_rejects_non_http(self):
+        from src.core import icon_cache as IC
+
+        self.assertIsNone(IC.ensure(""))
+        self.assertIsNone(IC.ensure("not-a-url"))
+        self.assertIsNone(IC.ensure("/local/path.png"),
+                          "本地路径不该被当 URL 下载")
+
+    def test_pixmap_missing_returns_null(self):
+        from src.core import icon_cache as IC
+
+        pix = IC.pixmap("https://example.invalid/nope.png", 16)
+        self.assertTrue(pix.isNull(), "缓存里没有却返回了非空 pixmap")
+
+    def test_collect_urls_from_detail(self):
+        """★ 从详情里收集所有 ``iconUrl``（属性/技能/共鸣链/武器/声骸）。"""
+        from src.core import icon_cache as IC
+
+        detail = {
+            "role": {"roleIconUrl": "https://x/role.png"},
+            "roleAttributeList": [
+                {"attributeName": "攻击", "iconUrl": "https://x/attr.png"}],
+            "skillList": [
+                {"skill": {"name": "a", "iconUrl": "https://x/skill.png"}}],
+            "chainList": [{"name": "b", "iconUrl": "https://x/chain.png"}],
+            "weaponData": {"weapon": {"weaponIcon": "https://x/w.png"}},
+            "phantomData": {"equipPhantomList": [{
+                "phantomProp": {"iconUrl": "https://x/echo.png"},
+                "fetterDetail": {"iconUrl": "https://x/set.png"},
+                "mainProps": [{"iconUrl": "https://x/m.png"}],
+                "subProps": [{"iconUrl": "https://x/s.png"}],
+            }]},
+        }
+        urls = IC.collect_urls(detail)
+        for want in ("role", "attr", "skill", "chain", "w", "echo", "set",
+                     "m", "s"):
+            with self.subTest(want=want):
+                self.assertTrue(any(u.endswith(f"/{want}.png") for u in urls),
+                                f"漏了 {want}.png（收到 {urls}）")
+
+    def test_collect_urls_handles_garbage(self):
+        from src.core import icon_cache as IC
+
+        self.assertEqual(IC.collect_urls(None), [])
+        self.assertEqual(IC.collect_urls({}), [])
+        self.assertEqual(IC.collect_urls({"skills": "不是列表"}), [])
+
+
+class TestDetailView(unittest.TestCase):
+    """★★ 详情页 —— **图文并茂**（用户给的官方参考图）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def _detail():
+        return {
+            "role": {"roleName": "白芷", "level": 90,
+                     "attributeName": "冷凝", "weaponTypeName": "音感仪"},
+            "roleAttributeList": [
+                {"attributeName": "生命", "attributeValue": "27550",
+                 "iconUrl": "https://x/1.png"}],
+            "weaponData": {
+                "level": 90, "resonLevel": 2,
+                "weapon": {"weaponName": "奇幻变奏", "weaponStarLevel": 4,
+                           "weaponIcon": "https://x/w.png"},
+                "mainPropList": [{"attributeName": "攻击",
+                                  "attributeValue": "337"}],
+            },
+            "equipPhantomAddPropList": [
+                {"attributeName": "攻击", "attributeValue": "1071"}],
+            "phantomData": {
+                "cost": 12,
+                "equipPhantomList": [{
+                    "cost": 4, "level": 25,
+                    "phantomProp": {"name": "无归的谬误",
+                                    "iconUrl": "https://x/e.png"},
+                    "fetterDetail": {"name": "隐世回光"},
+                    "mainProps": [{"attributeName": "治疗效果加成",
+                                   "attributeValue": "26.4%",
+                                   "valid": True}],
+                    "subProps": [
+                        {"attributeName": "暴击伤害",
+                         "attributeValue": "12.6%", "valid": True},
+                        {"attributeName": "防御",
+                         "attributeValue": "9.0%", "valid": False}],
+                }],
+            },
+            "skillList": [{"level": 10, "skill": {
+                "name": "应急预案", "iconUrl": "https://x/s.png"}}],
+            "chainList": [{"name": "极简与繁复", "order": 1,
+                           "unlocked": True, "description": "回复能量"}],
+        }
+
+    def _texts(self, view):
+        from PySide6.QtWidgets import QLabel
+
+        return [w.text() for w in view.findChildren(QLabel) if w.text()]
+
+    def test_shows_all_sections(self):
+        """★ 官方参考图里的每一块都要有。"""
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        view = EchoDetailView()
+        view.show_detail(self._detail())
+        joined = " ".join(self._texts(view))
+        for want in ("白芷", "共鸣者属性", "生命", "武器", "奇幻变奏",
+                     "属性展示", "声骸", "推荐辅音词条命中",
+                     "装配声骸详情", "无归的谬误", "技能", "共鸣链"):
+            with self.subTest(want=want):
+                self.assertIn(want, joined, f"详情页缺「{want}」")
+
+    def test_hit_badge_counts_valid_substats(self):
+        """★★ 命中大数字 = 标了 ``valid`` 的副词条总数（官方那个黄色数字）。"""
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        view = EchoDetailView()
+        view.show_detail(self._detail())
+        texts = self._texts(view)
+        self.assertIn("1", texts,
+                      "命中数不对（这条数据里只有 1 条 valid）")
+
+    def test_marks_hit_and_miss(self):
+        """★ 副词条要区分命中（✓）/ 未命中（·）。"""
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        view = EchoDetailView()
+        view.show_detail(self._detail())
+        texts = self._texts(view)
+        self.assertIn("✓", texts, "没有命中标记")
+        self.assertIn("·", texts, "没有未命中标记")
+
+    def test_shows_issues(self):
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        view = EchoDetailView()
+        view.show_detail(self._detail(), ["套装不统一（2 种）"])
+        self.assertIn("套装不统一", " ".join(self._texts(view)))
+
+    def test_clear_resets(self):
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        view = EchoDetailView()
+        view.show_detail(self._detail())
+        view.clear()
+        self.assertNotIn("白芷", " ".join(self._texts(view)))
+
+    def test_handles_empty_detail(self):
+        """★ 空数据不该崩。"""
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        view = EchoDetailView()
+        view.show_detail({})
+        view.show_detail({"role": {}, "phantomData": {}})
+
+
+class TestToolIcon(unittest.TestCase):
+    """★ 工具图标要和另外 5 个**同一套风格**。
+
+    用户："这个图标不能设计跟前面的风格一样吗"
+
+    现有 5 个都是 ``assets/icons/*.png``（512x512、深色圆角底 + 金边 +
+    发光紫线条），我这个原来没有 ``icon_path``，所以显示成灰色 FluentIcon。
+    """
+
+    def test_has_icon_path(self):
+        from src.core import registry
+        from src.tools import discover_tools
+
+        discover_tools()
+        meta = next((m for m in registry.ToolRegistry.all_metas()
+                     if m.key == "character_build"), None)
+        self.assertIsNotNone(meta)
+        self.assertTrue(meta.icon_path, "没有 icon_path —— 会显示成灰色图标")
+
+    def test_icon_file_exists_and_is_square(self):
+        import pathlib as _p
+
+        from src.core import paths
+
+        path = paths.resource_dir("assets", "icons", "character_build.png")
+        self.assertTrue(_p.Path(path).is_file(), f"图标文件不在：{path}")
+
+    def test_all_game_tools_have_icons(self):
+        """★ 同一分类下的工具**都要有**自定义图标（风格统一）。"""
+        import pathlib as _p
+
+        from src.core import registry
+        from src.tools import discover_tools
+
+        discover_tools()
+        missing = [m.name for m in registry.ToolRegistry.all_metas()
+                   if not (m.icon_path and _p.Path(m.icon_path).is_file())]
+        self.assertEqual(missing, [],
+                         f"这些工具没有自定义图标（风格会不统一）：{missing}")
+
+
 class TestToolPage(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -989,49 +1202,71 @@ class TestToolPage(unittest.TestCase):
         p._render(p._data)
         self.assertEqual(len(p._cards), 1, "「达标」筛选不对")
 
-    def test_grid_is_two_columns(self):
-        """★★ **一行只放 2 个**（用户给的参考图是两列大卡片）。
+    def test_grid_shows_many_tiles_per_row(self):
+        """★★ 共鸣者列表：**一排多个，只有头像+名字**。
 
-        用户原话："不是说了一行展示所有的共鸣者吗，点击一下就展示该共鸣者
-        的属性、声骸信息"
+        用户："不是说了一行展示所有的共鸣者吗，点击一下就展示该共鸣者的
+        属性、声骸信息"　+　"这里一排就展示所有的共鸣者，
+        只展示头像+名称，点击后才展示详情"
 
-        ⚠ 我做 6 列时卡片太小（112px），名字被压两行，用户不满意。
-        参考图是**两列大卡片** → 改成 2 列。
+        ⚠ 我先后试过 6 列小格子（名字被压两行）和 **2 列大卡片**
+        （一屏看不了几个）—— 用户都不满意。
+        参考图是一排 **6~8 个**、只显示头像 + 名字。
         """
         from src.tools.game.character_build import tool as T
 
-        self.assertEqual(T.GRID_COLS, 2,
-                         "不是 2 列 —— 参考图是两列大卡片")
-        self.assertGreaterEqual(T.CARD_W, 200, "卡片太窄")
-        self.assertGreaterEqual(T.AVATAR_SIZE, 64, "头像太小")
+        self.assertGreaterEqual(T.GRID_COLS, 6,
+                                "一排太少了 —— 参考图能看 6~8 个")
+        self.assertGreaterEqual(T.TILE_SIZE, 48, "头像太小")
+        self.assertLessEqual(T.TILE_SIZE, 96, "头像太大（格子会挤）")
 
-    def test_card_shows_issues_without_clicking(self):
-        """★ 卡片上**直接显示问题**（不用点开就知道哪里不对）。"""
-        from src.tools.game.character_build.tool import CharacterCard
-
-        role = {"roleId": 1, "roleName": "测试", "level": 90,
-                "attributeName": "热熔", "weaponTypeName": "音感仪",
-                "chainUnlockNum": 6, "starLevel": 5}
-        card = CharacterCard(role, True, ["套装不统一（2 种）"], (10, 25))
-        self.assertIn("套装不统一", card.toolTip())
-        #: 卡片上应该有那个 ⚠ 标签
+    def test_tile_shows_avatar_and_name(self):
+        """★ 格子 = 头像 + 名字（用户："文字+图片"）。"""
         from PySide6.QtWidgets import QLabel
 
-        texts = [w.text() for w in card.findChildren(QLabel)]
-        self.assertTrue(any("⚠" in t and "套装不统一" in t for t in texts),
-                        f"卡片上没显示问题（找到 {texts}）")
+        from src.tools.game.character_build.detail_view import CharacterTile
 
-    def test_card_shows_substat_hits(self):
-        """★ 卡片上显示「声骸有效词条 N/M」。"""
+        role = {"roleId": 1, "roleName": "今汐", "level": 90,
+                "attributeName": "衍射", "weaponTypeName": "长刃",
+                "chainUnlockNum": 6}
+        tile = CharacterTile(role)
+        texts = [w.text() for w in tile.findChildren(QLabel)]
+        self.assertTrue(any("今汐" in t for t in texts),
+                        f"格子上没有名字（{texts}）")
+        self.assertTrue(any("Lv" in t for t in texts),
+                        f"格子上没有等级（{texts}）")
+
+    def test_tile_marks_flagged(self):
+        """★ 未达标的格子名字标红。"""
         from PySide6.QtWidgets import QLabel
 
-        from src.tools.game.character_build.tool import CharacterCard
+        from src.tools.game.character_build.detail_view import CharacterTile
 
-        role = {"roleId": 1, "roleName": "测试", "level": 90}
-        card = CharacterCard(role, False, [], (10, 25))
-        texts = [w.text() for w in card.findChildren(QLabel)]
-        self.assertTrue(any("10/25" in t for t in texts),
-                        f"卡片上没显示有效词条数（找到 {texts}）")
+        role = {"roleId": 1, "roleName": "千咲", "level": 90}
+        tile = CharacterTile(role, flagged=True)
+        reds = [w for w in tile.findChildren(QLabel)
+                if "c42b1c" in (w.styleSheet() or "")]
+        self.assertTrue(reds, "未达标的格子没标红")
+
+    def test_clicking_tile_shows_detail(self):
+        """★★ 点格子 → 展示详情（用户："点击后才展示详情"）。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [{"roleId": 1103, "roleName": "白芷", "level": 90}],
+            "details": {"1103": {
+                "role": {"roleName": "白芷", "level": 90},
+                "phantomData": {"cost": 12, "equipPhantomList": []},
+            }},
+        }
+        p._render(p._data)
+        p._show_detail("1103")
+        from PySide6.QtWidgets import QLabel
+
+        texts = [w.text() for w in p._detail.findChildren(QLabel) if w.text()]
+        self.assertTrue(any("白芷" in t for t in texts),
+                        f"点了格子但详情没显示（{texts[:6]}）")
+        self.assertEqual(p._selected, "1103",
+                         "没记住选中的是谁（格子不会高亮）")
 
     def test_feature_code_not_filled_with_junk(self):
         """★★ 特征码回填只认**像特征码**的值。
