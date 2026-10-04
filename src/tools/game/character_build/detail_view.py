@@ -74,10 +74,13 @@ ITEM_ICON = 56
 #: 命中大数字的直径
 HIT_BADGE = 64
 
-#: 主属性底色（官方那种淡黄）
-MAIN_BG = "#fdf6e3"
 #: 主属性文字色
 MAIN_FG = "#8a6d1a"
+#: ★ 声骸**主属性**的底色 —— 用户 2026-10-04："主属性就不用高亮了"
+#:
+#: ⚠ 原来主属性也铺淡黄底，结果和"命中的副词条"撞色，分不清哪个是哪个。
+#: 现在只有命中的副词条才黄底。
+MAIN_BG = "transparent"
 #: 副词条底色（未命中）
 SUB_BG = "#f7f7f7"
 #: ★ 副词条底色（**命中** —— 用户："命中的词条黄色高亮就行"）
@@ -89,15 +92,82 @@ MISS_FG = "#9aa0a6"
 BAD_FG = "#c42b1c"
 
 
-def _icon_label(url: str, size: int, parent=None) -> QLabel:
-    """画一个小图标（拿不到就返回一个**等宽空占位**，保持对齐）。"""
+def _icon_label(url: str, size: int, parent=None,
+                fallback: str = "") -> QLabel | None:
+    """画一个小图标；**没图就返回 ``None``**（调用方不摆控件）。
+
+    ## ★ 为什么不能留空白占位（用户 2026-10-04）
+
+    用户（截图圈出副词条前面那排**空方块**）："这个方框去掉"
+
+    根因：**``subProps`` 里根本没有 ``iconUrl`` 字段**（接口不给）::
+
+        mainProps: {"attributeName": "治疗效果加成", "iconUrl": "https://..."}
+        subProps:  {"attributeName": "防御", "key": "10010-2"}   ← 没有 iconUrl
+
+    而我原来不管有没有图都摆一个 ``size×size`` 的空 QLabel 想"保持对齐" ——
+    结果就是一排空方块。
+
+    现在**拿不到图就返回 ``None``**，调用方看到 ``None`` 就不加控件。
+
+    ⚠ 别用 ``lab.size().isEmpty()`` 判断"有没有图" —— 刚建出来的 QLabel
+    尺寸是 ``(100, 30)``，**永远不 empty**，判断会失效（我踩过）。
+    """
+    url = str(url or "").strip() or str(fallback or "").strip()
+    if not url:
+        return None
+    pix = icon_cache.pixmap(url, size)
+    if pix.isNull():
+        return None
     lab = QLabel(parent)
     lab.setFixedSize(QSize(size, size))
     lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    pix = icon_cache.pixmap(url, size)
-    if not pix.isNull():
-        lab.setPixmap(pix)
+    lab.setPixmap(pix)
     return lab
+
+
+def _add_icon(row, url: str, size: int, parent, fallback: str = "") -> bool:
+    """往一行里加图标 —— **没图就什么都不加**（不留空方块）。
+
+    :return: 加进去了没有
+    """
+    lab = _icon_label(url, size, parent, fallback)
+    if lab is None:
+        return False
+    row.addWidget(lab)
+    return True
+
+
+def _build_icon_index(detail: dict) -> dict[str, str]:
+    """``属性名 → iconUrl`` 的索引。
+
+    ## 为什么要它
+
+    ``subProps``（副词条）**没有 iconUrl**，但同一个属性名（"暴击""攻击"…）
+    在 ``mainProps`` / ``roleAttributeList`` / ``equipPhantomAddPropList``
+    里**有**。所以建个索引，副词条按名字去查同一个图标。
+    """
+    index: dict[str, str] = {}
+    detail = detail or {}
+
+    def take(node):
+        if isinstance(node, dict):
+            name = str(node.get("attributeName") or "").strip()
+            url = str(node.get("iconUrl") or "").strip()
+            if name and url.startswith("http"):
+                index.setdefault(name, url)
+
+    for key in ("roleAttributeList", "equipPhantomAddPropList"):
+        for item in detail.get(key) or []:
+            take(item)
+
+    ph = detail.get("phantomData") or {}
+    for item in ph.get("equipPhantomList") or []:
+        for prop in item.get("mainProps") or []:
+            take(prop)
+        for prop in item.get("subProps") or []:
+            take(prop)
+    return index
 
 
 #: ★ 区块卡片的样式（用户："这些都分别做成一个卡片，别放在一起"）
@@ -178,7 +248,7 @@ def _prop_grid(props, parent, *, cols: int = 2,
         row.setContentsMargins(4, 2, 4, 2)
         row.setSpacing(4)
 
-        row.addWidget(_icon_label(p.get("iconUrl"), PROP_ICON, cell))
+        _add_icon(row, p.get("iconUrl"), PROP_ICON, cell)
 
         name = QLabel(str(p.get("attributeName") or "?"), cell)
         name.setStyleSheet("font-size: 12px;")
@@ -241,8 +311,13 @@ def _hit_badge(hits: dict, total: int, parent) -> QWidget:
     return host
 
 
-def _phantom_card(item, parent) -> QWidget:
-    """一个声骸卡片（官方那种：图 + 名字 + COST + 主属性 + 副词条）。"""
+def _phantom_card(item, parent, icon_index=None) -> QWidget:
+    """一个声骸卡片（官方那种：图 + 名字 + COST + 主属性 + 副词条）。
+
+    :param icon_index: ``属性名 → iconUrl``（副词条没图标时按名字查 ——
+        见 :func:`_build_icon_index`）
+    """
+    icon_index = icon_index or {}
     card = QWidget(parent)
     card.setStyleSheet(
         "background: white; border: 1px solid rgba(0,0,0,0.10);"
@@ -257,7 +332,7 @@ def _phantom_card(item, parent) -> QWidget:
     # ── 头：图 + 名字 + COST
     head = QHBoxLayout()
     head.setSpacing(6)
-    head.addWidget(_icon_label(prop.get("iconUrl"), ITEM_ICON, card))
+    _add_icon(head, prop.get("iconUrl"), ITEM_ICON, card)
 
     info = QVBoxLayout()
     info.setSpacing(0)
@@ -273,15 +348,21 @@ def _phantom_card(item, parent) -> QWidget:
     head.addLayout(info, 1)
     box.addLayout(head)
 
-    # ── 主属性（黄底）
+    # ── 主属性
+    #: ★ 用户 2026-10-04："主属性就不用高亮了"
+    #: → 不再铺黄底（否则和"命中的副词条"撞色，分不清）
     mains = item.get("mainProps") or []
     if mains:
-        box.addWidget(_prop_grid(mains, card, cols=1, highlight=True))
+        box.addWidget(_prop_grid(mains, card, cols=1, highlight=False))
 
     # ── 副词条
     #:
     #: ★ 用户 2026-10-04："（前面的勾）是什么？去掉，命中的词条黄色高亮就行"
     #: → **不画 ✓/·**，改成**命中的整行淡黄底**。
+    #:
+    #: ★ 同一天："这个方框去掉"（截图圈出那排空方块）——
+    #: ``subProps`` 没有 ``iconUrl``，之前硬摆空占位就是一排方框。
+    #: 现在按**属性名**去 ``icon_index`` 查同名图标，查不到就**不摆**。
     subs = item.get("subProps") or []
     if subs:
         sub_host = QWidget(card)
@@ -298,7 +379,10 @@ def _phantom_card(item, parent) -> QWidget:
             row.setContentsMargins(4, 1, 4, 1)
             row.setSpacing(4)
 
-            row.addWidget(_icon_label(s.get("iconUrl"), 14, line))
+            #: ★ 按名字复用主属性 / 角色属性里的同名图标（没有就不摆）
+            _add_icon(row, s.get("iconUrl"), 14, line,
+                      fallback=icon_index.get(
+                          str(s.get("attributeName") or ""), ""))
             nm = QLabel(str(s.get("attributeName") or "?"), line)
             nm.setStyleSheet("font-size: 11px;")
             row.addWidget(nm)
@@ -313,8 +397,9 @@ def _phantom_card(item, parent) -> QWidget:
     return card
 
 
-def _echoes_block(ph: dict, parent) -> QWidget:
+def _echoes_block(ph: dict, parent, icon_index=None) -> QWidget:
     """「声骸 COST 12/12」整块（含命中统计 + 两列卡片）。"""
+    icon_index = icon_index or {}
     host = QWidget(parent)
     box = QVBoxLayout(host)
     box.setContentsMargins(0, 0, 0, 0)
@@ -342,7 +427,8 @@ def _echoes_block(ph: dict, parent) -> QWidget:
     grid.setContentsMargins(0, 0, 0, 0)
     grid.setSpacing(8)
     for i, it in enumerate(items):
-        grid.addWidget(_phantom_card(it, grid_host), i // 2, i % 2)
+        grid.addWidget(_phantom_card(it, grid_host, icon_index),
+                       i // 2, i % 2)
     inner2.addWidget(grid_host)
     box.addWidget(sec2)
     return host
@@ -358,7 +444,7 @@ def _weapon_block(wd: dict, parent) -> QWidget:
     w = wd.get("weapon") or {}
     head = QHBoxLayout()
     head.setSpacing(8)
-    head.addWidget(_icon_label(w.get("weaponIcon"), ITEM_ICON, host))
+    _add_icon(head, w.get("weaponIcon"), ITEM_ICON, host)
 
     info = QVBoxLayout()
     info.setSpacing(0)
@@ -389,8 +475,10 @@ def _skills_block(skills, parent) -> QWidget:
         sk = it.get("skill") or {}
         col = QVBoxLayout()
         col.setSpacing(2)
+        #: ★ 没图就不摆那个空方块（用户："这个方框去掉"）
         holder = _icon_label(sk.get("iconUrl"), SKILL_ICON, host)
-        col.addWidget(holder, 0, Qt.AlignmentFlag.AlignHCenter)
+        if holder is not None:
+            col.addWidget(holder, 0, Qt.AlignmentFlag.AlignHCenter)
         nm = QLabel(str(sk.get("name") or "?"), host)
         nm.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         nm.setStyleSheet("font-size: 11px;")
@@ -415,6 +503,9 @@ def _chains_block(chains, parent) -> QWidget:
     row.setSpacing(6)
     for it in chains or []:
         holder = _icon_label(it.get("iconUrl"), SKILL_ICON, host)
+        #: ★ 没图就不摆空方块
+        if holder is None:
+            continue
         if not it.get("unlocked"):
             holder.setStyleSheet("opacity: 0.35;")
         holder.setToolTip(f"{it.get('name')}\n{it.get('description')}")
@@ -608,7 +699,8 @@ class EchoDetailView(QScrollArea):
         if ph.get("equipPhantomList"):
             host, inner = _section(
                 f"✦ 声骸　COST {ph.get('cost', '?')}/12", self._body)
-            inner.addWidget(_echoes_block(ph, host))
+            inner.addWidget(_echoes_block(ph, host,
+                                          _build_icon_index(detail)))
             self._body_box.addWidget(host)
 
         # ── 技能

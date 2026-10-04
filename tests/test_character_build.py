@@ -989,6 +989,130 @@ class TestDetailView(unittest.TestCase):
         self.assertGreater(lum(DV.SECTION_BG), 0.8,
                            "内容区不是浅色底")
 
+    def test_main_props_are_not_highlighted(self):
+        """★★ 声骸**主属性不铺黄底**。
+
+        用户 2026-10-04（截图圈出主属性那两行）："主属性就不用高亮了"
+
+        ⚠ 原来主属性也铺淡黄，和"命中的副词条"**撞色**，看不出哪个是哪个。
+        现在只有命中的副词条才黄底。
+        """
+        from src.tools.game.character_build import detail_view as DV
+
+        self.assertNotEqual(DV.MAIN_BG, DV.SUB_HIT_BG,
+                            "主属性和命中副词条还是同一个颜色 —— 分不清")
+
+    def test_no_empty_icon_boxes(self):
+        """★★ 没图标的地方**不能留空方块**。
+
+        用户 2026-10-04（截图圈出副词条前面那排空方块）："这个方框去掉"
+
+        根因：**``subProps`` 没有 ``iconUrl`` 字段**（接口不给），
+        而我原来不管有没有图都摆个 ``size×size`` 的空 QLabel。
+
+        → 现在 ``_icon_label`` 没图返回 ``None``，调用方跳过。
+        """
+        from PySide6.QtWidgets import QLabel
+
+        from src.tools.game.character_build import detail_view as DV
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        view = EchoDetailView()
+        view.show_detail(self._detail())
+
+        #: ★ 数"正方形小图但 pixmap 为空"的控件 —— 那就是空方块
+        boxes = [w.width() for w in view.findChildren(QLabel)
+                 if w.pixmap() is not None and w.pixmap().isNull()
+                 and w.width() == w.height() and 8 <= w.width() <= 80]
+        #: 允许 1 个：命中大数字那个圆徽章（它不是图标）
+        self.assertLessEqual(len(boxes), 1,
+                             f"还有 {len(boxes)} 个空方块：{boxes}")
+
+    def test_icon_label_returns_none_without_image(self):
+        """★ ``_icon_label`` 没图必须返回 ``None``（不是空 QLabel）。
+
+        ⚠ 判断"有没有图"**不能用** ``lab.size().isEmpty()`` ——
+        刚建出来的 QLabel 尺寸是 ``(100, 30)``，永远不 empty（我踩过）。
+        """
+        from src.tools.game.character_build import detail_view as DV
+
+        self.assertIsNone(DV._icon_label("", 16),
+                          "空 URL 该返回 None")
+        self.assertIsNone(
+            DV._icon_label("https://example.invalid/nope.png", 16),
+            "缓存里没有的图该返回 None")
+
+    def test_substats_reuse_icons_by_name(self):
+        """★★ 副词条没 ``iconUrl`` 时，按**属性名**复用主属性的同名图标。
+
+        ⚠ 光测 ``_build_icon_index`` 本身不够 —— 把 ``_phantom_card``
+        里的 ``fallback=`` 删掉，那种测试照样通过（实测突变时发现）。
+        所以这里**也查渲染出来的结果**。
+
+        ⚠ 但测试环境里那些假 URL 从没下载过 —— 光看"有没有图"会假失败。
+        所以这里**造一个真的缓存文件**再断言。
+        """
+        import json
+        import tempfile
+
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtWidgets import QLabel
+
+        from src.core import icon_cache as IC
+        from src.tools.game.character_build.detail_view import (
+            EchoDetailView,
+            _build_icon_index,
+        )
+
+        #: 造一个 1x1 的真 PNG 到缓存里（用 Qt 生成，避免依赖 PIL）
+        tmp = tempfile.TemporaryDirectory()
+        orig_root = IC.icon_root
+        IC.icon_root = lambda: pathlib.Path(tmp.name)
+        try:
+            url = "https://x/atk.png"
+            path = IC.local_path(url)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            pix = QPixmap(8, 8)
+            pix.fill()
+            self.assertTrue(pix.save(str(path)), "造测试图标失败")
+
+            detail = {
+                "role": {"roleName": "测试", "level": 90},
+                #: ★ 故意**不给** roleAttributeList —— 那份也会渲染同名图标，
+                #:   留着就分不清"图是副词条来的还是属性区来的"了
+                #:   （第一版就是这么写的，突变时护栏失效）。
+                "phantomData": {"cost": 12, "equipPhantomList": [{
+                    "cost": 4, "level": 25,
+                    "phantomProp": {"name": "声骸A"},
+                    "fetterDetail": {"name": "套装A"},
+                    #: ★ 主属性带图标 —— 这是副词条**唯一**能复用到的来源
+                    "mainProps": [{"attributeName": "攻击",
+                                   "attributeValue": "44%",
+                                   "iconUrl": url}],
+                    #: ★ 副词条**故意不带** iconUrl（接口真实行为）
+                    "subProps": [{"attributeName": "攻击",
+                                  "attributeValue": "10.1%",
+                                  "valid": True}],
+                }]},
+            }
+            idx = _build_icon_index(detail)
+            self.assertEqual(idx.get("攻击"), url,
+                             "索引没建对（属性名 → iconUrl）")
+
+            view = EchoDetailView()
+            view.show_detail(detail)
+            #: 一张声骸卡：主属性 1 个图 + 副词条 1 个图 = 2
+            #: 如果副词条没复用上，就只剩 1 个
+            imgs = [w for w in view.findChildren(QLabel)
+                    if w.pixmap() is not None and not w.pixmap().isNull()]
+            self.assertGreaterEqual(
+                len(imgs), 2,
+                f"副词条那行没复用图标（只有 {len(imgs)} 个图）—— "
+                f"说明 _phantom_card 没用 icon_index 兜底")
+        finally:
+            IC.icon_root = orig_root
+            tmp.cleanup()
+
     def test_hit_rows_actually_differ_from_miss_rows(self):
         """★ 命中 / 未命中的底色必须是**两个不同的颜色**。"""
         from src.tools.game.character_build import detail_view as DV
