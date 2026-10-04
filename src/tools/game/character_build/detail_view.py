@@ -198,10 +198,23 @@ def _section(title: str, parent=None) -> tuple[QWidget, QVBoxLayout]:
     视觉上糊成一片，用户要求**每块各自成卡片**。
     """
     card = QWidget(parent)
+    # ⚠⚠ **样式必须带 objectName 选择器**！
+    #
+    # 用户 2026-10-04（截图圈出技能/共鸣链那一排**空方框**）：
+    # "这个怎么是空白，能拿到数据吗，不能的话就干掉吧"
+    #
+    # 数据是好的（图标全在缓存里、pixmap 也不空），问题是**样式级联**：
+    # Qt 的样式表如果**不写选择器**，会套到**所有子控件**上 ——
+    # 于是每个图标 QLabel 都被画上了「白底 + 1px 边框 + 圆角」，
+    # 看着就是一排空方框（其实 pixmap 在底下被盖住了）。
+    #
+    # 写成 ``#sectionCard { ... }`` 就只作用于这个卡片本身。
+    card.setObjectName("sectionCard")
     card.setStyleSheet(
-        f"background: {SECTION_BG};"
-        f"border: 1px solid {SECTION_BORDER};"
-        f"border-radius: {SECTION_RADIUS}px;")
+        f"#sectionCard {{"
+        f" background: {SECTION_BG};"
+        f" border: 1px solid {SECTION_BORDER};"
+        f" border-radius: {SECTION_RADIUS}px; }}")
     outer = QVBoxLayout(card)
     outer.setContentsMargins(0, 0, 0, 0)
     outer.setSpacing(0)
@@ -209,13 +222,17 @@ def _section(title: str, parent=None) -> tuple[QWidget, QVBoxLayout]:
     #: ── 深色标题栏
     if title:
         head = QLabel(title, card)
+        #: ⚠ 同样写选择器 —— 标题栏自己没子控件，但**统一规则**更安全：
+        #: 以后往标题栏里塞图标就不会踩坑（见 ``_section`` 顶部说明）
+        head.setObjectName("sectionHead")
         head.setStyleSheet(
-            f"background: {SECTION_HEAD_BG};"
-            f"color: {SECTION_HEAD_FG};"
-            f"font-size: 13px; font-weight: bold;"
-            f"padding: 6px 10px;"
-            f"border-top-left-radius: {SECTION_RADIUS}px;"
-            f"border-top-right-radius: {SECTION_RADIUS}px;")
+            f"#sectionHead {{"
+            f" background: {SECTION_HEAD_BG};"
+            f" color: {SECTION_HEAD_FG};"
+            f" font-size: 13px; font-weight: bold;"
+            f" padding: 6px 10px;"
+            f" border-top-left-radius: {SECTION_RADIUS}px;"
+            f" border-top-right-radius: {SECTION_RADIUS}px; }}")
         outer.addWidget(head)
 
     #: ── 内容区
@@ -243,7 +260,10 @@ def _prop_grid(props, parent, *, cols: int = 2,
     for i, p in enumerate(props or []):
         cell = QWidget(host)
         bg = MAIN_BG if highlight else "transparent"
-        cell.setStyleSheet(f"background: {bg}; border-radius: 4px;")
+        #: ⚠ 带选择器（否则会套到格子里的图标 / 文字上）
+        cell.setObjectName("propCell")
+        cell.setStyleSheet(f"#propCell {{ background: {bg};"
+                           f" border-radius: 4px; }}")
         row = QHBoxLayout(cell)
         row.setContentsMargins(4, 2, 4, 2)
         row.setSpacing(4)
@@ -279,10 +299,12 @@ def _hit_badge(hits: dict, total: int, parent) -> QWidget:
     badge = QLabel(str(total), host)
     badge.setFixedSize(QSize(HIT_BADGE, HIT_BADGE))
     badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    #: ⚠ 带选择器
+    badge.setObjectName("hitBadge")
     badge.setStyleSheet(
-        f"background: {MAIN_BG}; color: {MAIN_FG};"
-        f"border: 2px solid {HIT_FG}; border-radius: {HIT_BADGE // 2}px;"
-        f"font-size: 24px; font-weight: bold;")
+        f"#hitBadge {{ background: {MAIN_BG}; color: {MAIN_FG};"
+        f" border: 2px solid {HIT_FG}; border-radius: {HIT_BADGE // 2}px;"
+        f" font-size: 24px; font-weight: bold; }}")
     row.addWidget(badge)
 
     #: 各词条命中数（两列）
@@ -319,9 +341,13 @@ def _phantom_card(item, parent, icon_index=None) -> QWidget:
     """
     icon_index = icon_index or {}
     card = QWidget(parent)
+    # ⚠⚠ 同样必须带 objectName 选择器（见 ``_section`` 的说明）——
+    # 不写选择器的话，这个「白底 + 边框」会套到卡片里**每个子控件**上，
+    # 图标就被涂成空方框（用户 2026-10-04 报的那个问题）。
+    card.setObjectName("phantomCard")
     card.setStyleSheet(
-        "background: white; border: 1px solid rgba(0,0,0,0.10);"
-        "border-radius: 6px;")
+        "#phantomCard { background: white;"
+        " border: 1px solid rgba(0,0,0,0.10); border-radius: 6px; }")
     box = QVBoxLayout(card)
     box.setContentsMargins(8, 6, 8, 6)
     box.setSpacing(4)
@@ -372,9 +398,12 @@ def _phantom_card(item, parent, icon_index=None) -> QWidget:
         for s in subs:
             hit = bool(s.get("valid"))
             line = QWidget(sub_host)
+            #: ⚠ 带选择器（否则会套到图标上）
+            line.setObjectName("subLine")
             line.setStyleSheet(
-                f"background: {SUB_HIT_BG if hit else SUB_BG};"
-                f"border-radius: 3px;")
+                f"#subLine {{ background: "
+                f"{SUB_HIT_BG if hit else SUB_BG};"
+                f" border-radius: 3px; }}")
             row = QHBoxLayout(line)
             row.setContentsMargins(4, 1, 4, 1)
             row.setSpacing(4)

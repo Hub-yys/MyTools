@@ -1185,6 +1185,78 @@ class TestToolIcon(unittest.TestCase):
                          f"这些工具没有自定义图标（风格会不统一）：{missing}")
 
 
+class TestNoStyleCascade(unittest.TestCase):
+    """★★★ **带 border/background 的样式必须写选择器**。
+
+    ## 用户报的问题（2026-10-04）
+
+    用户（截图圈出技能 / 共鸣链那一排**空方框**）：
+    "这个怎么是空白，能拿到数据吗，不能的话就干掉吧"
+
+    ## 根因不是数据，是 **Qt 样式级联**
+
+    数据是好的 —— 图标全在缓存里、``pixmap`` 也不空（实测 77 个）。
+
+    但 Qt 的样式表**不写选择器**时会套到**所有子控件**上::
+
+        card.setStyleSheet("background: white; border: 1px solid ...")
+        #                              ↑ 没有 #objectName / QClassName
+
+    于是每个图标 QLabel 都被画上"白底 + 1px 边框 + 圆角"，
+    看着就是一排空方框（pixmap 其实在底下，被盖住了）。
+
+    写成 ``#sectionCard { ... }`` 就只作用于那个控件本身。
+
+    ## 这条测试做什么
+
+    **静态扫描**源码里所有 ``setStyleSheet(...)`` ——
+    凡是含 ``border`` / ``background`` 又**不带选择器**的，直接失败。
+    """
+
+    def test_no_unscoped_border_or_background(self):
+        import re
+
+        src = (ROOT / "src" / "tools" / "game" / "character_build"
+               / "detail_view.py").read_text(encoding="utf-8")
+        offenders: list[tuple[int, str]] = []
+
+        for m in re.finditer(r"setStyleSheet\(\s*", src):
+            #: 取这次调用的第一个字符串字面量（够用了 —— 都是 f-string 开头）
+            tail = src[m.end():m.end() + 200]
+            lit = re.match(r'f?["\']([^"\']*)', tail)
+            if not lit:
+                continue
+            css = lit.group(1)
+            if "border" not in css and "background" not in css:
+                continue
+            #: 带选择器 = 以 # / . / 类名 开头，或者紧跟着 {
+            head = css.strip()
+            scoped = (head.startswith(("#", "."))
+                      or re.match(r"^[A-Za-z]\w*\s*\{", head))
+            if not scoped:
+                line = src[:m.start()].count("\n") + 1
+                offenders.append((line, css[:60]))
+
+        self.assertEqual(
+            offenders, [],
+            "这些 setStyleSheet 含 border/background 但**没写选择器** —— "
+            f"会级联到所有子控件（图标会被涂成空方框）：{offenders}")
+
+    def test_section_card_is_scoped(self):
+        """★ 实锤一次：``_section`` 建出来的卡片样式必须带选择器。"""
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance() or QApplication([])  # noqa: F841
+
+        from src.tools.game.character_build.detail_view import _section
+
+        card, _box = _section("测试")
+        css = card.styleSheet()
+        self.assertIn("#", css,
+                      f"卡片样式没写选择器（{css[:60]}）—— 会级联到图标上")
+        self.assertIn("{", css, "没有 {{ }} 包裹，选择器不生效")
+
+
 class TestToolPage(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
