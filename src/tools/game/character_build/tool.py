@@ -667,7 +667,15 @@ class CharacterBuildPanel(ScrollArea):
 
     # ------------------------------------------------------------- 渲染
     def _render(self, data: dict) -> None:
-        """把数据画成界面（像官方那样）。"""
+        """把数据画成界面（像官方那样）。
+
+        ⚠ 这个函数会被调两次（外层一次，``_show_detail`` 刷新高亮再一次）——
+        **但不会无限递归**：第一次进来就把 ``_selected`` 设上了，
+        第二次那个"默认选中"分支就不再成立（实测 2 次就停）。
+
+        我一度加过 ``_rendering`` 锁，后来实测发现**根本不会递归**，
+        锁是多余的 → 删掉（少一个状态少一个坑）。
+        """
         base = (data or {}).get("base") or {}
         role_list = (data or {}).get("roleList") or []
         details = (data or {}).get("details") or {}
@@ -694,10 +702,15 @@ class CharacterBuildPanel(ScrollArea):
         keyword = (self._search_edit.text() or "").strip().lower()
 
         shown = 0
-        #: 按等级从高到低
-        ordered = sorted(role_list,
-                         key=lambda x: (-(x.get("level") or 0),
-                                        str(x.get("roleName") or "")))
+        # ★★ 排序：**按最新获得倒序**（用户："角色按最新获得顺序倒序排序"）
+        #
+        # 接口**没有"获得时间"字段**，但 ``roleData.roleList`` 返回的
+        # **原始顺序就是游戏里的顺序**（不是按 roleId 数值排的 ——
+        # 实测 1402,1202,1103,1602… 后两位并不递增）。
+        # 所以**反转原始列表**就是"最新获得在前"。
+        #
+        # ⚠ 别再按 level / roleName 排 —— 那会把游戏顺序打乱。
+        ordered = list(reversed(role_list))
         for role in ordered:
             cid = str(role.get("roleId"))
             issues = flagged.get(cid)
@@ -733,6 +746,14 @@ class CharacterBuildPanel(ScrollArea):
 
         self._say(f"✓ 角色 {total} 个，拿到声骸详情的 {len(details)} 个，"
                   f"其中 {bad_n} 个需要优化")
+
+        # ★★ 没选角色时 → **默认显示排在第一位的那个**（用户要求）
+        #
+        # ⚠ ``_show_detail`` 结尾会再调一次 ``_render``（刷新选中高亮），
+        # 但**不会无限递归** —— 那时 ``_selected`` 已经有值，
+        # 这个分支不再成立（实测 2 次就停）。
+        if not self._selected and self._cards:
+            self._show_detail(self._cards[0]._cid)
 
     @staticmethod
     def _echo_issues(detail) -> list[str]:

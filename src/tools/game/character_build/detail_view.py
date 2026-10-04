@@ -91,6 +91,23 @@ MISS_FG = "#9aa0a6"
 #: 未达标红
 BAD_FG = "#c42b1c"
 
+#: ★★ 技能 / 共鸣链图标区的底色（**深色**）
+#:
+#: ## 为什么要深色底（2026-10-04 查了很久）
+#
+#: 用户报"技能/共鸣链是空白"，但逐层查下来：
+#:   · 图标**都在缓存里**（技能 217、共鸣链 186，一个不缺）
+#:   · ``pixmap()`` 也**不空**（``isNull()=False``），控件 ``visible=True``
+#:   · 可界面上就是看不到
+#:
+#: **真正原因**：这些图是**纯白线条**（实测平均色 ``(255,255,255)``）——
+#: 画在**白卡片**上等于隐形。官方的技能区是**深色底**，白图标才显眼。
+#:
+#: 属性图标（平均色 173）在白底上勉强可见，所以只有技能/共鸣链两块出问题。
+ICON_PLATE_BG = "#3d4148"
+#: 深色底上的文字色
+ICON_PLATE_FG = "#e8e9ea"
+
 
 def _icon_label(url: str, size: int, parent=None,
                 fallback: str = "") -> QLabel | None:
@@ -494,23 +511,31 @@ def _weapon_block(wd: dict, parent) -> QWidget:
 
 
 def _skills_block(skills, parent) -> QWidget:
-    """「技能」块：一排图标 + 名称 + 等级。"""
+    """「技能」块：一排图标 + 名称 + 等级。
+
+    ★ **图标区用深色底** —— 这些图是**纯白线条**，画在白底上等于隐形
+    （详见 ``ICON_PLATE_BG`` 的说明）。
+    """
     host = QWidget(parent)
+    host.setObjectName("skillsBlock")
+    host.setStyleSheet(
+        f"#skillsBlock {{ background: {ICON_PLATE_BG};"
+        f" border-radius: 6px; }}")
     row = QHBoxLayout(host)
-    row.setContentsMargins(0, 0, 0, 0)
+    row.setContentsMargins(12, 10, 12, 10)
     row.setSpacing(10)
 
     for it in skills or []:
         sk = it.get("skill") or {}
         col = QVBoxLayout()
         col.setSpacing(2)
-        #: ★ 没图就不摆那个空方块（用户："这个方框去掉"）
         holder = _icon_label(sk.get("iconUrl"), SKILL_ICON, host)
         if holder is not None:
             col.addWidget(holder, 0, Qt.AlignmentFlag.AlignHCenter)
         nm = QLabel(str(sk.get("name") or "?"), host)
         nm.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        nm.setStyleSheet("font-size: 11px;")
+        #: ⚠ 深色底 → 文字要浅色（否则黑字也看不见）
+        nm.setStyleSheet(f"font-size: 11px; color: {ICON_PLATE_FG};")
         col.addWidget(nm)
         lv = QLabel(f"Lv.{it.get('level', '?')}/10", host)
         lv.setAlignment(Qt.AlignmentFlag.AlignHCenter)
@@ -528,19 +553,26 @@ def _chains_block(chains, parent) -> QWidget:
     box.setContentsMargins(0, 0, 0, 0)
     box.setSpacing(6)
 
-    row = QHBoxLayout()
-    row.setSpacing(6)
+    #: ★ 图标区用**深色底** —— 共鸣链图标也是纯白线条（见 ICON_PLATE_BG）
+    plate = QWidget(host)
+    plate.setObjectName("chainPlate")
+    plate.setStyleSheet(
+        f"#chainPlate {{ background: {ICON_PLATE_BG};"
+        f" border-radius: 6px; }}")
+    plate_row = QHBoxLayout(plate)
+    plate_row.setContentsMargins(12, 8, 12, 8)
+    plate_row.setSpacing(6)
     for it in chains or []:
-        holder = _icon_label(it.get("iconUrl"), SKILL_ICON, host)
+        holder = _icon_label(it.get("iconUrl"), SKILL_ICON, plate)
         #: ★ 没图就不摆空方块
         if holder is None:
             continue
         if not it.get("unlocked"):
             holder.setStyleSheet("opacity: 0.35;")
         holder.setToolTip(f"{it.get('name')}\n{it.get('description')}")
-        row.addWidget(holder)
-    row.addStretch(1)
-    box.addLayout(row)
+        plate_row.addWidget(holder)
+    plate_row.addStretch(1)
+    box.addWidget(plate)
 
     #: 已激活的（取最大的 order 那条，和官方"已激活"一致）
     active = [c for c in (chains or []) if c.get("unlocked")]

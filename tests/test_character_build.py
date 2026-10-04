@@ -1515,6 +1515,172 @@ class TestToolPage(unittest.TestCase):
                          for i in range(20)],
             "details": {},
         }
+        p._selected = "19"       # 挡掉"默认选中第一个"的干扰
+        p._render(p._data)
+        self.assertEqual(len(p._cards), 20)
+        #: 一行容器里应该有 20 个格子 + 1 个 stretch
+        self.assertEqual(p._roles_row.count(), 21,
+                         "不是全在一行里")
+
+    def test_roles_sorted_newest_first(self):
+        """★★ 角色按**最新获得顺序倒序**排列。
+
+        用户 2026-10-04："角色按最新获得顺序倒序排序"
+
+        ## 接口没有"获得时间"字段
+
+        实测 ``roleList`` 一项的字段只有::
+
+            acronym / attributeId / attributeName / breach /
+            chainUnlockNum / isMainRole / level / roleIconUrl / roleId /
+            roleName / rolePicUrl / roleSkin / starLevel /
+            totalSkillLevel / weaponTypeId / weaponTypeName
+
+        **没有 getTime / obtainTime 之类。**
+
+        但 ``roleList`` 返回的**原始顺序就是游戏里的顺序** ——
+        实测后两位并不递增（1402,1202,1103,1602,…），说明不是按 roleId 数值排，
+        而是按游戏内顺序。所以**反转原始列表**就是"最新获得在前"。
+
+        ⚠ 别再按 ``level`` / ``roleName`` 排 —— 那会打乱游戏顺序。
+        """
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1, "roleName": "最早", "level": 90},
+                {"roleId": 2, "roleName": "中间", "level": 1},
+                {"roleId": 3, "roleName": "最新", "level": 50},
+            ],
+            "details": {},
+        }
+        p._selected = "3"        # 挡掉"默认选中第一个"的干扰
+        p._render(p._data)
+        self.assertEqual([c._cid for c in p._cards], ["3", "2", "1"],
+                         "没按最新获得倒序 —— 顺序反了或按别的字段排了")
+
+    def test_first_role_selected_by_default(self):
+        """★★ 没选角色时，**默认显示排在第一位的那个**。
+
+        用户 2026-10-04："未选择角色时，默认显示排在第一位的角色"
+        """
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1, "roleName": "最早", "level": 90},
+                {"roleId": 9, "roleName": "最新", "level": 90},
+            ],
+            "details": {"9": {
+                "role": {"roleName": "最新", "level": 90},
+                "phantomData": {"cost": 12, "equipPhantomList": []},
+            }},
+        }
+        p._selected = ""
+        p._render(p._data)
+
+        #: 倒序后"最新"排第一 → 应该自动选中它
+        self.assertEqual(p._selected, "9",
+                         "没默认选中排在第一位的角色")
+        from PySide6.QtWidgets import QLabel
+
+        texts = [w.text() for w in p._detail.findChildren(QLabel) if w.text()]
+        self.assertTrue(any("最新" in t for t in texts),
+                        f"详情没自动显示第一个角色（{texts[:4]}）")
+
+    def test_render_terminates_without_recursion(self):
+        """★ 自动选中会让 ``_render`` 跑两遍，但**必须停**。
+
+        ``_show_detail`` 结尾会再调一次 ``_render``（刷新选中高亮）——
+        而 ``_render`` 里又有"默认选中第一个"。看上去像会无限递归。
+
+        ⚠ 我一度加了个 ``_rendering`` 锁，后来**实测发现根本不会递归**：
+        第一次进来就把 ``_selected`` 设上了，第二次那个分支不再成立 ——
+        实测 **2 次就停**。锁是多余的，删掉了。
+
+        这条测试钉住"会停"这件事（递归会 ``RecursionError``）。
+        """
+        p = self._panel()
+        p._data = {
+            "roleList": [{"roleId": 1, "roleName": "A", "level": 90}],
+            "details": {"1": {"role": {"roleName": "A", "level": 90},
+                              "phantomData": {}}},
+        }
+        p._selected = ""
+
+        orig_render = type(p)._render
+        calls = {"n": 0}
+
+        def counting(_self, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] > 20:
+                raise RecursionError("_render 递归了")
+            return orig_render(_self, *args, **kwargs)
+
+        type(p)._render = counting
+        try:
+            p._render(p._data)
+        finally:
+            type(p)._render = orig_render
+
+        self.assertEqual(p._selected, "1")
+        self.assertLessEqual(calls["n"], 4,
+                             f"_render 调了 {calls['n']} 次 —— 像在递归")
+
+    def test_lazy_icon_plate_is_dark(self):
+        """★★ 技能 / 共鸣链图标区必须是**深色底**。
+
+        用户 2026-10-04（截图圈出技能/共鸣链那片空白）：
+        "这个怎么是空白，能拿到数据吗"
+
+        ## 查了很久：数据是好的，图标是**纯白色**
+
+        · 图标都在缓存里（技能 217、共鸣链 186，一个不缺）
+        · ``pixmap()`` 也不空（``isNull()=False``），控件 ``visible=True``
+        · 但那些图是**纯白线条**（实测平均色 ``(255,255,255)``）——
+          画在**白卡片**上等于隐形
+
+        官方的技能区是深色底，所以白图标才显眼。
+
+        ⚠ 所以这条断言的是**亮度**，不是颜色字符串 ——
+        换个差不多深的色不该失败，改成白底/浅色必须失败。
+        """
+        from src.tools.game.character_build import detail_view as DV
+
+        def lum(hex_color: str) -> float:
+            h = hex_color.lstrip("#")
+            r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+            return (0.299 * r + 0.587 * g + 0.114 * b) / 255
+
+        self.assertLess(lum(DV.ICON_PLATE_BG), 0.55,
+                        f"图标区底色太亮（{DV.ICON_PLATE_BG}）—— "
+                        f"白色图标会看不见")
+        self.assertGreater(lum(DV.ICON_PLATE_FG), 0.6,
+                           "深色底上的文字要浅色")
+
+    def test_skill_and_chain_blocks_use_dark_plate(self):
+        """★ 技能 / 共鸣链块**实际用上了**深色底（不是只定义了常量）。"""
+        from src.tools.game.character_build import detail_view as DV
+
+        skills = [{"level": 10, "skill": {"name": "a",
+                                          "iconUrl": "https://x/s.png"}}]
+        chains = [{"name": "c", "order": 1, "unlocked": True,
+                   "iconUrl": "https://x/c.png"}]
+
+        sk = DV._skills_block(skills, None)
+        self.assertIn(DV.ICON_PLATE_BG, sk.styleSheet(),
+                      "技能块没用深色底 —— 白图标会隐形")
+
+        ch = DV._chains_block(chains, None)
+        #: 共鸣链的深色底在里面的 plate 上
+        found = any(DV.ICON_PLATE_BG in (w.styleSheet() or "")
+                    for w in ch.findChildren(type(ch)))
+        self.assertTrue(found, "共鸣链块没用深色底")
+        """★ 所有角色都在**同一行**（不是网格）。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [{"roleId": i, "roleName": f"角色{i}", "level": 90}
+                         for i in range(20)],
+            "details": {},
+        }
         p._render(p._data)
         self.assertEqual(len(p._cards), 20)
         #: 一行容器里应该有 20 个格子 + 1 个 stretch
