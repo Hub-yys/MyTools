@@ -83,6 +83,35 @@ TILE_H = 132
 #: 「达标」筛选下拉的选项（用户："达标/未达标"）
 FILTER_CHOICES = ("全部", "未达标", "达标")
 
+#: ★ 不参与练度判定的角色 —— **漂泊者（主角）**
+#:
+#: ## 为什么排除（用户 2026-10-05："把漂泊者除开"）
+#:
+#: 主角是**必练**的（主线一直带着），不像别的角色那样"要不要练"需要判断；
+#: 而且他那套声骸往往是最早配的，拿"达标"去卡他没有意义。
+#:
+#: ⚠ 按**名字**排除而不是 roleId —— 实测现在只有 1 个漂泊者
+#: （``roleId=1310``，导电/迅刀），但主角以后可能出别的属性版本，
+#: roleId 会变、名字不会。
+#: ⚠ **只是不参与"达标"判定**（不标红框、不进"未达标"筛选），
+#: **不是从列表里删掉** —— 他还是能点开看详情。
+EXCLUDED_ROLE_NAMES = frozenset({"漂泊者"})
+
+
+def is_excluded(role: dict) -> bool:
+    """该角色是否**不参与练度判定**（见 ``EXCLUDED_ROLE_NAMES``）。"""
+    name = str((role or {}).get("roleName") or "").strip()
+    return name in EXCLUDED_ROLE_NAMES
+
+
+def _role_of(role_list, char_id) -> dict:
+    """按角色 id 从列表里找出那条（找不到返回空 dict）。"""
+    want = str(char_id)
+    for r in role_list or []:
+        if str(r.get("roleId")) == want:
+            return r
+    return {}
+
 
 def cache_file():
     """缓存文件位置（用户数据目录）。"""
@@ -694,7 +723,11 @@ class CharacterBuildPanel(ScrollArea):
             return
 
         # ── 判定哪些角色"声骸未达标"
-        flagged = {cid: self._echo_issues(details.get(cid))
+        #
+        # ★ 漂泊者（主角）**不参与判定**（用户："把漂泊者除开"）——
+        #   不标红框、不进"未达标"筛选；但**列表里还在**（能点开看详情）。
+        flagged = {cid: ([] if is_excluded(_role_of(role_list, cid))
+                         else self._echo_issues(details.get(cid)))
                    for cid in details}
 
         # ── 筛选条件（下拉 + 搜索）

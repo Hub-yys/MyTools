@@ -1257,6 +1257,135 @@ class TestNoStyleCascade(unittest.TestCase):
         self.assertIn("{", css, "没有 {{ }} 包裹，选择器不生效")
 
 
+class TestExcludedRoles(unittest.TestCase):
+    """★★ **漂泊者（主角）不参与练度判定**。
+
+    用户 2026-10-05："把漂泊者除开"
+
+    ## 语义（重要，别搞错成"删掉"）
+
+    · **不参与"达标"判定** → 不标红框、不进「未达标」筛选
+    · **但列表里还在** → 还是能点开看它的属性 / 声骸详情
+
+    为什么排除他：主角**必练**（主线一直带着），不像别的角色那样
+    "要不要练"需要判断；而且他那套声骸往往是最早配的，
+    拿"达标"去卡他没有意义。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _panel(self):
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        return CharacterBuildPanel()
+
+    def test_is_excluded_matches_name(self):
+        from src.tools.game.character_build import tool as T
+
+        self.assertTrue(T.is_excluded({"roleName": "漂泊者"}))
+        self.assertFalse(T.is_excluded({"roleName": "白芷"}))
+        self.assertFalse(T.is_excluded({}))
+        self.assertFalse(T.is_excluded(None))
+
+    def test_excluded_constant(self):
+        """★ 按**名字**排除（不是 roleId）。
+
+        主角以后可能出别的属性版本 → roleId 会变、名字不会。
+        """
+        from src.tools.game.character_build import tool as T
+
+        self.assertIn("漂泊者", T.EXCLUDED_ROLE_NAMES)
+
+    def test_excluded_role_not_flagged(self):
+        """★ 漂泊者**不被标红**（哪怕它的声骸实测有问题）。"""
+        from PySide6.QtWidgets import QLabel
+
+        p = self._panel()
+        #: 造一个"声骸很差"的漂泊者 —— 正常情况下会被标红
+        p._data = {
+            "roleList": [
+                {"roleId": 1310, "roleName": "漂泊者", "level": 90},
+                {"roleId": 1103, "roleName": "白芷", "level": 90},
+            ],
+            "details": {
+                #: 声骸没满级 + 词条少 → 普通人必被判未达标
+                "1310": {"role": {"roleName": "漂泊者", "level": 90},
+                         "phantomData": {"equipPhantomList": [
+                             {"cost": 4, "level": 1,
+                              "fetterDetail": {"name": "A"},
+                              "phantomProp": {"name": "x"},
+                              "mainProps": [], "subProps": []}]}},
+                "1103": {"role": {"roleName": "白芷", "level": 90},
+                         "phantomData": {"equipPhantomList": [
+                             {"cost": 4, "level": 1,
+                              "fetterDetail": {"name": "A"},
+                              "phantomProp": {"name": "x"},
+                              "mainProps": [], "subProps": []}]}},
+            },
+        }
+        p._selected = "1103"       # 挡掉默认选中
+        p._render(p._data)
+
+        #: 白芷该被标红
+        bz = next(c for c in p._cards if c._cid == "1103")
+        self.assertTrue([w for w in bz.findChildren(QLabel)
+                         if "c42b1c" in (w.styleSheet() or "")],
+                        "白芷没被标红 —— 判定本身坏了")
+
+        #: 漂泊者**不该**被标红
+        piao = next(c for c in p._cards if c._cid == "1310")
+        self.assertFalse([w for w in piao.findChildren(QLabel)
+                          if "c42b1c" in (w.styleSheet() or "")],
+                         "漂泊者被标红了 —— 应该排除在判定之外")
+
+    def test_excluded_role_still_listed(self):
+        """★★ 只是不判定，**不是删掉** —— 列表里还得有得点。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [{"roleId": 1310, "roleName": "漂泊者",
+                          "level": 90}],
+            "details": {},
+        }
+        p._selected = "1310"
+        p._render(p._data)
+        self.assertIn("1310", [c._cid for c in p._cards],
+                      "漂泊者被从列表里删掉了 —— 用户只是说'除开'判定")
+
+    def test_excluded_not_in_unmet_filter(self):
+        """★ 「未达标」筛选里**不该出现**漂泊者。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1310, "roleName": "漂泊者", "level": 90},
+                {"roleId": 1103, "roleName": "白芷", "level": 90},
+            ],
+            "details": {
+                "1310": {"role": {"roleName": "漂泊者"},
+                         "phantomData": {"equipPhantomList": [
+                             {"cost": 4, "level": 1,
+                              "fetterDetail": {"name": "A"},
+                              "phantomProp": {"name": "x"},
+                              "mainProps": [], "subProps": []}]}},
+                "1103": {"role": {"roleName": "白芷"},
+                         "phantomData": {"equipPhantomList": [
+                             {"cost": 4, "level": 1,
+                              "fetterDetail": {"name": "A"},
+                              "phantomProp": {"name": "x"},
+                              "mainProps": [], "subProps": []}]}},
+            },
+        }
+        p._selected = "1103"
+        p._filter_box.setCurrentText("未达标")
+        p._render(p._data)
+        ids = [c._cid for c in p._cards]
+        self.assertIn("1103", ids, "白芷该在未达标里")
+        self.assertNotIn("1310", ids, "漂泊者不该在未达标里")
+
+
 class TestToolPage(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
