@@ -1136,15 +1136,13 @@ class TestDetailView(unittest.TestCase):
         self.assertIn("套装不统一", " ".join(self._texts(view)))
 
     def test_shows_all_chain_descriptions(self):
-        """★★ **每条共鸣链**的文字都要显示（不只"已激活"那条）。
+        """★★ **每条共鸣链**都有说明可看（标题常驻，说明点开看）。
 
-        用户 2026-10-05："共鸣链数据能拿到吗"
+        用户 2026-10-05："共鸣链数据能拿到吗" → 能。
 
-        能 —— 接口给的每条链有 ``order`` / ``name`` / ``unlocked`` /
-        ``description``（实测最长的 100+ 字）。
-
-        ⚠ 我原来只显示"已激活"那一条（抄官方那个折叠样式），
-        用户显然要**每条都能看** → 现在 6 条全列。
+        ⚠ 后来又要求"初始不点击的时候，不展示任何说明" +
+        "共鸣链这里也是跟上面一样"（共用一块面板）——
+        所以**标题常驻、说明点了才显示**。
         """
         from PySide6.QtWidgets import QLabel
 
@@ -1154,17 +1152,24 @@ class TestDetailView(unittest.TestCase):
         detail["chainList"] = [
             {"order": i, "name": f"链{i}", "unlocked": i <= 3,
              "description": f"链{i}的说明文字",
-             "iconUrl": "https://x/c.png"}
+             "iconUrl": ""}
             for i in range(1, 7)
         ]
         view = EchoDetailView()
         view.show_detail(detail)
+
+        #: ① 每条链的**标题**常驻
         joined = " ".join(self._texts(view))
         for i in range(1, 7):
             with self.subTest(order=i):
-                self.assertIn(f"链{i}", joined, f"第 {i} 条共鸣链没显示")
-                self.assertIn(f"链{i}的说明文字", joined,
-                              f"第 {i} 条共鸣链的**说明**没显示")
+                self.assertIn(f"链{i}", joined, f"第 {i} 条共鸣链标题没显示")
+
+        #: ② 每条都能点开看说明
+        clickable = [w for w in view.findChildren(QLabel)
+                     if w.mousePressEvent.__name__ == "_toggle"
+                     and w.property("expandKey")]
+        self.assertGreaterEqual(len(clickable), 6,
+                                f"可点的链只有 {len(clickable)} 条")
 
     def test_marks_locked_chains(self):
         """★ 未解锁的共鸣链要标出来。"""
@@ -1223,14 +1228,22 @@ class TestDetailView(unittest.TestCase):
             view = EchoDetailView()
             view.show_detail(detail)
 
-            #: 说明文字在 expandArea 里（初始隐藏，但文字是有的）
+            #: 说明文字在共用面板里（初始隐藏，但点开就有）
             areas = [w for w in view.findChildren(QWidget)
-                     if w.objectName() == "expandArea"]
-            self.assertTrue(areas, "技能没有展开区")
+                     if w.objectName() == "expandPanel"]
+            self.assertTrue(areas, "技能没有共用说明面板")
+            texts = [t.text() for a in areas
+                     for t in a.findChildren(QLabel) if t.text()]
+            #: ⚠ 说明**点了才写进面板** —— 所以这里先点一下
+            clickable = [w for w in view.findChildren(QLabel)
+                         if w.mousePressEvent.__name__ == "_toggle"
+                         and w.property("expandKey")]
+            self.assertTrue(clickable, "技能没有可点控件")
+            clickable[0].mousePressEvent(None)
             texts = [t.text() for a in areas
                      for t in a.findChildren(QLabel) if t.text()]
             self.assertTrue(any("呼唤忧昙" in t for t in texts),
-                            f"技能说明没写进展开区（{texts[:4]}）")
+                            f"技能说明没写进面板（{texts[:4]}）")
         finally:
             IC.icon_root = orig_root
             tmp.cleanup()
@@ -1674,16 +1687,26 @@ class TestInlineExpand(unittest.TestCase):
 
     @staticmethod
     def _areas(view):
+        """共用说明面板（技能一块 + 共鸣链一块）。
+
+        ⚠ 原来是 `expandArea`（**每条一个框**）——
+        用户后来要求改成**共用一块**（见 TestSharedExpandPanel）。
+        """
         from PySide6.QtWidgets import QWidget
 
         return [w for w in view.findChildren(QWidget)
-                if w.objectName() == "expandArea"]
+                if w.objectName() == "expandPanel"]
 
     def test_areas_exist(self):
-        """★ 技能 + 共鸣链各有一块说明区。"""
+        """★ 技能 + 共鸣链各有一块**共用**说明面板。
+
+        ⚠ 这里原来断言 ``expandArea``（每条一个框）——
+        用户后来要求改成**共用一块**（见 :class:`TestSharedExpandPanel`），
+        所以改成查 ``expandPanel``。
+        """
         view = self._view()
         self.assertGreaterEqual(len(self._areas(view)), 2,
-                                "没找到展开说明区")
+                                "没找到展开说明面板")
 
     def test_areas_hidden_initially(self):
         """★★ **初始一个说明都不显示**。"""
@@ -1751,8 +1774,8 @@ class TestInlineExpand(unittest.TestCase):
         self.assertTrue(areas)
         for a in areas:
             css = a.styleSheet()
-            self.assertIn("#expandArea", css,
-                          f"说明区样式没写选择器：{css[:50]}")
+            self.assertIn("#expandPanel", css,
+                          f"说明面板样式没写选择器：{css[:50]}")
 
 
 class TestGapHint(unittest.TestCase):
@@ -1856,6 +1879,345 @@ class TestGapHint(unittest.TestCase):
         reds = [w.text() for w in view.findChildren(QLabel)
                 if DV.BAD_FG in (w.styleSheet() or "")]
         self.assertNotIn("重击伤害加成", reds)
+
+
+class TestLevelFilter(unittest.TestCase):
+    """★ 筛选下拉新增**「未满90级」**分类。
+
+    用户 2026-10-05："增加一个分类，等级（未满90级的）"
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _panel(self):
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        return CharacterBuildPanel()
+
+    def test_filter_choices(self):
+        from src.tools.game.character_build import tool as T
+
+        self.assertIn("未满90级", T.FILTER_CHOICES)
+        #: 原来那三个还在
+        for old in ("全部", "未达标", "达标"):
+            self.assertIn(old, T.FILTER_CHOICES)
+
+    def test_max_level_constant(self):
+        from src.tools.game.character_build import tool as T
+
+        self.assertEqual(T.MAX_LEVEL, 90)
+
+    def test_is_below_max_level(self):
+        from src.tools.game.character_build import tool as T
+
+        self.assertTrue(T.is_below_max_level({"level": 40}))
+        self.assertTrue(T.is_below_max_level({"level": "80"}))
+        self.assertFalse(T.is_below_max_level({"level": 90}))
+        self.assertFalse(T.is_below_max_level({"level": 91}))
+        #: 缺字段 / 坏值不该崩
+        self.assertFalse(T.is_below_max_level({}))
+        self.assertFalse(T.is_below_max_level(None))
+        self.assertFalse(T.is_below_max_level({"level": "abc"}))
+
+    def test_filters_by_level(self):
+        """★★ 「未满90级」只显示没满级的。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1, "roleName": "满级", "level": 90},
+                {"roleId": 2, "roleName": "四十", "level": 40},
+                {"roleId": 3, "roleName": "八十", "level": 80},
+            ],
+            "details": {},
+        }
+        p._selected = "1"
+        p._filter_box.setCurrentText("未满90级")
+        p._render(p._data)
+        self.assertEqual(sorted(c._cid for c in p._cards), ["2", "3"],
+                         "等级筛选不对")
+
+    def test_level_filter_combines_with_search(self):
+        """★ 筛选和搜索能叠加。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1, "roleName": "安可", "level": 40},
+                {"roleId": 2, "roleName": "白芷", "level": 40},
+                {"roleId": 3, "roleName": "安可", "level": 90},
+            ],
+            "details": {},
+        }
+        p._selected = "1"
+        p._filter_box.setCurrentText("未满90级")
+        p._search_edit.setText("安可")
+        p._render(p._data)
+        self.assertEqual([c._cid for c in p._cards], ["1"])
+
+
+class TestSelectedTileHighlight(unittest.TestCase):
+    """★★ 选中的角色格子 = **黄色高亮**。
+
+    用户 2026-10-05（截图圈出「心」那张卡）："这里点到哪个，哪个黄色高亮"
+
+    ⚠ 我原来是**蓝色**边框（``#0a84ff``）—— 用户要的是**黄**的。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _panel(self):
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        return CharacterBuildPanel()
+
+    def test_selected_tile_has_yellow_background(self):
+        from src.tools.game.character_build import detail_view as DV
+
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1, "roleName": "甲", "level": 90},
+                {"roleId": 2, "roleName": "乙", "level": 90},
+            ],
+            "details": {},
+        }
+        p._selected = "2"
+        p._render(p._data)
+        sel = [c for c in p._cards if DV.SELECT_BG in (c.styleSheet() or "")]
+        self.assertEqual(len(sel), 1, "选中的格子没有黄色高亮")
+        self.assertEqual(sel[0]._cid, "2", "高亮的不是选中的那个")
+        #: 没选中的不该有黄底
+        others = [c for c in p._cards if c._cid != "2"]
+        for c in others:
+            self.assertNotIn(DV.SELECT_BG, c.styleSheet() or "",
+                             "没选中的格子也被高亮了")
+
+    def test_select_color_is_yellow_not_blue(self):
+        """★ 高亮色必须是**看得出是黄**的（不是原来的蓝，也不是几乎白）。
+
+        用 RGB 判断：黄色 = R/G 高、**B 明显低**。
+
+        ⚠ 我第一版用 ``#fff6d6`` —— B=214，几乎和白底一样，
+        这条测试当场就抓出来了。
+        """
+        from src.tools.game.character_build import detail_view as DV
+
+        for name, color in (("SELECT_BG", DV.SELECT_BG),
+                            ("SELECT_BORDER", DV.SELECT_BORDER)):
+            with self.subTest(name=name):
+                h = color.lstrip("#")
+                r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+                self.assertGreater(r, 180, f"{name} 红分量太低：{color}")
+                self.assertGreater(g, 150, f"{name} 绿分量太低：{color}")
+                self.assertLess(
+                    b, r - 60,
+                    f"{name} 蓝分量相对红太高（{color}）—— 看着不像黄色")
+
+    def test_flagged_tile_still_red(self):
+        """★ 未达标仍然是**红框**（那是"有问题"，优先级高于选中）。"""
+        from src.tools.game.character_build import detail_view as DV
+
+        p = self._panel()
+        p._data = {
+            "roleList": [{"roleId": 1, "roleName": "甲", "level": 90}],
+            #: 声骸很差 → 会被判未达标
+            "details": {"1": {
+                "role": {"roleName": "甲", "level": 90},
+                "phantomData": {"equipPhantomList": [
+                    {"cost": 4, "level": 1,
+                     "fetterDetail": {"name": "A"},
+                     "phantomProp": {"name": "x"},
+                     "mainProps": [], "subProps": []}]}}},
+        }
+        p._selected = "1"
+        p._render(p._data)
+        self.assertEqual(len(p._cards), 1)
+        css = p._cards[0].styleSheet()
+        self.assertIn(DV.BAD_FG, css, "未达标的红框没了")
+
+
+class TestSharedExpandPanel(unittest.TestCase):
+    """★★ 技能 / 共鸣链：**共用一块面板**，一次只显示一条，再点关闭。
+
+    用户 2026-10-05（截图圈出技能区和共鸣链区）::
+
+        "这里点到哪个技能，展示哪个，占满整个红框，
+         再次点击该技能就是关闭展开"
+        "共鸣链这里也是跟上面一样"
+
+    ⚠ 我上一版是**每条一个展开框** —— 用户要的是**一块共用的**，
+    点谁换谁，再点同一条就关掉。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def _detail(url: str) -> dict:
+        """⚠ 说明挂在**图标控件**上，没图标就没控件（见"空方块"那次修复），
+        所以测试得先造一个真缓存图，再把 URL 塞进来。"""
+        return {
+            "role": {"roleName": "测试", "level": 90},
+            "skillList": [
+                {"level": 10, "skill": {
+                    "name": "技能甲", "type": "常态攻击",
+                    "description": "甲的说明", "iconUrl": url}},
+                {"level": 10, "skill": {"name": "技能乙", "type": "共鸣技能",
+                                        "description": "乙的说明",
+                                        "iconUrl": url}},
+            ],
+            "chainList": [
+                {"order": 1, "name": "链甲", "unlocked": True,
+                 "description": "链甲的说明", "iconUrl": url},
+                {"order": 2, "name": "链乙", "unlocked": True,
+                 "description": "链乙的说明", "iconUrl": url},
+            ],
+            "phantomData": {"cost": 12, "equipPhantomList": []},
+        }
+
+    @staticmethod
+    def _panels(view):
+        from PySide6.QtWidgets import QWidget
+
+        return [w for w in view.findChildren(QWidget)
+                if w.objectName() == "expandPanel"]
+
+    def _view(self):
+        """造一个真图标 + 渲染，返回 ``view``。"""
+        import tempfile
+
+        from PySide6.QtGui import QPixmap
+
+        from src.core import icon_cache as IC
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        orig = IC.icon_root
+        IC.icon_root = lambda: pathlib.Path(tmp.name)
+        self.addCleanup(lambda: setattr(IC, "icon_root", orig))
+
+        url = "https://x/icon.png"
+        path = IC.local_path(url)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pix = QPixmap(8, 8)
+        pix.fill()
+        pix.save(str(path))
+
+        view = EchoDetailView()
+        view.show_detail(self._detail(url))
+        return view
+
+    @staticmethod
+    def _clickables(view):
+        """所有绑了展开开关的控件。"""
+        from PySide6.QtWidgets import QLabel
+
+        return [w for w in view.findChildren(QLabel)
+                if w.mousePressEvent.__name__ == "_toggle"
+                and w.property("expandKey")]
+
+    def test_one_panel_per_block(self):
+        """★★ 技能块 / 共鸣链块**各只有一块**面板（不是每条一个）。"""
+        view = self._view()
+        panels = self._panels(view)
+        self.assertEqual(len(panels), 2,
+                         f"应该是 2 块共用面板（技能+共鸣链），"
+                         f"实际 {len(panels)} 块")
+
+    def test_panels_hidden_initially(self):
+        """★★ 初始一块都不显示。"""
+        view = self._view()
+        for p in self._panels(view):
+            self.assertFalse(p.isVisible(), "初始有面板显示了")
+            self.assertEqual(str(p.property("expandShown") or ""), "",
+                             "初始就有展开状态")
+
+    @staticmethod
+    def _shown_key(panel) -> str:
+        """面板当前展示的是哪一条（**不看 isVisible**）。
+
+        ⚠ 父窗口没 ``show()`` 时 ``isVisible()`` 永远是 False ——
+        测试里判不出来，所以状态记在 ``expandShown`` 属性上。
+        """
+        return str(panel.property("expandShown") or "")
+
+    def test_click_shows_panel_with_that_content(self):
+        """★★ 点某一条 → 面板显示**那一条**的内容。"""
+        from PySide6.QtWidgets import QLabel
+
+        view = self._view()
+        panel = self._panels(view)[0]         #: 技能块的
+        target = next(
+            (w for w in self._clickables(view)
+             if "技能乙" in str(w.property("expandKey"))), None)
+        self.assertIsNotNone(target, "没找到「技能乙」的可点控件")
+
+        target.mousePressEvent(None)
+        self.assertIn("技能乙", self._shown_key(panel),
+                      "点了没展开")
+        texts = [t.text() for t in panel.findChildren(QLabel)]
+        self.assertTrue(any("技能乙" in t for t in texts),
+                        f"面板里不是点的那条（{texts}）")
+        self.assertTrue(any("乙的说明" in t for t in texts),
+                        f"说明没写进面板（{texts}）")
+
+    def test_click_again_closes(self):
+        """★★ **再点同一条 → 关闭**（用户明确要求）。"""
+        view = self._view()
+        panel = self._panels(view)[0]
+        target = self._clickables(view)[0]
+        target.mousePressEvent(None)
+        self.assertNotEqual(self._shown_key(panel), "", "第一次点没展开")
+        target.mousePressEvent(None)           #: 再点同一条
+        self.assertEqual(self._shown_key(panel), "",
+                         "再点同一条没关闭")
+
+    def test_click_another_switches(self):
+        """★★ 点**另一条** → 内容换成那条（互斥，不会两块都开）。"""
+        from PySide6.QtWidgets import QLabel
+
+        view = self._view()
+        panel = self._panels(view)[0]
+        clickable = self._clickables(view)
+        self.assertGreaterEqual(len(clickable), 2, "技能不够两条")
+        clickable[0].mousePressEvent(None)
+        first = panel.findChildren(QLabel)[0].text()
+        clickable[1].mousePressEvent(None)
+        second = panel.findChildren(QLabel)[0].text()
+        self.assertNotEqual(first, second, "点另一条没换内容")
+        #: 只有**一块**面板处于展开状态（互斥）
+        opened = [p for p in self._panels(view)
+                  if self._shown_key(p)]
+        self.assertEqual(len(opened), 1, "同时开了多块面板")
+
+    def test_chains_use_same_pattern(self):
+        """★ 共鸣链也是共用一块面板（用户："共鸣链这里也是跟上面一样"）。"""
+        from PySide6.QtWidgets import QLabel
+
+        view = self._view()
+        panels = self._panels(view)
+        self.assertEqual(len(panels), 2, "共鸣链没有共用面板")
+        chain_panel = panels[1]
+        target = next(
+            (w for w in self._clickables(view)
+             if "链甲" in str(w.property("expandKey"))), None)
+        self.assertIsNotNone(target, "没找到共鸣链的可点控件")
+        target.mousePressEvent(None)
+        self.assertIn("链甲", self._shown_key(chain_panel))
+        texts = [t.text() for t in chain_panel.findChildren(QLabel)]
+        self.assertTrue(any("链甲的说明" in t for t in texts),
+                        f"共鸣链说明没写进面板（{texts}）")
 
 
 class TestToolPage(unittest.TestCase):
@@ -2000,15 +2362,17 @@ class TestToolPage(unittest.TestCase):
                         "没有搜索框")
 
     def test_has_filter_dropdown(self):
-        """★ 达标/未达标**下拉**（用户："达标/未达标"）。
+        """★ 达标/未达标**下拉**（用户："达标/未达标"），
+        后来又加了「未满90级」（用户 2026-10-05）。
 
-        ⚠ 原来是「只看未达标」开关，用户要的是下拉（三态）。
+        ⚠ 原来是「只看未达标」开关，用户要的是下拉（多态）。
         """
         from src.tools.game.character_build.tool import FILTER_CHOICES
 
         p = self._panel()
         self.assertTrue(hasattr(p, "_filter_box"), "没有筛选下拉")
-        self.assertEqual(tuple(FILTER_CHOICES), ("全部", "未达标", "达标"))
+        for want in ("全部", "未达标", "达标", "未满90级"):
+            self.assertIn(want, tuple(FILTER_CHOICES))
 
     def test_search_filters_by_name(self):
         """★ 搜索能按名字过滤。"""

@@ -91,6 +91,13 @@ MISS_FG = "#9aa0a6"
 #: 未达标红
 BAD_FG = "#c42b1c"
 
+#: ★★ 选中的角色格子 —— **黄色高亮**（用户："点到哪个，哪个黄色高亮"）
+#:
+#: ⚠ 底色要**看得出是黄的** —— 第一版用了 ``#fff6d6``（太淡，测出来蓝分量
+#: 214，几乎和白底没区别）。现在用饱和一点的黄。
+SELECT_BG = "#ffe9a8"          # 黄底（明显但不刺眼）
+SELECT_BORDER = "#e0a800"      # 金色边框
+
 #: ★★ 技能 / 共鸣链图标区的底色（**深色**）
 #:
 #: ## 为什么要深色底（2026-10-04 查了很久）
@@ -513,12 +520,8 @@ def _weapon_block(wd: dict, parent) -> QWidget:
 def _expand_area(parent, title: str, text: str) -> QWidget:
     """★ 一块**初始隐藏**的说明区（点了才展开）。
 
-    用户 2026-10-05::
-
-        "技能、共鸣链，点击的时候，往下展开说明，不是弹出说明，
-         初始不点击的时候，不展示任何说明"
-
-    → 不用弹窗，改成**就地往下展开**；初始 ``setVisible(False)``。
+    ⚠ 现在技能/共鸣链用的是 :func:`_expand_panel`（**共用一块**）——
+    这个函数留给"每条一个框"的场景（暂时没用到，但测试在用）。
     """
     area = QWidget(parent)
     area.setObjectName("expandArea")
@@ -553,6 +556,79 @@ def _bind_toggle(clickable, area) -> None:
 
     def _toggle(_event, _area=area):
         _area.setVisible(not _area.isVisible())
+
+    clickable.mousePressEvent = _toggle       # noqa: B010 - 简易点击
+
+
+def _expand_panel(parent) -> tuple[QWidget, QLabel, QLabel]:
+    """★★ **一块共用的说明面板**（占满整宽），初始隐藏。
+
+    用户 2026-10-05::
+
+        "这里点到哪个技能，展示哪个，占满整个红框，
+         再次点击该技能就是关闭展开"
+        "共鸣链这里也是跟上面一样"
+
+    → 不是每条一个框，而是**共用一块**：
+    点谁就把内容换上去；**再点同一个就关掉**（互斥展开）。
+
+    :return: ``(面板, 标题 QLabel, 正文 QLabel)``
+    """
+    panel = QWidget(parent)
+    panel.setObjectName("expandPanel")
+    #: ⚠ 样式必须带选择器（不带会级联到子控件 —— 之前踩过）
+    panel.setStyleSheet(
+        "#expandPanel { background: #f5f6f8; border-radius: 4px;"
+        " border-left: 3px solid #3d4148; }")
+    box = QVBoxLayout(panel)
+    box.setContentsMargins(12, 8, 10, 8)
+    box.setSpacing(4)
+
+    title = QLabel(panel)
+    title.setWordWrap(True)
+    title.setStyleSheet("font-size: 13px; font-weight: bold;")
+    box.addWidget(title)
+
+    body = QLabel(panel)
+    body.setWordWrap(True)
+    body.setTextInteractionFlags(
+        Qt.TextInteractionFlag.TextSelectableByMouse)
+    body.setStyleSheet("font-size: 12px;")
+    box.addWidget(body)
+
+    panel.setVisible(False)                    # ★ 初始不展示
+    return panel, title, body
+
+
+def _bind_exclusive(clickable, panel, title: str, text: str) -> None:
+    """点 ``clickable`` → 在**共用面板**里显示这条例；再点同一条 → 关闭。
+
+    互斥：点别的会自动换成别的（同一时刻只显示一条）。
+
+    ⚠ 展开状态记在面板的 ``expandShown`` 属性上（**不是**看
+    ``isVisible()``）—— 父窗口没 ``show()`` 时 Qt 的 ``isVisible()``
+    永远是 False，测试里判不出来（我第一版就栽在这）。
+    """
+    if clickable is None:
+        return
+    clickable.setProperty("expandKey", title)
+    clickable.setProperty("expandText", text)
+
+    def _toggle(_event, _c=clickable, _p=panel):
+        from PySide6.QtWidgets import QLabel as _L
+
+        key = str(_c.property("expandKey") or "")
+        same = str(_p.property("expandShown") or "") == key
+        if same:                               #: 再点同一条 → 关闭
+            _p.setVisible(False)
+            _p.setProperty("expandShown", "")
+            return
+        labels = _p.findChildren(_L)
+        if len(labels) >= 2:
+            labels[0].setText(key)
+            labels[1].setText(str(_c.property("expandText") or ""))
+        _p.setVisible(True)
+        _p.setProperty("expandShown", key)
 
     clickable.mousePressEvent = _toggle       # noqa: B010 - 简易点击
 
@@ -695,9 +771,20 @@ def _skills_block(skills, parent) -> QWidget:
     host.setStyleSheet(
         f"#skillsBlock {{ background: {ICON_PLATE_BG};"
         f" border-radius: 6px; }}")
-    row = QHBoxLayout(host)
-    row.setContentsMargins(12, 10, 12, 10)
+
+    #: ⚠ 外层竖排：**图标行** + **共用说明面板**（面板要占满整宽）
+    outer = QVBoxLayout(host)
+    outer.setContentsMargins(12, 10, 12, 10)
+    outer.setSpacing(6)
+
+    row = QHBoxLayout()
+    row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(10)
+
+    #: ★ 共用说明面板（**一块**，占满整宽）—— 初始不显示。
+    #: 用户："点到哪个技能，展示哪个，占满整个红框，
+    #:       再次点击该技能就是关闭展开"
+    panel, _pt, _pb = _expand_panel(host)
 
     for it in skills or []:
         sk = it.get("skill") or {}
@@ -724,16 +811,17 @@ def _skills_block(skills, parent) -> QWidget:
         lv.setStyleSheet(f"font-size: 11px; color: {MAIN_FG};")
         col.addWidget(lv)
 
-        #: ★ 说明区：**初始隐藏**，点了图标才往下展开
-        #: （用户："技能、共鸣链，点击的时候，往下展开说明，
-        #:   不是弹出说明，初始不点击的时候，不展示任何说明"）
+        #: ★ 点图标 → **在下面那块共用面板里**显示这条例的说明
+        #: （用户："这里点到哪个技能，展示哪个，占满整个红框，
+        #:   再次点击该技能就是关闭展开"）
         if desc:
-            area = _expand_area(host, title, desc)
-            col.addWidget(area)
-            _bind_toggle(holder, area)
+            _bind_exclusive(holder, panel, title, desc)
 
         row.addLayout(col)
     row.addStretch(1)
+
+    outer.addLayout(row)
+    outer.addWidget(panel)
     return host
 
 
@@ -762,6 +850,10 @@ def _chains_block(chains, parent) -> QWidget:
     plate_row = QHBoxLayout(plate)
     plate_row.setContentsMargins(12, 8, 12, 8)
     plate_row.setSpacing(6)
+
+    #: ★ 共用说明面板（和技能那边一样）
+    panel, _pt, _pb = _expand_panel(host)
+
     for it in chains or []:
         holder = _icon_label(it.get("iconUrl"), SKILL_ICON, plate)
         #: ★ 没图就不摆空方块
@@ -773,12 +865,13 @@ def _chains_block(chains, parent) -> QWidget:
         desc = str(it.get("description") or "").strip()
         if desc:
             holder.setCursor(Qt.CursorShape.PointingHandCursor)
-            holder.setToolTip(label)
+            _bind_exclusive(holder, panel, label, desc)
         plate_row.addWidget(holder)
     plate_row.addStretch(1)
     box.addWidget(plate)
 
-    #: ★ 每条链：标题常驻 + **说明初始隐藏**（点了才展开）
+    #: ★ 每条链：标题常驻 + **说明在共用面板里**（点了才显示）
+    #: 用户："共鸣链这里也是跟上面一样"
     for it in chains or []:
         unlocked = bool(it.get("unlocked"))
         desc = str(it.get("description") or "").strip()
@@ -798,15 +891,12 @@ def _chains_block(chains, parent) -> QWidget:
         title.setStyleSheet("font-size: 12px;")
         if desc:
             title.setCursor(Qt.CursorShape.PointingHandCursor)
+            label = f"共鸣链 {it.get('order')}　{it.get('name') or ''}"
+            _bind_exclusive(title, panel, label, desc)
         lay.addWidget(title)
-
-        if desc:
-            area = _expand_area(
-                line, f"共鸣链 {it.get('order')}　{it.get('name') or ''}",
-                desc)
-            lay.addWidget(area)
-            _bind_toggle(title, area)
         box.addWidget(line)
+
+    box.addWidget(panel)
     return host
 
 
@@ -873,12 +963,24 @@ class CharacterTile(QWidget):
         lv.setStyleSheet("font-size: 11px; color: #888;")
         box.addWidget(lv)
 
-        border = BAD_FG if flagged else (
-            "#0a84ff" if selected else "transparent")
-        width = 2 if (flagged or selected) else 1
-        self.setStyleSheet(
-            f"CharacterTile {{ border: {width}px solid {border};"
-            f" border-radius: 6px; }}")
+        # ★★ 选中的格子 → **黄色高亮**（用户 2026-10-05：
+        #    "这里点到哪个，哪个黄色高亮"）
+        #
+        # ⚠ 原来是蓝色边框（``#0a84ff``）—— 用户要的是**黄**的。
+        # 黄底 + 金色边框，未达标仍然是红框（红优先，因为那是"有问题"）。
+        if flagged:
+            self.setStyleSheet(
+                f"CharacterTile {{ border: 2px solid {BAD_FG};"
+                f" border-radius: 6px;"
+                f" background: {SELECT_BG if selected else 'transparent'}; }}")
+        elif selected:
+            self.setStyleSheet(
+                f"CharacterTile {{ border: 2px solid {SELECT_BORDER};"
+                f" border-radius: 6px; background: {SELECT_BG}; }}")
+        else:
+            self.setStyleSheet(
+                "CharacterTile { border: 1px solid transparent;"
+                " border-radius: 6px; }")
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 接口
         self.clicked.emit(self._cid)

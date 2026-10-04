@@ -81,8 +81,29 @@ TILE_SIZE = 72
 TILE_W = 96
 TILE_H = 132
 
-#: 「达标」筛选下拉的选项（用户："达标/未达标"）
-FILTER_CHOICES = ("全部", "未达标", "达标")
+#: 「达标」筛选下拉的选项
+#:
+#: 用户 2026-10-05："增加一个分类，等级（未满90级的）"
+FILTER_CHOICES = ("全部", "未达标", "达标", "未满90级")
+
+#: 满级线（用户要的这个分类就是按它筛）
+MAX_LEVEL = 90
+
+
+def is_below_max_level(role: dict) -> bool:
+    """角色是否**没满 90 级**（用户要的筛选分类）。
+
+    ⚠ 缺字段 / 坏值 → **返回 False**（不把它算进"未满级"）。
+    我第一版写成 ``int(level or 0) < MAX`` —— ``None``/``{}`` 都会变成 0，
+    于是"没数据"被当成"0 级"混进筛选里（测试当场抓出来了）。
+    """
+    raw = (role or {}).get("level")
+    if raw is None or raw == "":
+        return False
+    try:
+        return int(raw) < MAX_LEVEL
+    except (TypeError, ValueError):
+        return False
 
 #: ★ 不显示的角色 —— **漂泊者（主角）**
 #:
@@ -852,6 +873,9 @@ class CharacterBuildPanel(ScrollArea):
             if choice == "未达标" and not issues:
                 continue
             if choice == "达标" and issues:
+                continue
+            # ★ 等级筛选（用户："增加一个分类，等级（未满90级的）"）
+            if choice == "未满90级" and not is_below_max_level(role):
                 continue
             # ★ 搜索（名字 / 属性 / 武器）
             if keyword:
