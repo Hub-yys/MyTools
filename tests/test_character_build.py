@@ -1136,35 +1136,44 @@ class TestDetailView(unittest.TestCase):
         self.assertIn("套装不统一", " ".join(self._texts(view)))
 
     def test_shows_all_chain_descriptions(self):
-        """★★ **每条共鸣链**都有说明可看（标题常驻，说明点开看）。
+        """★★ **每条共鸣链**都能点开看说明。
 
         用户 2026-10-05："共鸣链数据能拿到吗" → 能。
 
-        ⚠ 后来又要求"初始不点击的时候，不展示任何说明" +
-        "共鸣链这里也是跟上面一样"（共用一块面板）——
-        所以**标题常驻、说明点了才显示**。
+        ⚠ 之后又要求（截图圈出标题列表）："删掉" ——
+        那一串 `1 雨洗千山皆入画 未激活` 不要了，**只留图标**。
+        所以这条测试改成查"每条都有一个可点图标"。
         """
+        import tempfile
+
+        from PySide6.QtGui import QPixmap
         from PySide6.QtWidgets import QLabel
 
+        from src.core import icon_cache as IC
         from src.tools.game.character_build.detail_view import EchoDetailView
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        orig = IC.icon_root
+        IC.icon_root = lambda: pathlib.Path(tmp.name)
+        self.addCleanup(lambda: setattr(IC, "icon_root", orig))
+        p = IC.local_path("https://x/c.png")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        pix = QPixmap(8, 8)
+        pix.fill()
+        pix.save(str(p))
 
         detail = self._detail()
         detail["chainList"] = [
             {"order": i, "name": f"链{i}", "unlocked": i <= 3,
              "description": f"链{i}的说明文字",
-             "iconUrl": ""}
+             "iconUrl": "https://x/c.png"}
             for i in range(1, 7)
         ]
         view = EchoDetailView()
         view.show_detail(detail)
 
-        #: ① 每条链的**标题**常驻
-        joined = " ".join(self._texts(view))
-        for i in range(1, 7):
-            with self.subTest(order=i):
-                self.assertIn(f"链{i}", joined, f"第 {i} 条共鸣链标题没显示")
-
-        #: ② 每条都能点开看说明
+        #: ★ 每条链一个可点图标（标题列表已按用户要求删掉）
         clickable = [w for w in view.findChildren(QLabel)
                      if w.mousePressEvent.__name__ == "_toggle"
                      and w.property("expandKey")]
@@ -1172,21 +1181,164 @@ class TestDetailView(unittest.TestCase):
                                 f"可点的链只有 {len(clickable)} 条")
 
     def test_marks_locked_chains(self):
-        """★ 未解锁的共鸣链要标出来。"""
+        """★ 未解锁的共鸣链要能看出来（**压暗**，不是黄底）。
+
+        ⚠ 原来查的是文字"未激活" —— 用户后来把那一列标题**删掉了**
+        （截图圈出那一列：「删掉」），改成看**图标的压暗样式**。
+        """
+        import tempfile
+
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtWidgets import QLabel, QWidget
+
+        from src.core import icon_cache as IC
+        from src.tools.game.character_build import detail_view as DV
         from src.tools.game.character_build.detail_view import EchoDetailView
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        orig = IC.icon_root
+        IC.icon_root = lambda: pathlib.Path(tmp.name)
+        self.addCleanup(lambda: setattr(IC, "icon_root", orig))
+        p = IC.local_path("https://x/c.png")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        pix = QPixmap(8, 8)
+        pix.fill()
+        pix.save(str(p))
 
         detail = self._detail()
         detail["chainList"] = [
             {"order": 1, "name": "甲", "unlocked": True,
-             "description": "开了"},
+             "description": "开了", "iconUrl": "https://x/c.png"},
             {"order": 2, "name": "乙", "unlocked": False,
-             "description": "没开"},
+             "description": "没开", "iconUrl": "https://x/c.png"},
+        ]
+        view = EchoDetailView()
+        view.show_detail(detail)
+
+        #: 未解锁的那个图标被压暗
+        dimmed = [w for w in view.findChildren(QLabel)
+                  if "opacity" in (w.styleSheet() or "")]
+        self.assertTrue(dimmed, "未解锁的链条目没压暗")
+
+        #: 已解锁的**黄底**，未解锁的**没有**
+        cells = [w for w in view.findChildren(QWidget)
+                 if w.objectName() == "chainCell"]
+        self.assertEqual(len(cells), 2, f"链条目数不对（{len(cells)}）")
+        yellow = [c for c in cells if DV.SELECT_BG in (c.styleSheet() or "")]
+        self.assertEqual(len(yellow), 1,
+                         "黄底应该只有已激活那一个")
+
+    def test_chain_names_available_via_click(self):
+        """★ 标题删了，但点图标仍能看到是哪条（面板标题里有名字）。"""
+        import tempfile
+
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtWidgets import QLabel, QWidget
+
+        from src.core import icon_cache as IC
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        orig = IC.icon_root
+        IC.icon_root = lambda: pathlib.Path(tmp.name)
+        self.addCleanup(lambda: setattr(IC, "icon_root", orig))
+        p = IC.local_path("https://x/c.png")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        pix = QPixmap(8, 8)
+        pix.fill()
+        pix.save(str(p))
+
+        detail = self._detail()
+        detail["chainList"] = [
+            {"order": 3, "name": "链名丙", "unlocked": True,
+             "description": "丙说明", "iconUrl": "https://x/c.png"},
+        ]
+        view = EchoDetailView()
+        view.show_detail(detail)
+        clickable = [w for w in view.findChildren(QLabel)
+                     if w.mousePressEvent.__name__ == "_toggle"
+                     and w.property("expandKey")]
+        self.assertTrue(clickable, "共鸣链图标不可点")
+        clickable[0].mousePressEvent(None)
+        panels = [w for w in view.findChildren(QWidget)
+                  if w.objectName() == "expandPanel"]
+        texts = [t.text() for w in panels
+                 for t in w.findChildren(QLabel) if t.text()]
+        self.assertTrue(any("链名丙" in t for t in texts),
+                        f"点开后看不到是哪条链（{texts}）")
+
+    def test_unlocked_chains_are_yellow(self):
+        """★★ 已激活的共鸣链图标 → **黄底高亮**。
+
+        用户 2026-10-05（截图圈出共鸣链图标行）："已激活这里黄色高亮"
+
+        ⚠ 我原来只是"未解锁的灰掉" —— 在深色底上差别不明显，
+        用户要求把**已激活的**点亮。
+        """
+        import tempfile
+
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtWidgets import QWidget
+
+        from src.core import icon_cache as IC
+        from src.tools.game.character_build import detail_view as DV
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        orig = IC.icon_root
+        IC.icon_root = lambda: pathlib.Path(tmp.name)
+        self.addCleanup(lambda: setattr(IC, "icon_root", orig))
+        p = IC.local_path("https://x/c.png")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        pix = QPixmap(8, 8)
+        pix.fill()
+        pix.save(str(p))
+
+        detail = self._detail()
+        detail["chainList"] = [
+            {"order": 1, "name": "开着的", "unlocked": True,
+             "description": "甲", "iconUrl": "https://x/c.png"},
+            {"order": 2, "name": "锁着的", "unlocked": False,
+             "description": "乙", "iconUrl": "https://x/c.png"},
+        ]
+        view = EchoDetailView()
+        view.show_detail(detail)
+
+        cells = [w for w in view.findChildren(QWidget)
+                 if w.objectName() == "chainCell"]
+        self.assertEqual(len(cells), 2, f"共鸣链格子数不对（{len(cells)}）")
+        yellow = [c for c in cells if DV.SELECT_BG in (c.styleSheet() or "")]
+        self.assertEqual(len(yellow), 1,
+                         f"黄底格子应该正好 1 个（已激活那个），"
+                         f"实际 {len(yellow)}")
+
+    def test_no_chain_title_list(self):
+        """★★ 共鸣链**不再列那一串标题**。
+
+        用户 2026-10-05（截图圈出 `1 雨洗千山皆入画 未激活` 那一列）：
+        "删掉"
+
+        → 图标本身就是"哪条"的表示，文字多余；说明点开看。
+        """
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        detail = self._detail()
+        detail["chainList"] = [
+            {"order": 1, "name": "链名甲", "unlocked": True,
+             "description": "甲说明", "iconUrl": ""},
+            {"order": 2, "name": "链名乙", "unlocked": False,
+             "description": "乙说明", "iconUrl": ""},
         ]
         view = EchoDetailView()
         view.show_detail(detail)
         texts = self._texts(view)
-        self.assertTrue(any("未激活" in t for t in texts),
-                        f"没标出未解锁的链（{texts[-6:]}）")
+        for want in ("链名甲", "链名乙", "未激活"):
+            with self.subTest(want=want):
+                self.assertFalse(any(want in t for t in texts),
+                                 f"共鸣链标题列表还在（{want}）")
 
     def test_skill_descriptions_available(self):
         """★★ 技能的文字说明**能展开看到**。

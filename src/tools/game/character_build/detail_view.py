@@ -826,15 +826,20 @@ def _skills_block(skills, parent) -> QWidget:
 
 
 def _chains_block(chains, parent) -> QWidget:
-    """「共鸣链」块：图标排（可点展开）+ 每条链的标题。
+    """「共鸣链」块：图标排（可点展开说明）+ **已激活的黄底高亮**。
 
-    用户 2026-10-05::
+    用户 2026-10-05（截图圈出图标行和标题列表）::
 
-        "共鸣链数据能拿到吗"                       ← 数据有
-        "点击的时候，往下展开说明，不是弹出说明，
-         初始不点击的时候，不展示任何说明"          ← 交互要求
+        "已激活这里黄色高亮"      ← 图标
+        "删掉"                    ← 那一列标题文字（1 雨洗千山皆入画 未激活 …）
 
-    → 图标 + 标题常驻；**说明文字初始隐藏**，点图标或标题才展开。
+    ## 所以这一块现在只有
+
+    **一排图标**（每条一个），已激活的**黄底高亮**，未激活的灰掉。
+    点任意图标 → 下面共用面板展开那条的说明。
+
+    ⚠ 我原来还列了一串标题（`1 雨洗千山皆入画 未激活` …）——
+    用户明确说"删掉"：图标本身就是"哪条"的表示，文字是多余的。
     """
     host = QWidget(parent)
     box = QVBoxLayout(host)
@@ -848,54 +853,44 @@ def _chains_block(chains, parent) -> QWidget:
         f"#chainPlate {{ background: {ICON_PLATE_BG};"
         f" border-radius: 6px; }}")
     plate_row = QHBoxLayout(plate)
-    plate_row.setContentsMargins(12, 8, 12, 8)
-    plate_row.setSpacing(6)
+    plate_row.setContentsMargins(12, 10, 12, 10)
+    plate_row.setSpacing(8)
 
     #: ★ 共用说明面板（和技能那边一样）
     panel, _pt, _pb = _expand_panel(host)
 
     for it in chains or []:
-        holder = _icon_label(it.get("iconUrl"), SKILL_ICON, plate)
+        label = f"共鸣链 {it.get('order')}　{it.get('name') or ''}"
+        desc = str(it.get("description") or "").strip()
+        unlocked = bool(it.get("unlocked"))
+
+        #: ★★ 已激活 → **黄底高亮**（用户："已激活这里黄色高亮"）
+        #:
+        #: ⚠ 原来只是"未解锁的灰掉" —— 在深色底上差别不明显，
+        #: 用户要求把**已激活的**标出来（点亮而不是压暗）。
+        cell = QWidget(plate)
+        cell.setObjectName("chainCell")
+        cell.setStyleSheet(
+            f"#chainCell {{ background: "
+            f"{SELECT_BG if unlocked else 'transparent'};"
+            f" border-radius: 6px; }}")
+        cell_box = QVBoxLayout(cell)
+        cell_box.setContentsMargins(4, 4, 4, 4)
+        cell_box.setSpacing(0)
+
+        holder = _icon_label(it.get("iconUrl"), SKILL_ICON, cell)
         #: ★ 没图就不摆空方块
         if holder is None:
             continue
-        if not it.get("unlocked"):
+        if not unlocked:
             holder.setStyleSheet("opacity: 0.35;")
-        label = f"共鸣链 {it.get('order')}　{it.get('name') or ''}"
-        desc = str(it.get("description") or "").strip()
         if desc:
             holder.setCursor(Qt.CursorShape.PointingHandCursor)
             _bind_exclusive(holder, panel, label, desc)
-        plate_row.addWidget(holder)
+        cell_box.addWidget(holder)
+        plate_row.addWidget(cell)
     plate_row.addStretch(1)
     box.addWidget(plate)
-
-    #: ★ 每条链：标题常驻 + **说明在共用面板里**（点了才显示）
-    #: 用户："共鸣链这里也是跟上面一样"
-    for it in chains or []:
-        unlocked = bool(it.get("unlocked"))
-        desc = str(it.get("description") or "").strip()
-        line = QWidget(host)
-        line.setObjectName("chainLine")
-        line.setStyleSheet(
-            "#chainLine { border-bottom: 1px solid rgba(0,0,0,0.06); }")
-        lay = QVBoxLayout(line)
-        lay.setContentsMargins(2, 4, 2, 6)
-        lay.setSpacing(2)
-
-        title = QLabel(
-            f"<b>{it.get('order')}　{it.get('name') or ''}</b>"
-            + ("" if unlocked
-               else "　<span style='color:#9aa0a6'>未激活</span>"),
-            line)
-        title.setStyleSheet("font-size: 12px;")
-        if desc:
-            title.setCursor(Qt.CursorShape.PointingHandCursor)
-            label = f"共鸣链 {it.get('order')}　{it.get('name') or ''}"
-            _bind_exclusive(title, panel, label, desc)
-        lay.addWidget(title)
-        box.addWidget(line)
-
     box.addWidget(panel)
     return host
 
