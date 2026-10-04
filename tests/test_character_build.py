@@ -1111,10 +1111,10 @@ class TestToolPage(unittest.TestCase):
         self.assertTrue(p._log.isHidden(),
                         "日志没被显式隐藏 —— 应该默认折叠，写在后台")
 
-    def test_has_character_grid(self):
-        """★ 要有角色网格（像官方那样展示头像 + 等级 + 共鸣链）。"""
+    def test_has_character_row(self):
+        """★ 要有共鸣者列表（一行横向滚动）。"""
         p = self._panel()
-        self.assertTrue(hasattr(p, "_roles_grid"))
+        self.assertTrue(hasattr(p, "_roles_row"))
         self.assertTrue(hasattr(p, "_cards"))
 
     def test_has_search_box(self):
@@ -1202,23 +1202,49 @@ class TestToolPage(unittest.TestCase):
         p._render(p._data)
         self.assertEqual(len(p._cards), 1, "「达标」筛选不对")
 
-    def test_grid_shows_many_tiles_per_row(self):
-        """★★ 共鸣者列表：**一排多个，只有头像+名字**。
+    def test_roles_are_single_scrollable_row(self):
+        """★★ 共鸣者列表：**只占一行，放不下就横向滑动**。
 
-        用户："不是说了一行展示所有的共鸣者吗，点击一下就展示该共鸣者的
-        属性、声骸信息"　+　"这里一排就展示所有的共鸣者，
-        只展示头像+名称，点击后才展示详情"
+        用户："一个就展示所有共鸣者，展示不全，可以滑动"
 
-        ⚠ 我先后试过 6 列小格子（名字被压两行）和 **2 列大卡片**
-        （一屏看不了几个）—— 用户都不满意。
-        参考图是一排 **6~8 个**、只显示头像 + 名字。
+        ⚠ 我先后试过 **6 列小格子**（名字被压两行）和 **2 列大卡片**
+        （一屏看不了几个），又试过 **8 列换行**（43 个铺了 6 行，
+        把下面的详情区挤出屏幕）—— 用户都不满意。
+
+        正解：``QScrollArea(横向) + QHBoxLayout``，**永远只占一行**。
         """
+        p = self._panel()
+        self.assertTrue(hasattr(p, "_roles_scroll"),
+                        "没有横向滚动容器")
+        #: 纵向滚动条必须关掉（否则会换行/撑高）
+        from PySide6.QtCore import Qt
+
+        self.assertEqual(p._roles_scroll.verticalScrollBarPolicy(),
+                         Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+                         "纵向滚动条没关 —— 列表会撑成多行")
+        self.assertEqual(p._roles_scroll.horizontalScrollBarPolicy(),
+                         Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+                         "横向滚动条不是 AsNeeded —— 放不下就没法滑")
+        #: 高度必须是**固定的一行**
         from src.tools.game.character_build import tool as T
 
-        self.assertGreaterEqual(T.GRID_COLS, 6,
-                                "一排太少了 —— 参考图能看 6~8 个")
-        self.assertGreaterEqual(T.TILE_SIZE, 48, "头像太小")
-        self.assertLessEqual(T.TILE_SIZE, 96, "头像太大（格子会挤）")
+        self.assertLessEqual(p._roles_scroll.maximumHeight(),
+                             T.TILE_H + 40,
+                             "列表容器太高 —— 会挤掉详情区")
+
+    def test_all_roles_go_in_one_row(self):
+        """★ 所有角色都在**同一行**（不是网格）。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [{"roleId": i, "roleName": f"角色{i}", "level": 90}
+                         for i in range(20)],
+            "details": {},
+        }
+        p._render(p._data)
+        self.assertEqual(len(p._cards), 20)
+        #: 一行容器里应该有 20 个格子 + 1 个 stretch
+        self.assertEqual(p._roles_row.count(), 21,
+                         "不是全在一行里")
 
     def test_tile_shows_avatar_and_name(self):
         """★ 格子 = 头像 + 名字（用户："文字+图片"）。"""

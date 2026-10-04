@@ -31,10 +31,9 @@ import time
 
 from PySide6.QtCore import QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
-    QGridLayout,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
+    QScrollArea,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -73,18 +72,13 @@ MOBILE_LEN = 11
 #: 缓存文件名（用户数据目录）—— 数据持久化，重启直接显示
 CACHE_NAME = "kuro_练度.json"
 
-#: 角色格子尺寸（用户参考图：**头像 + 名字**，一排多个）
+#: 角色格子尺寸（用户参考图：**头像 + 名字**）
 #:
-#: 用户："这里一排就展示所有的共鸣者，只展示头像+名称，点击后才展示详情"
-#:
-#: ⚠ 我先后试过 6 列小格子（名字被压两行）和 2 列大卡片（一屏看不了几个），
-#: 用户都不满意。参考图里是 **一排 6~8 个、只有头像+名字**。
+#: 用户："一个就展示所有共鸣者，展示不全，可以滑动"
+#: → **单独一横行 + 横向滚动**，永远不换行（换行会把详情挤出屏幕）
 TILE_SIZE = 72
 TILE_W = 96
 TILE_H = 132
-
-#: 角色格子每行几个（参考图里一排 6~8 个）
-GRID_COLS = 8
 
 #: 「达标」筛选下拉的选项（用户："达标/未达标"）
 FILTER_CHOICES = ("全部", "未达标", "达标")
@@ -454,11 +448,30 @@ class CharacterBuildPanel(ScrollArea):
         head.addWidget(self._filter_box)
         box.addLayout(head)
 
-        self._roles_host = QWidget(card)
-        self._roles_grid = QGridLayout(self._roles_host)
-        self._roles_grid.setContentsMargins(0, 0, 0, 0)
-        self._roles_grid.setSpacing(6)
-        box.addWidget(self._roles_host)
+        # ★★ 共鸣者列表：**单独一横行，放不下就横向滚动**
+        #:
+        #: 用户："一个就展示所有共鸣者，展示不全，可以滑动"
+        #:
+        #: ⚠ 之前用 QGridLayout 换行 → 43 个角色铺了 6 行，
+        #: 把下面的详情区挤到屏幕外。现在改成
+        #: ``QScrollArea(横向) + QHBoxLayout`` —— **永远只占一行**。
+        self._roles_scroll = QScrollArea(card)
+        self._roles_scroll.setWidgetResizable(True)
+        self._roles_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._roles_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._roles_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        #: ★ 只让它高一行（不然 ScrollArea 会想撑满）
+        self._roles_scroll.setFixedHeight(TILE_H + 22)
+
+        self._roles_host = QWidget()
+        self._roles_row = QHBoxLayout(self._roles_host)
+        self._roles_row.setContentsMargins(0, 0, 0, 0)
+        self._roles_row.setSpacing(6)
+        self._roles_row.addStretch(1)
+        self._roles_scroll.setWidget(self._roles_host)
+        box.addWidget(self._roles_scroll)
         return card
 
     def _build_detail_card(self, parent) -> CardWidget:
@@ -705,8 +718,8 @@ class CharacterBuildPanel(ScrollArea):
                                  size=TILE_SIZE, parent=self._roles_host)
             tile.setFixedSize(QSize(TILE_W, TILE_H))
             tile.clicked.connect(self._show_detail)
-            self._roles_grid.addWidget(tile, shown // GRID_COLS,
-                                       shown % GRID_COLS)
+            #: ★ 插到末尾那个 stretch 之前（否则会被推到最右）
+            self._roles_row.insertWidget(self._roles_row.count() - 1, tile)
             self._cards.append(tile)
             shown += 1
 
