@@ -520,10 +520,22 @@ class TestEchoIssues(unittest.TestCase):
         items = [self._item(c, level=20, valid=3) for c in (4, 3, 3, 1, 1)]
         self.assertTrue(any("没满级" in x for x in self._issues(items)))
 
-    def test_detects_mixed_sets(self):
+    def test_mixed_sets_alone_is_not_a_problem(self):
+        """★★★ **混搭本身不是问题**（那条"套装不统一"已删）。
+
+        用户 2026-10-05（截图圈出千咲属性全绿却进「未达标」）：
+        "达标的怎么进了未达标的？"
+
+        千咲官方推荐的就是 **3+2 混搭** —— "不统一"根本不是问题，
+        **对不上官方组合**才是（见 :class:`TestEchoSetComparison`）。
+
+        ⚠ 这条原来叫 ``test_detects_mixed_sets``，断言"混搭要报错" ——
+        **那是错的**，改过来了。
+        """
         items = [self._item(c, valid=3, fetter="A" if c == 4 else "B")
                  for c in (4, 3, 3, 1, 1)]
-        self.assertTrue(any("套装不统一" in x for x in self._issues(items)))
+        self.assertEqual([x for x in self._issues(items) if "套装" in x], [],
+                         "混搭被报成问题了 —— 3+2 是合法配装")
 
     def test_detects_wrong_cost(self):
         """★ COST 不是 4-3-3-1-1 要报出来（实测见过别的配比）。"""
@@ -2031,6 +2043,142 @@ class TestGapHint(unittest.TestCase):
         reds = [w.text() for w in view.findChildren(QLabel)
                 if DV.BAD_FG in (w.styleSheet() or "")]
         self.assertNotIn("重击伤害加成", reds)
+
+
+class TestEchoSetComparison(unittest.TestCase):
+    """★★★ 套装要看**官方推荐的组合**，不是"必须统一"。
+
+    用户 2026-10-05（截图圈出千咲：**属性全绿却进了「未达标」**）::
+
+        "达标的怎么进了未达标的？"
+
+    ## 根因 ①：我自己发明的"套装不统一"规则
+
+    ::
+
+        千咲实际:  命理崩毁之弦 ×3 + 幽夜隐匿之帷 ×2   ← 3+2 混搭
+        官方推荐:  命理崩毁之弦 ×3 + 幽夜隐匿之帷 ×2   ← **一模一样**
+
+    **3+2 是完全合法的配装**，官方攻略里就是这么推荐的。
+    "不统一"根本不是问题 —— **对不上官方组合**才是。
+
+    ## 根因 ②：官方数据里**同名套装会出现两次**
+
+    ::
+
+        千咲（3+2）:
+            {"echoSet": 3, "name": "命理崩毁之弦"}
+            {"echoSet": 2, "name": "幽夜隐匿之帷"}
+
+        椿 / 维里奈（5 件套）:
+            {"echoSet": 5, "name": "轻云出月"}
+            {"echoSet": 2, "name": "轻云出月"}     ← ★ **同名！**
+
+    后一条只是"2 件套效果"的附带说明，**不是"再要 2 件"**。
+    我第一版没去重 → "椿"被算成 `{"轻云出月": 2}` →
+    报"现在 ×5，推荐 ×2" —— **29 个角色全被误判**。
+
+    → 同名取**最大值**才对。
+    """
+
+    @staticmethod
+    def _standard(sets) -> dict:
+        """``sets`` = ``[(名字, 件数), ...]``（照官方结构造）。"""
+        return {"echo": {"main": {"echoSetEffects": [
+            {"echoSet": n, "echoSetGroupGameBusinessId": str(i),
+             "texts": [{"language": "zh-Hans", "name": name}]}
+            for i, (name, n) in enumerate(sets, start=1)
+        ]}}}
+
+    @staticmethod
+    def _items(sets) -> list:
+        """``sets`` = ``[(名字, 件数), ...]`` → 声骸列表。
+
+        ⚠ 件数之和必须是 5（COST 4-3-3-1-1），否则会先被 COST 规则报错。
+        """
+        costs = [4, 3, 3, 1, 1]
+        out = []
+        i = 0
+        for name, n in sets:
+            for _ in range(n):
+                out.append({"cost": costs[i], "level": 25, "quality": 5,
+                            "phantomProp": {"name": "x"},
+                            "fetterDetail": {"name": name},
+                            "mainProps": [], "subProps": []})
+                i += 1
+        return out
+
+    def _issues(self, actual, recommended):
+        from src.tools.game.character_build import tool as T
+
+        detail = {"role": {"roleName": "T", "level": 90},
+                  "roleAttributeList": [],
+                  "phantomData": {"cost": 12,
+                                  "equipPhantomList": self._items(actual)}}
+        return T.CharacterBuildPanel._echo_issues(
+            detail, self._standard(recommended))
+
+    def test_recommended_counts(self):
+        """★ 同名套装要**取最大值**（5 件套会同时给 5 和 2）。"""
+        from src.tools.game.character_build import tool as T
+
+        got = T._recommended_set_counts(self._standard(
+            [("轻云出月", 5), ("轻云出月", 2)]))
+        self.assertEqual(got, {"轻云出月": 5},
+                         "同名没去重 —— 5 件套会被算成 2 件")
+
+    def test_mixed_3_plus_2_is_fine(self):
+        """★★ 3+2 混搭**对上官方推荐就是对的**（千咲那个 bug）。"""
+        got = self._issues(
+            [("命理崩毁之弦", 3), ("幽夜隐匿之帷", 2)],
+            [("命理崩毁之弦", 3), ("幽夜隐匿之帷", 2)])
+        self.assertEqual(got, [], f"合法的 3+2 被判成问题（{got}）")
+
+    def test_five_piece_is_fine(self):
+        """★★ **5 件套不报错**（官方给 5 和 2 两条同名记录）。"""
+        got = self._issues([("轻云出月", 5)], [("轻云出月", 5), ("轻云出月", 2)])
+        self.assertEqual(got, [], f"5 件套被判成问题（{got}）")
+
+    def test_wrong_set_is_reported(self):
+        """★ 用了**别的套装**才该报（洛可可那种）。"""
+        got = self._issues([("幽夜隐匿之帷", 5)], [("轻云出月", 5)])
+        self.assertTrue(any("套装" in x for x in got),
+                        f"用错套装没报（{got}）")
+
+    def test_wrong_mix_is_reported(self):
+        """★ 混搭但**搭配不对**也要报（弗洛洛那种）。"""
+        got = self._issues(
+            [("失序彼岸之梦", 3), ("幽夜隐匿之帷", 2)],
+            [("失序彼岸之梦", 3), ("沉日劫明", 2)])
+        self.assertTrue(any("套装" in x for x in got),
+                        f"搭配不对没报（{got}）")
+
+    def test_order_does_not_matter(self):
+        """★ 套装顺序无关（只看**组合**）。"""
+        got = self._issues(
+            [("幽夜隐匿之帷", 2), ("命理崩毁之弦", 3)],
+            [("命理崩毁之弦", 3), ("幽夜隐匿之帷", 2)])
+        self.assertEqual(got, [])
+
+    def test_no_recommendation_is_not_an_issue(self):
+        """★ 拿不到官方套装 → 不比、不瞎报。"""
+        from src.tools.game.character_build import tool as T
+
+        detail = {"role": {}, "roleAttributeList": [],
+                  "phantomData": {"cost": 12,
+                                  "equipPhantomList": self._items(
+                                      [("随便什么", 5)])}}
+        for std in (None, {}, {"echo": None}, {"echo": {"main": None}},
+                    {"echo": {"main": {"echoSetEffects": []}}}):
+            with self.subTest(std=str(std)[:30]):
+                got = T.CharacterBuildPanel._echo_issues(detail, std)
+                self.assertEqual([x for x in got if "套装" in x], [])
+
+    def test_uniform_echoes_not_reported(self):
+        """★★ 单套装也**不该**因为"不统一"被报（那条规则已删）。"""
+        got = self._issues([("隐世回光", 5)], [("隐世回光", 5), ("隐世回光", 2)])
+        self.assertEqual([x for x in got if "统一" in x], [],
+                         "「套装不统一」那条瞎定的规则又回来了")
 
 
 class TestUnleveledFilter(unittest.TestCase):

@@ -198,6 +198,92 @@ def _compare_standard(detail: dict, standard) -> list[str]:
     return bad
 
 
+def _recommended_set_counts(standard) -> dict[str, int]:
+    """从官方标准里取**推荐的套装及件数**。
+
+    ## 原始结构（实测，关键在"同名要去重"）
+
+    ::
+
+        千咲（3+2 混搭）:
+            {"echoSet": 3, "texts": [... "命理崩毁之弦"]}
+            {"echoSet": 2, "texts": [... "幽夜隐匿之帷"]}
+
+        椿 / 维里奈（5 件套）:
+            {"echoSet": 5, "texts": [... "轻云出月"]}
+            {"echoSet": 2, "texts": [... "轻云出月"]}     ← ★ **同名！**
+
+    ⚠⚠ 5 件套的角色会**列出两条同名记录**（``5`` 和 ``2``）——
+    后一条只是"2 件套效果"的附带说明，**不是"再要 2 件"**。
+
+    我第一版没去重，于是"椿"被算成 `{"轻云出月": 2}` →
+    报"现在 ×5，推荐 ×2" —— **29 个角色全被误判**。
+
+    → 正确做法：**同名取最大值**。
+    """
+    effects = (((standard or {}).get("echo") or {}).get("main") or {}) \
+        .get("echoSetEffects") or []
+    out: dict[str, int] = {}
+    for e in effects:
+        if not isinstance(e, dict):
+            continue
+        name = ""
+        #: 优先中文名
+        for t in e.get("texts") or []:
+            if isinstance(t, dict) and t.get("language") == "zh-Hans" \
+                    and t.get("name"):
+                name = str(t["name"])
+                break
+        if not name:                           #: 退回第一个有名字的
+            for t in e.get("texts") or []:
+                if isinstance(t, dict) and t.get("name"):
+                    name = str(t["name"])
+                    break
+        try:
+            count = int(e.get("echoSet") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if not name or count <= 0:
+            continue
+        #: ★ 同名取最大值（5 件套会同时给 5 和 2）
+        out[name] = max(out.get(name, 0), count)
+    return out
+
+
+def _compare_echo_sets(items, standard) -> list[str]:
+    """★★ 跟**官方推荐的套装组合**比（不是"必须统一"）。
+
+    ## 为什么改（用户 2026-10-05 报的）
+
+    千咲属性全绿却进了「未达标」—— 查下来是我那条**自己发明的**
+    "套装不统一"规则误判::
+
+        千咲实际:  命理崩毁之弦 ×3 + 幽夜隐匿之帷 ×2   ← 3+2 混搭
+        官方推荐:  命理崩毁之弦 ×3 + 幽夜隐匿之帷 ×2   ← **一模一样**
+
+    **3+2 是完全合法的配装**，官方攻略里就是这么推荐的。
+    "不统一"根本不是问题 —— **对不上官方组合**才是。
+
+    :return: 对不上时返回一条说明；对得上（或拿不到官方组合）返回 ``[]``
+    """
+    recommended = _recommended_set_counts(standard)
+    if not recommended:
+        return []                              #: 官方没给 → 不比，不瞎报
+
+    actual: dict[str, int] = {}
+    for x in items or []:
+        name = str((x.get("fetterDetail") or {}).get("name") or "").strip()
+        if name:
+            actual[name] = actual.get(name, 0) + 1
+
+    #: 组合一致 = 每个套装的数量都对得上（**顺序无关**）
+    if actual == recommended:
+        return []
+    got = " + ".join(f"{k}×{v}" for k, v in sorted(actual.items()))
+    want = " + ".join(f"{k}×{v}" for k, v in sorted(recommended.items()))
+    return [f"套装搭配不符（现在 {got}，推荐 {want}）"]
+
+
 def cache_file():
     """缓存文件位置（用户数据目录）。"""
     return paths.user_data_dir() / CACHE_NAME
@@ -987,12 +1073,20 @@ class CharacterBuildPanel(ScrollArea):
         if not_max:
             issues.append(f"{len(not_max)} 个声骸没满级")
 
-        # ③ 套装
-        sets = {(x.get("fetterDetail") or {}).get("name")
-                for x in items}
-        sets.discard(None)
-        if len(sets) > 1:
-            issues.append(f"套装不统一（{len(sets)} 种）")
+        # ③ ★★ 套装 —— 跟**官方推荐**比，不是"必须统一"
+        #
+        # ⚠⚠ 我原来写的是"套装不统一（N 种）就算问题" —— **那是错的**。
+        #
+        # 用户 2026-10-05（截图圈出千咲：属性全绿却进了「未达标」）：
+        # "达标的怎么进了未达标的？"
+        #
+        # 查下来千咲是 **3+2 混搭**（3 件命理崩毁之弦 + 2 件幽夜隐匿之帷）——
+        # 而**官方推荐的正是这个组合**（``standard.echo.main.echoSetEffects``
+        # 里写着 ``echoSet=3`` 和 ``echoSet=2``）。
+        #
+        # **3+2 是完全合法的配装**，"不统一"根本不是问题。
+        # 现在改成：**跟官方的套装组合比**，对不上才报。
+        issues.extend(_compare_echo_sets(items, standard))
 
         # ④ COST 配比（期望 4-3-3-1-1 = 12）
         costs = sorted((x.get("cost") or 0 for x in items), reverse=True)
