@@ -940,6 +940,55 @@ class TestDetailView(unittest.TestCase):
             if DV.SUB_BG in css:
                 self.assertNotIn(DV.SUB_HIT_BG, css)
 
+    def test_each_section_is_its_own_card(self):
+        """★★ 每一块都要是**独立卡片**（深色标题栏 + 内容区）。
+
+        用户 2026-10-04（截图圈出「共鸣者属性」「武器」「属性展示」三个标题）：
+        "这些都分别做成一个卡片，别放在一起，下面的也是"
+
+        ⚠ 我原来只画了一个加粗小标题，所有区块直接堆在同一个白底上 ——
+        视觉上糊成一片，用户要求**每块各自成卡片**。
+        """
+        from PySide6.QtWidgets import QLabel, QWidget
+
+        from src.tools.game.character_build import detail_view as DV
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        view = EchoDetailView()
+        view.show_detail(self._detail())
+
+        #: ★ 每个期望的区块都要有自己的**深色标题栏**
+        heads = [w.text() for w in view.findChildren(QLabel)
+                 if DV.SECTION_HEAD_BG in (w.styleSheet() or "")]
+        for want in ("共鸣者属性", "武器", "属性展示", "声骸",
+                     "推荐辅音词条命中", "装配声骸详情", "技能", "共鸣链"):
+            with self.subTest(want=want):
+                self.assertTrue(any(want in h for h in heads),
+                                f"「{want}」没有独立卡片（找到 {heads}）")
+
+        #: ★ 卡片容器本身要有边框 / 圆角
+        cards = [w for w in view.findChildren(QWidget)
+                 if DV.SECTION_BORDER in (w.styleSheet() or "")]
+        self.assertGreaterEqual(len(cards), 8,
+                                f"卡片数不对（{{len(cards)}} 个）—— "
+                                f"区块又被堆在一起了")
+
+    def test_section_header_is_dark(self):
+        """★ 标题栏得是**深色**（官方那种），不是白底黑字。"""
+        from src.tools.game.character_build import detail_view as DV
+
+        def lum(hex_color: str) -> float:
+            h = hex_color.lstrip("#")
+            r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+            return (0.299 * r + 0.587 * g + 0.114 * b) / 255
+
+        self.assertLess(lum(DV.SECTION_HEAD_BG), 0.5,
+                        "标题栏不够深 —— 官方是深灰底白字")
+        self.assertGreater(lum(DV.SECTION_HEAD_FG), 0.5,
+                           "标题栏文字不够亮")
+        self.assertGreater(lum(DV.SECTION_BG), 0.8,
+                           "内容区不是浅色底")
+
     def test_hit_rows_actually_differ_from_miss_rows(self):
         """★ 命中 / 未命中的底色必须是**两个不同的颜色**。"""
         from src.tools.game.character_build import detail_view as DV

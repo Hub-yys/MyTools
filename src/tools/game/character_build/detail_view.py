@@ -100,17 +100,61 @@ def _icon_label(url: str, size: int, parent=None) -> QLabel:
     return lab
 
 
-def _section(title: str, parent=None) -> tuple[QWidget, QVBoxLayout]:
-    """一个带标题的区块。返回 ``(容器, 内容布局)``。"""
-    host = QWidget(parent)
-    box = QVBoxLayout(host)
-    box.setContentsMargins(0, 0, 0, 0)
-    box.setSpacing(6)
+#: ★ 区块卡片的样式（用户："这些都分别做成一个卡片，别放在一起"）
+#:
+#: 官方参考图里每一块都是**独立的卡片**：
+#: 深色标题栏 + 浅色内容区 + 圆角 + 细边框。
+SECTION_BG = "#ffffff"
+#: 标题栏底色（官方那种深灰）
+SECTION_HEAD_BG = "#3d4148"
+#: 标题栏文字色
+SECTION_HEAD_FG = "#f2f3f5"
+#: 卡片边框 / 圆角
+SECTION_BORDER = "rgba(0,0,0,0.14)"
+SECTION_RADIUS = 8
 
-    head = StrongBodyLabel(title, host)
-    head.setStyleSheet("font-size: 13px;")
-    box.addWidget(head)
-    return host, box
+
+def _section(title: str, parent=None) -> tuple[QWidget, QVBoxLayout]:
+    """一个**独立卡片**区块（深色标题栏 + 浅色内容区）。
+
+    返回 ``(卡片, 内容布局)`` —— 往 ``内容布局`` 里塞东西即可。
+
+    ## 为什么是卡片（用户 2026-10-04）
+
+    用户（截图圈出「共鸣者属性」「武器」「属性展示」三个标题）：
+    "这些都分别做成一个卡片，别放在一起，下面的也是"
+
+    ⚠ 我原来只画了一个加粗小标题，所有区块直接堆在同一个白底上 ——
+    视觉上糊成一片，用户要求**每块各自成卡片**。
+    """
+    card = QWidget(parent)
+    card.setStyleSheet(
+        f"background: {SECTION_BG};"
+        f"border: 1px solid {SECTION_BORDER};"
+        f"border-radius: {SECTION_RADIUS}px;")
+    outer = QVBoxLayout(card)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(0)
+
+    #: ── 深色标题栏
+    if title:
+        head = QLabel(title, card)
+        head.setStyleSheet(
+            f"background: {SECTION_HEAD_BG};"
+            f"color: {SECTION_HEAD_FG};"
+            f"font-size: 13px; font-weight: bold;"
+            f"padding: 6px 10px;"
+            f"border-top-left-radius: {SECTION_RADIUS}px;"
+            f"border-top-right-radius: {SECTION_RADIUS}px;")
+        outer.addWidget(head)
+
+    #: ── 内容区
+    body = QWidget(card)
+    box = QVBoxLayout(body)
+    box.setContentsMargins(10, 8, 10, 10)
+    box.setSpacing(6)
+    outer.addWidget(body)
+    return card, box
 
 
 def _prop_grid(props, parent, *, cols: int = 2,
@@ -287,12 +331,12 @@ def _echoes_block(ph: dict, parent) -> QWidget:
                 total += 1
 
     # ── 推荐辅音词条命中
-    _, inner = _section("✦ 推荐辅音词条命中", host)
+    sec, inner = _section("✦ 推荐辅音词条命中", host)
     inner.addWidget(_hit_badge(hits, total, host))
-    box.addWidget(inner.parentWidget())
+    box.addWidget(sec)
 
     # ── 装配声骸详情（两列）
-    _, inner2 = _section("✦ 装配声骸详情", host)
+    sec2, inner2 = _section("✦ 装配声骸详情", host)
     grid_host = QWidget(host)
     grid = QGridLayout(grid_host)
     grid.setContentsMargins(0, 0, 0, 0)
@@ -300,7 +344,7 @@ def _echoes_block(ph: dict, parent) -> QWidget:
     for i, it in enumerate(items):
         grid.addWidget(_phantom_card(it, grid_host), i // 2, i % 2)
     inner2.addWidget(grid_host)
-    box.addWidget(inner2.parentWidget())
+    box.addWidget(sec2)
     return host
 
 
