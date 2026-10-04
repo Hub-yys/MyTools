@@ -178,9 +178,14 @@ class MainWindow(FluentWindow):
 
         self._setup_nav_reorder()
 
-        setThemeColor("#006FD6")
+        #: ★ 应用存下来的皮肤（启动时）—— 见 :mod:`src.core.skins`
+        from src.core import skins as _skins
+
+        _skins.apply_current_skin()
         self._install_nav_resizer()
         self._tweak_navigation()
+        #: ★ 侧栏底部加皮肤选择卡 —— 见 :mod:`src.gui.skin_picker`
+        self._add_skin_card()
         self.center_on_screen()
 
         #: 真正退出时置真 —— ``closeEvent`` 靠它区分「用户要关」和「我们已经决定退了」，
@@ -488,6 +493,35 @@ class MainWindow(FluentWindow):
         button = getattr(getattr(nav, "panel", None), "menuButton", None)
         if button is not None:
             button.hide()
+
+    def _add_skin_card(self) -> None:
+        """★ 侧栏底部加**皮肤选择卡**。
+
+        用户 2026-10-05："左侧边栏，增加皮肤功能，并设计几款好看的皮肤"
+
+        `NavigationPanel.bottomLayout` 就是底部那一块（设置/主题图标都在那），
+        皮肤是**全局设置**，放这里合理。
+        """
+        nav = getattr(self, "navigationInterface", None)
+        panel = getattr(nav, "panel", None)
+        bottom = getattr(panel, "bottomLayout", None)
+        if bottom is None:
+            return
+
+        from src.gui.skin_picker import build_skin_card
+
+        card = build_skin_card(self)
+        card.skin_chosen.connect(self._on_skin_chosen)
+        bottom.addWidget(card)
+        self._skin_card = card
+
+    def _on_skin_chosen(self, skin_id: str) -> None:
+        """换了皮肤：通知一下（皮肤本身已经立刻生效了）。"""
+        from src.core import skins as _skins
+
+        skin = _skins.skin_by_id(skin_id)
+        if skin:
+            logger.info("皮肤已切换：%s", skin["name"])
 
     def center_on_screen(self) -> None:
         screen = QGuiApplication.primaryScreen()
