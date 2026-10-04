@@ -91,12 +91,19 @@ MISS_FG = "#9aa0a6"
 #: 未达标红
 BAD_FG = "#c42b1c"
 
-#: ★★ 选中的角色格子 —— **黄色高亮**（用户："点到哪个，哪个黄色高亮"）
+#: ★★ 选中的角色格子 —— **下方一条黄色粗线**（用户 2026-10-05）
 #:
-#: ⚠ 底色要**看得出是黄的** —— 第一版用了 ``#fff6d6``（太淡，测出来蓝分量
-#: 214，几乎和白底没区别）。现在用饱和一点的黄。
-SELECT_BG = "#ffe9a8"          # 黄底（明显但不刺眼）
-SELECT_BORDER = "#e0a800"      # 金色边框
+#: 用户（截图圈出格子**下方**那条横线）：
+#: "点到那个，哪个下方加一个黄色高亮的粗线"
+#:
+#: ⚠ 改过两次：先是蓝色边框 → 用户要黄的；我又做成整卡黄底 →
+#: 用户要的是**下方一条粗线**（卡片本身不变色）。
+SELECT_BORDER = "#f5b301"      # 粗线颜色（黄）
+SELECT_BAR_H = 4               # 粗线高度（px）
+
+#: 选中格子时**黄底**（共鸣链"已激活"用这个）——
+#: ⚠ 角色格子**不用**它了（改成下方粗线），但共鸣链还在用。
+SELECT_BG = "#ffe9a8"
 
 #: ★★ 技能 / 共鸣链图标区的底色（**深色**）
 #:
@@ -947,10 +954,10 @@ class CharacterTile(QWidget):
 
         nm = QLabel(str(role.get("roleName") or "?"), self)
         nm.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        #: 未达标 → 名字标红（和"选中"无关 —— 选中靠下方那条黄线表示）
         nm.setStyleSheet(
             f"font-size: 12px;"
-            f"color: {BAD_FG if flagged else 'inherit'};"
-            f"{'font-weight: bold;' if selected else ''}")
+            f"{f' color: {BAD_FG}; font-weight: bold;' if flagged else ''}")
         box.addWidget(nm)
 
         lv = QLabel(f"Lv.{role.get('level', '?')}", self)
@@ -963,19 +970,35 @@ class CharacterTile(QWidget):
         #
         # ⚠ 原来是蓝色边框（``#0a84ff``）—— 用户要的是**黄**的。
         # 黄底 + 金色边框，未达标仍然是红框（红优先，因为那是"有问题"）。
-        if flagged:
-            self.setStyleSheet(
-                f"CharacterTile {{ border: 2px solid {BAD_FG};"
-                f" border-radius: 6px;"
-                f" background: {SELECT_BG if selected else 'transparent'}; }}")
-        elif selected:
-            self.setStyleSheet(
-                f"CharacterTile {{ border: 2px solid {SELECT_BORDER};"
-                f" border-radius: 6px; background: {SELECT_BG}; }}")
+        # ★★★ 选中的格子 → **下方一条黄色粗线**（下划线指示器）
+        #
+        # 用户 2026-10-05（截图圈出格子**下方**那条横线）::
+        #
+        #     "点到那个，哪个下方加一个黄色高亮的粗线"
+        #
+        # ⚠ 改过两次：
+        #   1. 原来蓝色**边框** → 用户说"黄色高亮"
+        #   2. 我做成整卡黄底 → 用户要的是**下方一条粗线**（不是整卡变色）
+        #
+        # ⚠⚠ 用 ``border-bottom`` 有个坑：格子高度是固定的，
+        # 那条线会被挤到**最底下、贴着边缘**，几乎看不见（实测截图里就是）。
+        # 所以改成**单独一个横条控件**放在最下面 —— 高度可控、颜色明确。
+        self._bar = QWidget(self)
+        self._bar.setObjectName("selectBar")
+        self._bar.setFixedHeight(SELECT_BAR_H)
+        #: ⚠ 样式带选择器 —— 这是**统一规则**（不带会级联到子控件，
+        #: 之前图标被涂成空方块就是这原因）。横条自己没子控件，
+        #: 但保持一致免得以后往里塞东西踩坑。
+        if selected:
+            self._bar.setStyleSheet(
+                f"#selectBar {{ background: {SELECT_BORDER};"
+                f" border-radius: 2px; }}")
         else:
-            self.setStyleSheet(
-                "CharacterTile { border: 1px solid transparent;"
-                " border-radius: 6px; }")
+            self._bar.setStyleSheet(
+                "#selectBar { background: transparent; }")
+        box.addWidget(self._bar)
+
+        self.setStyleSheet("CharacterTile { border: none; }")
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 接口
         self.clicked.emit(self._cid)

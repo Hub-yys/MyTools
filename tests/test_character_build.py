@@ -2111,11 +2111,16 @@ class TestLevelFilter(unittest.TestCase):
 
 
 class TestSelectedTileHighlight(unittest.TestCase):
-    """★★ 选中的角色格子 = **黄色高亮**。
+    """★★ 选中的角色格子 = **下方一条黄色粗线**。
 
-    用户 2026-10-05（截图圈出「心」那张卡）："这里点到哪个，哪个黄色高亮"
+    用户 2026-10-05（截图圈出格子**下方**那条横线）::
 
-    ⚠ 我原来是**蓝色**边框（``#0a84ff``）—— 用户要的是**黄**的。
+        "点到那个，哪个下方加一个黄色高亮的粗线"
+
+    ⚠ 改过两次：
+
+      1. 原来蓝色**边框** → 用户说"黄色高亮"
+      2. 我做成**整卡黄底** → 用户要的是**下方一条粗线**，卡片本身别变色
     """
 
     @classmethod
@@ -2129,7 +2134,37 @@ class TestSelectedTileHighlight(unittest.TestCase):
 
         return CharacterBuildPanel()
 
-    def test_selected_tile_has_yellow_background(self):
+    @staticmethod
+    def _bar_of(tile):
+        """格子底部那条横条控件（黄 or 透明）。
+
+        ⚠ 按 ``objectName`` 找 —— 别用"高度等于 SELECT_BAR_H"去猜，
+        别的控件也可能正好那么高（我第一版就是这么写的，找不到）。
+        """
+        from PySide6.QtWidgets import QWidget
+
+        for w in tile.findChildren(QWidget):
+            if w.objectName() == "selectBar":
+                return w
+        return None
+
+    @classmethod
+    def _is_selected_bar(cls, tile) -> bool:
+        """这个格子底部的横条是不是**黄色**（而不是透明）。"""
+        from src.tools.game.character_build import detail_view as DV
+
+        bar = cls._bar_of(tile)
+        return bool(bar and DV.SELECT_BORDER in (bar.styleSheet() or ""))
+
+    def test_selected_tile_has_yellow_underline(self):
+        """★★ 选中的格子：**下方黄色粗线**，且**只有它一个**有。
+
+        ⚠⚠ 用 ``border-bottom`` 做过一版 —— 线会被挤到格子**最底边**，
+        实测截图里**几乎看不见**。现在改成**单独的横条控件**，
+        高度和位置都可控（这条测试也顺带钉住了"是控件不是边框"）。
+        """
+        from PySide6.QtWidgets import QWidget
+
         from src.tools.game.character_build import detail_view as DV
 
         p = self._panel()
@@ -2142,39 +2177,83 @@ class TestSelectedTileHighlight(unittest.TestCase):
         }
         p._selected = "2"
         p._render(p._data)
-        sel = [c for c in p._cards if DV.SELECT_BG in (c.styleSheet() or "")]
-        self.assertEqual(len(sel), 1, "选中的格子没有黄色高亮")
-        self.assertEqual(sel[0]._cid, "2", "高亮的不是选中的那个")
-        #: 没选中的不该有黄底
-        others = [c for c in p._cards if c._cid != "2"]
-        for c in others:
-            self.assertNotIn(DV.SELECT_BG, c.styleSheet() or "",
-                             "没选中的格子也被高亮了")
 
-    def test_select_color_is_yellow_not_blue(self):
-        """★ 高亮色必须是**看得出是黄**的（不是原来的蓝，也不是几乎白）。
+        #: ★ 必须是**独立控件**（不是 border-bottom）
+        for c in p._cards:
+            self.assertIsNotNone(self._bar_of(c),
+                                 "格子底部没有横条控件 —— "
+                                 "是不是又用 border-bottom 了？")
 
-        用 RGB 判断：黄色 = R/G 高、**B 明显低**。
+        sel = [c for c in p._cards if self._is_selected_bar(c)]
+        self.assertEqual(len(sel), 1, "选中的格子没有下方黄线")
+        self.assertEqual(sel[0]._cid, "2", "加线的不是选中的那个")
+        #: 黄线要够粗（用户说"粗线"）
+        self.assertGreaterEqual(DV.SELECT_BAR_H, 3,
+                                "线太细 —— 用户要的是粗线")
 
-        ⚠ 我第一版用 ``#fff6d6`` —— B=214，几乎和白底一样，
-        这条测试当场就抓出来了。
+    def test_unselected_bar_is_transparent_but_present(self):
+        """★ 没选中的格子：横条**占位但透明**。
+
+        ⚠ 必须留同样高度 —— 否则选中的格子会比别人高，整行**会跳**。
         """
         from src.tools.game.character_build import detail_view as DV
 
-        for name, color in (("SELECT_BG", DV.SELECT_BG),
-                            ("SELECT_BORDER", DV.SELECT_BORDER)):
-            with self.subTest(name=name):
-                h = color.lstrip("#")
-                r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
-                self.assertGreater(r, 180, f"{name} 红分量太低：{color}")
-                self.assertGreater(g, 150, f"{name} 绿分量太低：{color}")
-                self.assertLess(
-                    b, r - 60,
-                    f"{name} 蓝分量相对红太高（{color}）—— 看着不像黄色")
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1, "roleName": "甲", "level": 90},
+                {"roleId": 2, "roleName": "乙", "level": 90},
+            ],
+            "details": {},
+        }
+        p._selected = "1"
+        p._render(p._data)
+        others = [c for c in p._cards if c._cid != "1"]
+        self.assertTrue(others)
+        for c in others:
+            bar = self._bar_of(c)
+            self.assertIsNotNone(bar, "没选中的格子没有占位横条")
+            self.assertIn("transparent", bar.styleSheet() or "",
+                          "没选中的横条不是透明的")
+            self.assertEqual(bar.height(), DV.SELECT_BAR_H,
+                             "占位横条高度不一致 —— 整行会跳")
 
-    def test_flagged_tile_still_red(self):
-        """★ 未达标仍然是**红框**（那是"有问题"，优先级高于选中）。"""
+    def test_no_full_card_highlight(self):
+        """★★ 卡片本身**不再整块变色**（用户要的是下方一条线）。
+
+        ⚠ 我上一版做成整卡黄底（``background: SELECT_BG``）——
+        用户截图圈的是**下方那条线**。
+        """
         from src.tools.game.character_build import detail_view as DV
+
+        p = self._panel()
+        p._data = {
+            "roleList": [{"roleId": 1, "roleName": "甲", "level": 90}],
+            "details": {},
+        }
+        p._selected = "1"
+        p._render(p._data)
+        css = p._cards[0].styleSheet()
+        self.assertNotIn(f"background: {DV.SELECT_BG}", css,
+                         "卡片还是整块黄底 —— 应该只加下方那条线")
+    def test_bar_color_is_yellow(self):
+        """★ 线是**黄**的（不是原来的蓝，也不是几乎白）。
+
+        用 RGB 判断：黄色 = R/G 高、**B 明显低**。
+        """
+        from src.tools.game.character_build import detail_view as DV
+
+        h = DV.SELECT_BORDER.lstrip("#")
+        r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+        self.assertGreater(r, 180, f"红分量太低：{DV.SELECT_BORDER}")
+        self.assertGreater(g, 130, f"绿分量太低：{DV.SELECT_BORDER}")
+        self.assertLess(b, r - 100,
+                        f"蓝分量相对红太高（{DV.SELECT_BORDER}）—— 不像黄色")
+
+    def test_flagged_name_still_red(self):
+        """★ 未达标 → 名字标红（和"选中"是两回事，互不干扰）。"""
+        from src.tools.game.character_build import detail_view as DV
+        from PySide6.QtWidgets import QLabel
 
         p = self._panel()
         p._data = {
@@ -2191,8 +2270,9 @@ class TestSelectedTileHighlight(unittest.TestCase):
         p._selected = "1"
         p._render(p._data)
         self.assertEqual(len(p._cards), 1)
-        css = p._cards[0].styleSheet()
-        self.assertIn(DV.BAD_FG, css, "未达标的红框没了")
+        reds = [w.text() for w in p._cards[0].findChildren(QLabel)
+                if DV.BAD_FG in (w.styleSheet() or "")]
+        self.assertIn("甲", reds, "未达标的名字没标红")
 
 
 class TestSharedExpandPanel(unittest.TestCase):
