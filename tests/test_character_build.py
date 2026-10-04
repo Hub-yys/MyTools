@@ -2182,41 +2182,25 @@ class TestEchoSetComparison(unittest.TestCase):
 
 
 class TestUnleveledFilter(unittest.TestCase):
-    """★★★ 没声骸数据 = **「未练」**，**不是「达标」**。
+    """★★★ 「未练」= **没有声骸 OR 等级未满 90 级**。
 
-    用户 2026-10-05（截图圈出「丽贝卡 Lv.40」在「达标」分类里）::
+    用户 2026-10-05（截图圈出下拉框）::
 
-        "分类有问题，40级的应该进未练的分类，怎么进达标的分类了"
+        "去掉未满90级分类，只保留未练分类，
+         未练就是没有声骸或者等级未满90级的"
 
-    ## 根因：``flagged`` 只遍历 ``details``
+    ## 演进过程
 
-    ::
+    1. "达标/未达标"                    → 两态
+    2. "增加一个分类，等级（未满90级的）" → 加「未满90级」
+    3. "40级的应该进**未练**的分类"     → 加「未练」（没声骸数据）
+    4. ★ **"去掉未满90级分类，只保留未练分类，
+       未练就是没有声骸或者等级未满90级的"** → **合并成一个**
 
-        flagged = {cid: _echo_issues(...) for cid in details}   # ← 只有有数据的
-        issues = flagged.get(cid)          # 没数据的角色 → None
-        if choice == "达标" and issues:     # None 是假 → 不排除 → 进"达标" ❌
+    ## ⚠ 之前的 bug（用户第 3 步报的）
 
-    **"没数据"被判成了"达标"。**
-
-    ## 而"没数据"其实是"没练"
-
-    实测 12 个没声骸数据的角色**全是低等级**::
-
-        秧秧 Lv40 / 炽霞 Lv40 / 丹瑾 Lv50 / 秋水 Lv1 / 渊武 Lv70 /
-        桃祈 Lv40 / 卡卡罗 Lv1 / 鉴心 Lv40 / 凌阳 Lv1 / 釉瑚 Lv40 /
-        灯灯 Lv40 / 丽贝卡 Lv40
-
-    → 游戏里**没装声骸**所以拿不到数据 → 那就是"没练"。
-
-    ## 所以现在是**三态**
-
-    ============  ==========================================
-    分类           含义
-    ============  ==========================================
-    **未练**       **拿不到**声骸数据
-    **未达标**     有数据，且官方标准没过
-    **达标**       有数据，且官方标准全过
-    ============  ==========================================
+    ``flagged`` 只遍历 ``details`` → 没声骸数据的角色 ``issues`` 是
+    ``None``（假）→ 落进「达标」。**"没数据" ≠ "达标"**。
     """
 
     @classmethod
@@ -2245,83 +2229,99 @@ class TestUnleveledFilter(unittest.TestCase):
             }
 
         return {"role": {"roleName": name, "level": 90},
+                "roleAttributeList": [],
                 "phantomData": {"cost": 12,
                                 "equipPhantomList": [item(c)
                                                      for c in (4, 3, 3, 1, 1)]}}
 
-    def test_filter_choices_include_unleveled(self):
+    def test_filter_choices_merged(self):
+        """★★ **「未满90级」删掉了，只剩「未练」**（用户第 4 步要求）。"""
         from src.tools.game.character_build import tool as T
 
         self.assertIn("未练", T.FILTER_CHOICES)
+        self.assertNotIn("未满90级", T.FILTER_CHOICES,
+                         "「未满90级」没删掉 —— 用户要求并进「未练」")
+        self.assertEqual(tuple(T.FILTER_CHOICES),
+                         ("全部", "未达标", "达标", "未练"))
 
-    def _data(self):
+    def test_is_unleveled_definition(self):
+        """★★ 「未练」定义：**没数据 OR 未满90级**。"""
+        from src.tools.game.character_build import tool as T
+
+        #: 没数据 → 未练（不管几级）
+        self.assertTrue(T.is_unleveled({"level": 90}, False))
+        self.assertTrue(T.is_unleveled({"level": 40}, False))
+        #: 有数据但没满级 → 未练
+        self.assertTrue(T.is_unleveled({"level": 40}, True))
+        #: 有数据且满级 → 不是未练
+        self.assertFalse(T.is_unleveled({"level": 90}, True))
+        self.assertFalse(T.is_unleveled({"level": 95}, True))
+        #: 坏值不崩
+        self.assertFalse(T.is_unleveled({"level": "abc"}, True))
+
+    def _four_cases(self):
+        """四种组合：满级/低级 × 有数据/没数据。"""
         return {
             "roleList": [
-                {"roleId": 1, "roleName": "有数据好的", "level": 90},
-                {"roleId": 2, "roleName": "没数据低级", "level": 40},
+                {"roleId": 1, "roleName": "满级有数据", "level": 90},
+                {"roleId": 2, "roleName": "低级有数据", "level": 40},
+                {"roleId": 3, "roleName": "满级没数据", "level": 90},
+                {"roleId": 4, "roleName": "低级没数据", "level": 40},
             ],
-            "details": {
-                #: 只有 1 号有数据，而且结构完美 → 该进"达标"
-                "1": self._good_detail("有数据好的"),
-            },
+            "details": {"1": self._good_detail("满级有数据"),
+                        "2": self._good_detail("低级有数据")},
         }
 
-    def test_no_data_is_not_ok(self):
-        """★★★ **没数据 ≠ 达标**（用户报的 bug）。"""
+    def test_unleveled_covers_both_conditions(self):
+        """★★★ 「未练」要**同时**包含"低级有数据"和"没数据"两种。"""
         p = self._panel()
-        p._data = self._data()
+        p._data = self._four_cases()
+        p._selected = "1"
+        p._filter_box.setCurrentText("未练")
+        p._render(p._data)
+        ids = sorted(c._cid for c in p._cards)
+        self.assertEqual(ids, ["2", "3", "4"],
+                         "「未练」没收全 —— 该是「低级有数据 + 没数据」两种")
+
+    def test_low_level_with_data_is_unleveled(self):
+        """★★★ **有数据但没满级**的也算「未练」（合并后的新行为）。
+
+        ⚠ 合并前它既不在「未练」（那时只看有没有数据），
+        也不在「未满90级」时会被算进去 —— 两个分类语义重叠，用户要求合并。
+        """
+        p = self._panel()
+        p._data = self._four_cases()
+        p._selected = "1"
+        p._filter_box.setCurrentText("未练")
+        p._render(p._data)
+        self.assertIn("2", [c._cid for c in p._cards],
+                      "「低级有数据」没进「未练」")
+
+    def test_ok_requires_data_and_max_level(self):
+        """★★ 「达标」要**有数据 + 没问题 + 满级**三条都满足。"""
+        p = self._panel()
+        p._data = self._four_cases()
+        p._selected = "1"
+        p._filter_box.setCurrentText("达标")
+        p._render(p._data)
+        self.assertEqual([c._cid for c in p._cards], ["1"],
+                         "「达标」该只有「满级且数据没问题」那个")
+
+    def test_no_data_is_not_ok(self):
+        """★★★ **没数据 ≠ 达标**（用户第 3 步报的 bug）。"""
+        p = self._panel()
+        p._data = self._four_cases()
         p._selected = "1"
         p._filter_box.setCurrentText("达标")
         p._render(p._data)
         ids = [c._cid for c in p._cards]
-        self.assertIn("1", ids, "有数据且没问题的该在达标里")
-        self.assertNotIn("2", ids,
-                         "★ 没声骸数据的角色跑进「达标」了 —— 那是「未练」")
-
-    def test_no_data_goes_to_unleveled(self):
-        """★★★ 没数据的进**「未练」**。"""
-        p = self._panel()
-        p._data = self._data()
-        p._selected = "1"
-        p._filter_box.setCurrentText("未练")
-        p._render(p._data)
-        self.assertEqual([c._cid for c in p._cards], ["2"],
-                         "「未练」里应该是没数据的那个")
-
-    def test_no_data_not_in_unmet(self):
-        """★ 没数据也**不该**进「未达标」（那是"有数据但没过"）。
-
-        ⚠ 这条要能抓住"把 ``has_data`` 判断从条件里删掉"这种回归 ——
-        光看"没数据的在不在未达标里"不够（它可能被别的分支挡住）。
-        所以**同时放一个"真的未达标"的角色**当对照。
-        """
-        p = self._panel()
-        p._data = {
-            "roleList": [
-                {"roleId": 1, "roleName": "差数据", "level": 90},
-                {"roleId": 2, "roleName": "没数据", "level": 40},
-            ],
-            "details": {
-                #: 声骸很差 → 真的未达标
-                "1": {"role": {"roleName": "差数据", "level": 90},
-                      "phantomData": {"equipPhantomList": [
-                          {"cost": 4, "level": 1,
-                           "fetterDetail": {"name": "A"},
-                           "phantomProp": {"name": "x"},
-                           "mainProps": [], "subProps": []}]}},
-            },
-        }
-        p._selected = "1"
-        p._filter_box.setCurrentText("未达标")
-        p._render(p._data)
-        self.assertEqual([c._cid for c in p._cards], ["1"],
-                         "「未达标」该**只有**真的不达标那个；"
-                         "没数据的（2）该在「未练」里")
+        self.assertNotIn("3", ids, "没数据的跑进「达标」了")
+        self.assertNotIn("4", ids, "没数据的跑进「达标」了")
 
     def test_three_states_are_disjoint(self):
         """★★ 三态**互不重叠**、合起来等于全部。"""
         p = self._panel()
-        p._data = self._data()
+        p._data = self._four_cases()
         p._selected = "1"
         seen: set[str] = set()
         for choice in ("未练", "未达标", "达标"):
@@ -2329,17 +2329,19 @@ class TestUnleveledFilter(unittest.TestCase):
             p._render(p._data)
             ids = {c._cid for c in p._cards}
             self.assertFalse(ids & seen,
-                             f"「{choice}」和之前的分类重叠了："
-                             f"{ids & seen}")
+                             f"「{choice}」和别的分类重叠：{ids & seen}")
             seen |= ids
-        self.assertEqual(seen, {"1", "2"},
+        self.assertEqual(seen, {"1", "2", "3", "4"},
                          f"三态合起来不等于全部（{seen}）")
 
 
 class TestLevelFilter(unittest.TestCase):
-    """★ 筛选下拉新增**「未满90级」**分类。
+    """★ `is_below_max_level` / `MAX_LEVEL`（等级判定的底层）。
 
-    用户 2026-10-05："增加一个分类，等级（未满90级的）"
+    ⚠ 原来这条类是测「未满90级」**下拉分类**的 ——
+    用户 2026-10-05 要求把它**并进「未练」**，
+    所以现在只剩底层函数的测试（筛选行为见
+    :class:`TestUnleveledFilter`）。
     """
 
     @classmethod
@@ -2354,12 +2356,11 @@ class TestLevelFilter(unittest.TestCase):
         return CharacterBuildPanel()
 
     def test_filter_choices(self):
+        """⚠ 「未满90级」已并进「未练」（用户 2026-10-05 要求）。"""
         from src.tools.game.character_build import tool as T
 
-        self.assertIn("未满90级", T.FILTER_CHOICES)
-        #: 原来那三个还在
-        for old in ("全部", "未达标", "达标"):
-            self.assertIn(old, T.FILTER_CHOICES)
+        self.assertNotIn("未满90级", T.FILTER_CHOICES,
+                         "「未满90级」该并进「未练」了")
 
     def test_max_level_constant(self):
         from src.tools.game.character_build import tool as T
@@ -2378,8 +2379,12 @@ class TestLevelFilter(unittest.TestCase):
         self.assertFalse(T.is_below_max_level(None))
         self.assertFalse(T.is_below_max_level({"level": "abc"}))
 
-    def test_filters_by_level(self):
-        """★★ 「未满90级」只显示没满级的。"""
+    def test_unleveled_filter_includes_low_level(self):
+        """★★ 「未练」也要收**等级没满**的（合并后的行为）。
+
+        ⚠ 原来这条叫 ``test_filters_by_level``，用的是「未满90级」下拉 ——
+        那个分类已经并进「未练」了。
+        """
         p = self._panel()
         p._data = {
             "roleList": [
@@ -2387,15 +2392,16 @@ class TestLevelFilter(unittest.TestCase):
                 {"roleId": 2, "roleName": "四十", "level": 40},
                 {"roleId": 3, "roleName": "八十", "level": 80},
             ],
-            "details": {},
+            "details": {},          #: 都没数据 → 三个都算"未练"
         }
         p._selected = "1"
-        p._filter_box.setCurrentText("未满90级")
+        p._filter_box.setCurrentText("未练")
         p._render(p._data)
-        self.assertEqual(sorted(c._cid for c in p._cards), ["2", "3"],
-                         "等级筛选不对")
+        self.assertEqual(sorted(c._cid for c in p._cards),
+                         ["1", "2", "3"],
+                         "「未练」该把低等级的也收进来")
 
-    def test_level_filter_combines_with_search(self):
+    def test_unleveled_filter_combines_with_search(self):
         """★ 筛选和搜索能叠加。"""
         p = self._panel()
         p._data = {
@@ -2407,10 +2413,11 @@ class TestLevelFilter(unittest.TestCase):
             "details": {},
         }
         p._selected = "1"
-        p._filter_box.setCurrentText("未满90级")
+        p._filter_box.setCurrentText("未练")
         p._search_edit.setText("安可")
         p._render(p._data)
-        self.assertEqual([c._cid for c in p._cards], ["1"])
+        self.assertEqual(sorted(c._cid for c in p._cards), ["1", "3"],
+                         "筛选+搜索叠加不对")
 
 
 class TestSelectedTileHighlight(unittest.TestCase):
@@ -2897,17 +2904,19 @@ class TestToolPage(unittest.TestCase):
                         "没有搜索框")
 
     def test_has_filter_dropdown(self):
-        """★ 达标/未达标**下拉**（用户："达标/未达标"），
-        后来又加了「未满90级」（用户 2026-10-05）。
+        """★ 筛选下拉（用户先后要求过「未达标/达标」→「未满90级」→「未练」）。
 
-        ⚠ 原来是「只看未达标」开关，用户要的是下拉（多态）。
+        ⚠ 最新（2026-10-05）：**「未满90级」删掉，并进「未练」**——
+        "未练就是没有声骸或者等级未满90级的"。
         """
         from src.tools.game.character_build.tool import FILTER_CHOICES
 
         p = self._panel()
         self.assertTrue(hasattr(p, "_filter_box"), "没有筛选下拉")
-        for want in ("全部", "未达标", "达标", "未满90级"):
+        for want in ("全部", "未达标", "达标", "未练"):
             self.assertIn(want, tuple(FILTER_CHOICES))
+        self.assertNotIn("未满90级", tuple(FILTER_CHOICES),
+                         "「未满90级」该并进「未练」了")
 
     def test_search_filters_by_name(self):
         """★ 搜索能按名字过滤。"""

@@ -83,20 +83,24 @@ TILE_H = 132
 
 #: 「达标」筛选下拉的选项
 #:
-#: 用户 2026-10-05："增加一个分类，等级（未满90级的）"
-#: 用户 2026-10-05："40级的应该进**未练**的分类"
+#: ## 演进过程（用户逐次提的）
 #:
-#: ⚠ **「未练」= 拿不到声骸数据**（游戏里没装声骸）。
-#: 实测 12 个没数据的角色**全是低等级**（Lv1/40/50/70）——
-#: "没数据"是"没练"，**不是"达标"**。
-FILTER_CHOICES = ("全部", "未达标", "达标", "未练", "未满90级")
+#: 1. "达标/未达标"                          → 两态
+#: 2. "增加一个分类，等级（未满90级的）"      → 加「未满90级」
+#: 3. "40级的应该进**未练**的分类"            → 加「未练」（没声骸数据）
+#: 4. ★ **"去掉未满90级分类，只保留未练分类，未练就是没有声骸
+#:    或者等级未满90级的"**                    → **合并成一个**
+#:
+#: ⚠ 所以现在「未练」= **没声骸数据 OR 等级未满 90**，
+#: 不再单列「未满90级」（两个都在表达"还没练起来"）。
+FILTER_CHOICES = ("全部", "未达标", "达标", "未练")
 
-#: 满级线（用户要的这个分类就是按它筛）
+#: 满级线（「未练」判定用）
 MAX_LEVEL = 90
 
 
 def is_below_max_level(role: dict) -> bool:
-    """角色是否**没满 90 级**（用户要的筛选分类）。
+    """角色是否**没满 90 级**。
 
     ⚠ 缺字段 / 坏值 → **返回 False**（不把它算进"未满级"）。
     我第一版写成 ``int(level or 0) < MAX`` —— ``None``/``{}`` 都会变成 0，
@@ -109,6 +113,16 @@ def is_below_max_level(role: dict) -> bool:
         return int(raw) < MAX_LEVEL
     except (TypeError, ValueError):
         return False
+
+
+def is_unleveled(role: dict, has_echo_data: bool) -> bool:
+    """★ 是否算**「未练」** —— 用户 2026-10-05 的定义：
+
+        未练就是**没有声骸**或者**等级未满90级**的
+
+    :param has_echo_data: 这个角色拿没拿到声骸数据
+    """
+    return (not has_echo_data) or is_below_max_level(role)
 
 #: ★ 不显示的角色 —— **漂泊者（主角）**
 #:
@@ -962,7 +976,7 @@ class CharacterBuildPanel(ScrollArea):
             issues = flagged.get(cid)
             has_data = cid in details
 
-            # ★★★ 筛选（**三态**：没数据 / 未达标 / 达标）
+            # ★★★ 筛选（**三态**：未练 / 未达标 / 达标）
             #
             # ⚠⚠ 用户 2026-10-05 发现：「丽贝卡 Lv.40」出现在**「达标」**里。
             #
@@ -970,29 +984,28 @@ class CharacterBuildPanel(ScrollArea):
             # 根本不在字典里** → ``issues`` 是 ``None`` → 判 False →
             # 两个分支都跳过 → 落进"达标"。
             #
-            # 而"没数据"其实是**没练**（游戏里没装声骸）——
-            # 实测 12 个没数据的角色**全是低等级**（Lv1/40/50/70）。
-            # **"没数据" ≠ "达标"** —— 这是两个完全不同的状态。
-            if choice == "未达标":
-                #: ⚠ ``flagged`` 只含**有数据**的角色，"没数据"天然不在这
-                #: —— 这个 ``has_data`` 是**防御性**的（以后改了
-                #: ``flagged`` 的构造方式也不会漏）。
-                if not has_data or not issues:
+            # **"没数据" ≠ "达标"** —— 那是"没练"。
+            #
+            # ★ 用户后来把「未满90级」并进「未练」::
+            #
+            #     "去掉未满90级分类，只保留未练分类，
+            #      未练就是没有声骸或者等级未满90级的"
+            unleveled = is_unleveled(role, has_data)
+
+            if choice == "未练":
+                if not unleveled:
+                    continue
+            elif choice == "未达标":
+                #: ⚠ ``has_data`` 是**防御性**的（``flagged`` 天然不含没数据的）
+                if unleveled or not issues:
                     continue
             elif choice == "达标":
-                #: ★★★ **只有"有数据且没问题"才算达标**
+                #: ★★★ **只有"有数据、没问题、且等级满"才算达标**
                 #:
-                #: ⚠⚠ 这里漏掉 ``has_data`` 就是用户报的那个 bug：
+                #: ⚠⚠ 漏掉 ``has_data`` 就是用户报的那个 bug：
                 #: "没数据"的 ``issues`` 是 ``None``（假），会被当成达标。
-                if not has_data or issues:
+                if unleveled or issues:
                     continue
-            elif choice == "未练":
-                #: 没声骸数据 = 没练（用户："40级的应该进未练的分类"）
-                if has_data:
-                    continue
-            # ★ 等级筛选（用户："增加一个分类，等级（未满90级的）"）
-            if choice == "未满90级" and not is_below_max_level(role):
-                continue
             # ★ 搜索（名字 / 属性 / 武器）
             if keyword:
                 hay = " ".join(str(role.get(k) or "") for k in
