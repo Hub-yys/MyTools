@@ -1127,6 +1127,102 @@ class TestDetailView(unittest.TestCase):
         view.show_detail(self._detail(), ["套装不统一（2 种）"])
         self.assertIn("套装不统一", " ".join(self._texts(view)))
 
+    def test_shows_all_chain_descriptions(self):
+        """★★ **每条共鸣链**的文字都要显示（不只"已激活"那条）。
+
+        用户 2026-10-05："共鸣链数据能拿到吗"
+
+        能 —— 接口给的每条链有 ``order`` / ``name`` / ``unlocked`` /
+        ``description``（实测最长的 100+ 字）。
+
+        ⚠ 我原来只显示"已激活"那一条（抄官方那个折叠样式），
+        用户显然要**每条都能看** → 现在 6 条全列。
+        """
+        from PySide6.QtWidgets import QLabel
+
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        detail = self._detail()
+        detail["chainList"] = [
+            {"order": i, "name": f"链{i}", "unlocked": i <= 3,
+             "description": f"链{i}的说明文字",
+             "iconUrl": "https://x/c.png"}
+            for i in range(1, 7)
+        ]
+        view = EchoDetailView()
+        view.show_detail(detail)
+        joined = " ".join(self._texts(view))
+        for i in range(1, 7):
+            with self.subTest(order=i):
+                self.assertIn(f"链{i}", joined, f"第 {i} 条共鸣链没显示")
+                self.assertIn(f"链{i}的说明文字", joined,
+                              f"第 {i} 条共鸣链的**说明**没显示")
+
+    def test_marks_locked_chains(self):
+        """★ 未解锁的共鸣链要标出来。"""
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        detail = self._detail()
+        detail["chainList"] = [
+            {"order": 1, "name": "甲", "unlocked": True,
+             "description": "开了"},
+            {"order": 2, "name": "乙", "unlocked": False,
+             "description": "没开"},
+        ]
+        view = EchoDetailView()
+        view.show_detail(detail)
+        texts = self._texts(view)
+        self.assertTrue(any("未激活" in t for t in texts),
+                        f"没标出未解锁的链（{texts[-6:]}）")
+
+    def test_skill_descriptions_available(self):
+        """★★ 技能的文字说明要能看到（tooltip / 点击弹窗）。
+
+        用户 2026-10-05："技能详情…能拿到吗"
+
+        能 —— 每个技能有 ``description``（实测最长 218 字）。
+
+        ⚠ 说明挂在**图标控件**上 —— 而图标拿不到时我们**不摆那个控件**
+        （见"空方块"那次修复）。所以这里得**先造一个真缓存图标**，
+        否则 ``findChildren`` 一个 tooltip 都找不到（第一版就是这样假失败）。
+        """
+        import tempfile
+
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtWidgets import QWidget
+
+        from src.core import icon_cache as IC
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        tmp = tempfile.TemporaryDirectory()
+        orig_root = IC.icon_root
+        IC.icon_root = lambda: pathlib.Path(tmp.name)
+        try:
+            url = "https://x/skill.png"
+            path = IC.local_path(url)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            pix = QPixmap(8, 8)
+            pix.fill()
+            self.assertTrue(pix.save(str(path)), "造测试图标失败")
+
+            detail = self._detail()
+            detail["skillList"] = [{
+                "level": 10,
+                "skill": {"name": "应急预案", "type": "共鸣技能",
+                          "description": "呼唤忧昙攻击目标，造成冷凝伤害。",
+                          "iconUrl": url},
+            }]
+            view = EchoDetailView()
+            view.show_detail(detail)
+
+            tips = [w.toolTip() for w in view.findChildren(QWidget)
+                    if w.toolTip()]
+            self.assertTrue(any("呼唤忧昙" in t for t in tips),
+                            f"技能说明没挂上去（tooltips={tips[:4]}）")
+        finally:
+            IC.icon_root = orig_root
+            tmp.cleanup()
+
     def test_clear_resets(self):
         from src.tools.game.character_build.detail_view import EchoDetailView
 
@@ -1258,18 +1354,20 @@ class TestNoStyleCascade(unittest.TestCase):
 
 
 class TestExcludedRoles(unittest.TestCase):
-    """★★ **漂泊者（主角）不参与练度判定**。
+    """★★ **漂泊者（主角）彻底不显示**。
 
     用户 2026-10-05："把漂泊者除开"
 
-    ## 语义（重要，别搞错成"删掉"）
+    我问过"要哪种显示方式"，用户明确选了
+    「**彻底不显示（从列表里删掉）**」—— 所以是**整个从列表里过滤掉**：
+    卡片、详情、计数都不算他。
 
-    · **不参与"达标"判定** → 不标红框、不进「未达标」筛选
-    · **但列表里还在** → 还是能点开看它的属性 / 声骸详情
+    ⚠ 我第一版做成了"还在列表里、只是不参与达标判定" ——
+    用户截图回来说"漂泊者还是有"，那不是他要的。
+    **所以这条测试要同时钉住"列表里没有"和"计数不算他"。**
 
     为什么排除他：主角**必练**（主线一直带着），不像别的角色那样
-    "要不要练"需要判断；而且他那套声骸往往是最早配的，
-    拿"达标"去卡他没有意义。
+    "要不要练"需要判断；而且他那套声骸往往是最早配的。
     """
 
     @classmethod
@@ -1282,6 +1380,18 @@ class TestExcludedRoles(unittest.TestCase):
         from src.tools.game.character_build.tool import CharacterBuildPanel
 
         return CharacterBuildPanel()
+
+    @staticmethod
+    def _bad_echo_detail(name: str) -> dict:
+        """一份"声骸很差"的详情（普通人拿它必被判未达标）。"""
+        return {
+            "role": {"roleName": name, "level": 90},
+            "phantomData": {"equipPhantomList": [
+                {"cost": 4, "level": 1,
+                 "fetterDetail": {"name": "A"},
+                 "phantomProp": {"name": "x"},
+                 "mainProps": [], "subProps": []}]},
+        }
 
     def test_is_excluded_matches_name(self):
         from src.tools.game.character_build import tool as T
@@ -1300,90 +1410,85 @@ class TestExcludedRoles(unittest.TestCase):
 
         self.assertIn("漂泊者", T.EXCLUDED_ROLE_NAMES)
 
-    def test_excluded_role_not_flagged(self):
-        """★ 漂泊者**不被标红**（哪怕它的声骸实测有问题）。"""
-        from PySide6.QtWidgets import QLabel
+    def test_visible_roles_filters_rover(self):
+        from src.tools.game.character_build import tool as T
 
-        p = self._panel()
-        #: 造一个"声骸很差"的漂泊者 —— 正常情况下会被标红
-        p._data = {
-            "roleList": [
-                {"roleId": 1310, "roleName": "漂泊者", "level": 90},
-                {"roleId": 1103, "roleName": "白芷", "level": 90},
-            ],
-            "details": {
-                #: 声骸没满级 + 词条少 → 普通人必被判未达标
-                "1310": {"role": {"roleName": "漂泊者", "level": 90},
-                         "phantomData": {"equipPhantomList": [
-                             {"cost": 4, "level": 1,
-                              "fetterDetail": {"name": "A"},
-                              "phantomProp": {"name": "x"},
-                              "mainProps": [], "subProps": []}]}},
-                "1103": {"role": {"roleName": "白芷", "level": 90},
-                         "phantomData": {"equipPhantomList": [
-                             {"cost": 4, "level": 1,
-                              "fetterDetail": {"name": "A"},
-                              "phantomProp": {"name": "x"},
-                              "mainProps": [], "subProps": []}]}},
-            },
-        }
-        p._selected = "1103"       # 挡掉默认选中
-        p._render(p._data)
+        got = T.visible_roles([
+            {"roleId": 1310, "roleName": "漂泊者"},
+            {"roleId": 1103, "roleName": "白芷"},
+        ])
+        self.assertEqual([r["roleName"] for r in got], ["白芷"])
 
-        #: 白芷该被标红
-        bz = next(c for c in p._cards if c._cid == "1103")
-        self.assertTrue([w for w in bz.findChildren(QLabel)
-                         if "c42b1c" in (w.styleSheet() or "")],
-                        "白芷没被标红 —— 判定本身坏了")
-
-        #: 漂泊者**不该**被标红
-        piao = next(c for c in p._cards if c._cid == "1310")
-        self.assertFalse([w for w in piao.findChildren(QLabel)
-                          if "c42b1c" in (w.styleSheet() or "")],
-                         "漂泊者被标红了 —— 应该排除在判定之外")
-
-    def test_excluded_role_still_listed(self):
-        """★★ 只是不判定，**不是删掉** —— 列表里还得有得点。"""
-        p = self._panel()
-        p._data = {
-            "roleList": [{"roleId": 1310, "roleName": "漂泊者",
-                          "level": 90}],
-            "details": {},
-        }
-        p._selected = "1310"
-        p._render(p._data)
-        self.assertIn("1310", [c._cid for c in p._cards],
-                      "漂泊者被从列表里删掉了 —— 用户只是说'除开'判定")
-
-    def test_excluded_not_in_unmet_filter(self):
-        """★ 「未达标」筛选里**不该出现**漂泊者。"""
+    def test_rover_not_in_list_at_all(self):
+        """★★ **列表里根本没有漂泊者**（用户要的就是这个）。"""
         p = self._panel()
         p._data = {
             "roleList": [
                 {"roleId": 1310, "roleName": "漂泊者", "level": 90},
                 {"roleId": 1103, "roleName": "白芷", "level": 90},
             ],
-            "details": {
-                "1310": {"role": {"roleName": "漂泊者"},
-                         "phantomData": {"equipPhantomList": [
-                             {"cost": 4, "level": 1,
-                              "fetterDetail": {"name": "A"},
-                              "phantomProp": {"name": "x"},
-                              "mainProps": [], "subProps": []}]}},
-                "1103": {"role": {"roleName": "白芷"},
-                         "phantomData": {"equipPhantomList": [
-                             {"cost": 4, "level": 1,
-                              "fetterDetail": {"name": "A"},
-                              "phantomProp": {"name": "x"},
-                              "mainProps": [], "subProps": []}]}},
-            },
+            "details": {"1310": self._bad_echo_detail("漂泊者"),
+                        "1103": self._bad_echo_detail("白芷")},
+        }
+        p._selected = "1103"
+        p._render(p._data)
+
+        ids = [c._cid for c in p._cards]
+        self.assertNotIn("1310", ids, "漂泊者还在列表里 —— 用户要删掉它")
+        self.assertIn("1103", ids, "白芷该在")
+
+    def test_rover_not_counted_in_stats(self):
+        """★★ 计数也**不算**漂泊者（"共 N 个" / "待优化 N 个"）。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1310, "roleName": "漂泊者", "level": 90},
+                {"roleId": 1103, "roleName": "白芷", "level": 90},
+            ],
+            "details": {"1310": self._bad_echo_detail("漂泊者"),
+                        "1103": self._bad_echo_detail("白芷")},
+        }
+        p._selected = "1103"
+        p._render(p._data)
+        hint = p._roles_hint.text()
+        #: 两个角色、都"声骸很差" —— 但只该算白芷一个
+        self.assertIn("共 1 个", hint,
+                      f"总数把漂泊者算进去了（{hint}）")
+        self.assertIn("待优化 1 个", hint,
+                      f"待优化数把漂泊者算进去了（{hint}）")
+
+    def test_rover_not_default_selected(self):
+        """★ 默认选中的不能是漂泊者（他被滤掉了）。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1103, "roleName": "白芷", "level": 90},
+                {"roleId": 1310, "roleName": "漂泊者", "level": 90},
+            ],
+            "details": {"1103": self._bad_echo_detail("白芷"),
+                        "1310": self._bad_echo_detail("漂泊者")},
+        }
+        p._selected = ""
+        p._render(p._data)
+        #: 倒序后漂泊者排第一，但他被滤掉了 → 该选白芷
+        self.assertEqual(p._selected, "1103",
+                         "默认选中了漂泊者 —— 应该选滤掉他之后的第一个")
+
+    def test_rover_not_in_unmet_filter(self):
+        """★ 「未达标」筛选里不该出现漂泊者。"""
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1310, "roleName": "漂泊者", "level": 90},
+                {"roleId": 1103, "roleName": "白芷", "level": 90},
+            ],
+            "details": {"1310": self._bad_echo_detail("漂泊者"),
+                        "1103": self._bad_echo_detail("白芷")},
         }
         p._selected = "1103"
         p._filter_box.setCurrentText("未达标")
         p._render(p._data)
-        ids = [c._cid for c in p._cards]
-        self.assertIn("1103", ids, "白芷该在未达标里")
-        self.assertNotIn("1310", ids, "漂泊者不该在未达标里")
+        self.assertEqual([c._cid for c in p._cards], ["1103"])
 
 
 class TestToolPage(unittest.TestCase):

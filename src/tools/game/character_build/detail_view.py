@@ -510,6 +510,33 @@ def _weapon_block(wd: dict, parent) -> QWidget:
     return host
 
 
+def _show_text_dialog(parent, title: str, text: str) -> None:
+    """弹一个只读文本框显示长说明（技能 / 共鸣链的描述可能有几百字）。"""
+    from PySide6.QtWidgets import QDialog, QPushButton, QTextEdit
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.resize(520, 400)
+    box = QVBoxLayout(dlg)
+    box.setContentsMargins(14, 12, 14, 12)
+    box.setSpacing(8)
+
+    head = QLabel(title, dlg)
+    head.setWordWrap(True)
+    head.setStyleSheet("font-size: 14px; font-weight: bold;")
+    box.addWidget(head)
+
+    body = QTextEdit(dlg)
+    body.setReadOnly(True)
+    body.setPlainText(text)
+    box.addWidget(body, 1)
+
+    ok = QPushButton("关闭", dlg)
+    ok.clicked.connect(dlg.accept)
+    box.addWidget(ok, 0, Qt.AlignmentFlag.AlignRight)
+    dlg.exec()
+
+
 def _skills_block(skills, parent) -> QWidget:
     """「技能」块：一排图标 + 名称 + 等级。
 
@@ -529,9 +556,21 @@ def _skills_block(skills, parent) -> QWidget:
         sk = it.get("skill") or {}
         col = QVBoxLayout()
         col.setSpacing(2)
+
+        #: ★ 技能图标做成**可点**的 —— 点了在下面显示完整说明
+        #: （用户："技能详情、共鸣链数据能拿到吗" —— 数据有，之前没显示）
         holder = _icon_label(sk.get("iconUrl"), SKILL_ICON, host)
         if holder is not None:
+            holder.setCursor(Qt.CursorShape.PointingHandCursor)
+            desc = str(sk.get("description") or "").strip()
+            holder.setToolTip(f"{sk.get('name')}\n{desc}"
+                              if desc else str(sk.get("name") or ""))
+            if desc:
+                holder.mousePressEvent = (       # noqa: B010 - 简易点击
+                    lambda _e, _n=sk.get("name"), _d=desc, _t=sk.get("type"):
+                    _show_text_dialog(host, f"{_n}（{_t}）", _d))
             col.addWidget(holder, 0, Qt.AlignmentFlag.AlignHCenter)
+
         nm = QLabel(str(sk.get("name") or "?"), host)
         nm.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         #: ⚠ 深色底 → 文字要浅色（否则黑字也看不见）
@@ -547,7 +586,17 @@ def _skills_block(skills, parent) -> QWidget:
 
 
 def _chains_block(chains, parent) -> QWidget:
-    """「共鸣链」块：图标排 + 已激活的那条说明。"""
+    """「共鸣链」块：图标排（可点看说明）+ **每条链的文字**。
+
+    ## 用户 2026-10-05："共鸣链数据能拿到吗"
+
+    能 —— 接口给的每条链有 ``order`` / ``name`` / ``unlocked`` /
+    ``description``（实测描述最长 100+ 字）。
+
+    ⚠ 我原来**只显示"已激活"那一条**的说明（抄官方那个折叠样式），
+    但用户显然想要**每条都能看** → 现在把 6 条全列出来
+    （未解锁的灰掉）。
+    """
     host = QWidget(parent)
     box = QVBoxLayout(host)
     box.setContentsMargins(0, 0, 0, 0)
@@ -569,22 +618,44 @@ def _chains_block(chains, parent) -> QWidget:
             continue
         if not it.get("unlocked"):
             holder.setStyleSheet("opacity: 0.35;")
-        holder.setToolTip(f"{it.get('name')}\n{it.get('description')}")
+        label = f"共鸣链 {it.get('order')}　{it.get('name') or ''}"
+        desc = str(it.get("description") or "").strip()
+        holder.setToolTip(f"{label}\n{desc}" if desc
+                          else label)
+        if desc:
+            holder.setCursor(Qt.CursorShape.PointingHandCursor)
+            holder.mousePressEvent = (       # noqa: B010 - 简易点击
+                lambda _e, _l=label, _d=desc:
+                _show_text_dialog(plate, _l, _d))
         plate_row.addWidget(holder)
     plate_row.addStretch(1)
     box.addWidget(plate)
 
-    #: 已激活的（取最大的 order 那条，和官方"已激活"一致）
-    active = [c for c in (chains or []) if c.get("unlocked")]
-    if active:
-        top = max(active, key=lambda c: c.get("order") or 0)
-        title = QLabel(f"{top.get('name')}　"
-                       f"<span style='color:{MAIN_FG}'>已激活</span>", host)
-        title.setStyleSheet("font-size: 12px; font-weight: bold;")
-        box.addWidget(title)
-        desc = BodyLabel(str(top.get("description") or ""), host)
+    #: ★ 每条链的文字（未解锁的灰掉）—— 不再只显示"已激活"那条
+    for it in chains or []:
+        unlocked = bool(it.get("unlocked"))
+        line = QWidget(host)
+        line.setObjectName("chainLine")
+        line.setStyleSheet(
+            "#chainLine { border-bottom: 1px solid rgba(0,0,0,0.06); }")
+        lay = QVBoxLayout(line)
+        lay.setContentsMargins(2, 4, 2, 6)
+        lay.setSpacing(2)
+
+        title = QLabel(
+            f"<b>{it.get('order')}　{it.get('name') or ''}</b>"
+            + ("" if unlocked
+               else f"　<span style='color:#9aa0a6'>未激活</span>"),
+            line)
+        title.setStyleSheet("font-size: 12px;")
+        lay.addWidget(title)
+
+        desc = BodyLabel(str(it.get("description") or ""), line)
         desc.setWordWrap(True)
-        box.addWidget(desc)
+        if not unlocked:
+            desc.setStyleSheet("color: #9aa0a6;")
+        lay.addWidget(desc)
+        box.addWidget(line)
     return host
 
 
