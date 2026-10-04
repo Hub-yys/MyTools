@@ -510,31 +510,51 @@ def _weapon_block(wd: dict, parent) -> QWidget:
     return host
 
 
-def _show_text_dialog(parent, title: str, text: str) -> None:
-    """弹一个只读文本框显示长说明（技能 / 共鸣链的描述可能有几百字）。"""
-    from PySide6.QtWidgets import QDialog, QPushButton, QTextEdit
+def _expand_area(parent, title: str, text: str) -> QWidget:
+    """★ 一块**初始隐藏**的说明区（点了才展开）。
 
-    dlg = QDialog(parent)
-    dlg.setWindowTitle(title)
-    dlg.resize(520, 400)
-    box = QVBoxLayout(dlg)
-    box.setContentsMargins(14, 12, 14, 12)
-    box.setSpacing(8)
+    用户 2026-10-05::
 
-    head = QLabel(title, dlg)
+        "技能、共鸣链，点击的时候，往下展开说明，不是弹出说明，
+         初始不点击的时候，不展示任何说明"
+
+    → 不用弹窗，改成**就地往下展开**；初始 ``setVisible(False)``。
+    """
+    area = QWidget(parent)
+    area.setObjectName("expandArea")
+    #: ⚠ 样式带选择器（否则会套到里面的子控件上，图标会变空方块）
+    area.setStyleSheet(
+        "#expandArea { background: #f5f6f8; border-radius: 4px;"
+        " border-left: 3px solid #3d4148; }")
+    box = QVBoxLayout(area)
+    box.setContentsMargins(10, 6, 8, 6)
+    box.setSpacing(3)
+
+    head = QLabel(title, area)
     head.setWordWrap(True)
-    head.setStyleSheet("font-size: 14px; font-weight: bold;")
+    head.setStyleSheet("font-size: 12px; font-weight: bold;")
     box.addWidget(head)
 
-    body = QTextEdit(dlg)
-    body.setReadOnly(True)
-    body.setPlainText(text)
-    box.addWidget(body, 1)
+    body = QLabel(text, area)
+    body.setWordWrap(True)
+    body.setTextInteractionFlags(
+        Qt.TextInteractionFlag.TextSelectableByMouse)
+    body.setStyleSheet("font-size: 12px;")
+    box.addWidget(body)
 
-    ok = QPushButton("关闭", dlg)
-    ok.clicked.connect(dlg.accept)
-    box.addWidget(ok, 0, Qt.AlignmentFlag.AlignRight)
-    dlg.exec()
+    area.setVisible(False)                     # ★ 初始不展示
+    return area
+
+
+def _bind_toggle(clickable, area) -> None:
+    """点 ``clickable`` → 切换 ``area`` 的显示（往下展开 / 收起）。"""
+    if clickable is None:
+        return
+
+    def _toggle(_event, _area=area):
+        _area.setVisible(not _area.isVisible())
+
+    clickable.mousePressEvent = _toggle       # noqa: B010 - 简易点击
 
 
 def _num(text) -> float | None:
@@ -569,6 +589,12 @@ def _standard_block(standard, current: dict, parent) -> QWidget:
         暴击伤害    281.0%      ≥260.0% ✓
         共鸣效率    128.4%      ≥120.0% ✓
 
+    ★ 用户之后又要求（2026-10-05）::
+
+        "哪条属性不足的，红色高亮显示，并加个括号说明差多少"
+
+    → 不足的那一行：**数值标红** + 后面跟 `（差 37.4%）`。
+
     数据来自 :mod:`src.core.wuwa_guide`（官方攻略站）。
     """
     host = QWidget(parent)
@@ -589,45 +615,73 @@ def _standard_block(standard, current: dict, parent) -> QWidget:
     for i, a in enumerate((standard or {}).get("attrs") or [], start=1):
         name = str(a.get("name") or "?")
         have = current.get(name)
+        need = a.get("value")
         need_raw = str(a.get("recommend") or "")
-        symbol = str(a.get("symbol") or ">=")
-        ok = have is not None and _meets(have, a.get("value") or 0, symbol)
+        unit = a.get("unit") or ""
+        symbol = str(a.get("symbol") or "≥")
+        #: ⚠ 面板里没这个属性 → 灰色显示"—"，**不标红**（不是"不达标"）
+        missing = have is None or need is None
+        ok = missing or _meets(have, need, symbol)
 
         cell = QWidget(host)
         cell.setObjectName("stdRow")
         cell.setStyleSheet(
-            f"#stdRow {{ background: {'' if ok else SUB_HIT_BG};"
+            f"#stdRow {{ background: {SUB_HIT_BG if not ok else ''};"
             f" border-radius: 3px; }}")
         row = QHBoxLayout(cell)
         row.setContentsMargins(4, 2, 4, 2)
         row.setSpacing(6)
 
         _add_icon(row, a.get("icon_url"), PROP_ICON, cell)
+
         nm = QLabel(name, cell)
-        nm.setStyleSheet("font-size: 12px;")
+        nm.setStyleSheet(
+            f"font-size: 12px;"
+            f"{f' color: {BAD_FG}; font-weight: bold;' if not ok else ''}")
         row.addWidget(nm)
         row.addStretch(1)
 
-        cur = QLabel(f"{have:g}{a.get('unit') or ''}" if have is not None
-                     else "—", cell)
-        cur.setStyleSheet("font-size: 12px; font-weight: bold;")
+        #: ── 当前值
+        cur = QLabel(f"{have:g}{unit}" if not missing else "—", cell)
+        cur.setStyleSheet(
+            f"font-size: 12px; font-weight: bold;"
+            f"{f' color: {BAD_FG};' if not ok else ''}")
         row.addWidget(cur)
 
+        #: ── 推荐值
         want = QLabel(f"{symbol}{need_raw}", cell)
         want.setStyleSheet(
             f"font-size: 12px; font-weight: bold;"
-            f"color: {MAIN_FG if ok else BAD_FG};")
+            f"color: {BAD_FG if not ok else MAIN_FG};")
         row.addWidget(want)
+
+        #: ── ★ 差多少（用户要求："加个括号说明差多少"）
+        if not ok and not missing:
+            row.addWidget(_gap_label(have, need, unit, symbol, cell))
 
         mark = QLabel("✓" if ok else "✗", cell)
         mark.setStyleSheet(
             f"font-size: 12px; font-weight: bold;"
-            f"color: {'#2e7d32' if ok else BAD_FG};")
+            f"color: {'#9aa0a6' if missing else
+                      ('#2e7d32' if ok else BAD_FG)};")
         row.addWidget(mark)
 
         grid.addWidget(cell, i, 0, 1, 3)
     grid.setColumnStretch(0, 1)
     return host
+
+
+def _gap_label(have: float, need: float, unit: str, symbol: str,
+               parent) -> QLabel:
+    """★ 差多少 —— ``（差 37.4%）``。
+
+    ⚠ 符号可能是 ``>`` / ``≤`` 等**非** ``≥`` 的方向，
+    所以用 ``abs`` 取差额（"差"就是两者的距离，和方向无关）。
+    """
+    gap = abs(need - have)
+    lab = QLabel(f"（差 {gap:g}{unit}）", parent)
+    lab.setStyleSheet(f"font-size: 11px; color: {BAD_FG};")
+    return lab
 
 
 def _skills_block(skills, parent) -> QWidget:
@@ -650,18 +704,14 @@ def _skills_block(skills, parent) -> QWidget:
         col = QVBoxLayout()
         col.setSpacing(2)
 
-        #: ★ 技能图标做成**可点**的 —— 点了在下面显示完整说明
-        #: （用户："技能详情、共鸣链数据能拿到吗" —— 数据有，之前没显示）
+        desc = str(sk.get("description") or "").strip()
+        title = f"{sk.get('name') or ''}（{sk.get('type') or ''}）"
+
+        #: ★ 图标可点 → **在下面展开说明**（不是弹窗）
         holder = _icon_label(sk.get("iconUrl"), SKILL_ICON, host)
         if holder is not None:
-            holder.setCursor(Qt.CursorShape.PointingHandCursor)
-            desc = str(sk.get("description") or "").strip()
-            holder.setToolTip(f"{sk.get('name')}\n{desc}"
-                              if desc else str(sk.get("name") or ""))
             if desc:
-                holder.mousePressEvent = (       # noqa: B010 - 简易点击
-                    lambda _e, _n=sk.get("name"), _d=desc, _t=sk.get("type"):
-                    _show_text_dialog(host, f"{_n}（{_t}）", _d))
+                holder.setCursor(Qt.CursorShape.PointingHandCursor)
             col.addWidget(holder, 0, Qt.AlignmentFlag.AlignHCenter)
 
         nm = QLabel(str(sk.get("name") or "?"), host)
@@ -673,22 +723,30 @@ def _skills_block(skills, parent) -> QWidget:
         lv.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         lv.setStyleSheet(f"font-size: 11px; color: {MAIN_FG};")
         col.addWidget(lv)
+
+        #: ★ 说明区：**初始隐藏**，点了图标才往下展开
+        #: （用户："技能、共鸣链，点击的时候，往下展开说明，
+        #:   不是弹出说明，初始不点击的时候，不展示任何说明"）
+        if desc:
+            area = _expand_area(host, title, desc)
+            col.addWidget(area)
+            _bind_toggle(holder, area)
+
         row.addLayout(col)
     row.addStretch(1)
     return host
 
 
 def _chains_block(chains, parent) -> QWidget:
-    """「共鸣链」块：图标排（可点看说明）+ **每条链的文字**。
+    """「共鸣链」块：图标排（可点展开）+ 每条链的标题。
 
-    ## 用户 2026-10-05："共鸣链数据能拿到吗"
+    用户 2026-10-05::
 
-    能 —— 接口给的每条链有 ``order`` / ``name`` / ``unlocked`` /
-    ``description``（实测描述最长 100+ 字）。
+        "共鸣链数据能拿到吗"                       ← 数据有
+        "点击的时候，往下展开说明，不是弹出说明，
+         初始不点击的时候，不展示任何说明"          ← 交互要求
 
-    ⚠ 我原来**只显示"已激活"那一条**的说明（抄官方那个折叠样式），
-    但用户显然想要**每条都能看** → 现在把 6 条全列出来
-    （未解锁的灰掉）。
+    → 图标 + 标题常驻；**说明文字初始隐藏**，点图标或标题才展开。
     """
     host = QWidget(parent)
     box = QVBoxLayout(host)
@@ -713,20 +771,17 @@ def _chains_block(chains, parent) -> QWidget:
             holder.setStyleSheet("opacity: 0.35;")
         label = f"共鸣链 {it.get('order')}　{it.get('name') or ''}"
         desc = str(it.get("description") or "").strip()
-        holder.setToolTip(f"{label}\n{desc}" if desc
-                          else label)
         if desc:
             holder.setCursor(Qt.CursorShape.PointingHandCursor)
-            holder.mousePressEvent = (       # noqa: B010 - 简易点击
-                lambda _e, _l=label, _d=desc:
-                _show_text_dialog(plate, _l, _d))
+            holder.setToolTip(label)
         plate_row.addWidget(holder)
     plate_row.addStretch(1)
     box.addWidget(plate)
 
-    #: ★ 每条链的文字（未解锁的灰掉）—— 不再只显示"已激活"那条
+    #: ★ 每条链：标题常驻 + **说明初始隐藏**（点了才展开）
     for it in chains or []:
         unlocked = bool(it.get("unlocked"))
+        desc = str(it.get("description") or "").strip()
         line = QWidget(host)
         line.setObjectName("chainLine")
         line.setStyleSheet(
@@ -738,16 +793,19 @@ def _chains_block(chains, parent) -> QWidget:
         title = QLabel(
             f"<b>{it.get('order')}　{it.get('name') or ''}</b>"
             + ("" if unlocked
-               else f"　<span style='color:#9aa0a6'>未激活</span>"),
+               else "　<span style='color:#9aa0a6'>未激活</span>"),
             line)
         title.setStyleSheet("font-size: 12px;")
+        if desc:
+            title.setCursor(Qt.CursorShape.PointingHandCursor)
         lay.addWidget(title)
 
-        desc = BodyLabel(str(it.get("description") or ""), line)
-        desc.setWordWrap(True)
-        if not unlocked:
-            desc.setStyleSheet("color: #9aa0a6;")
-        lay.addWidget(desc)
+        if desc:
+            area = _expand_area(
+                line, f"共鸣链 {it.get('order')}　{it.get('name') or ''}",
+                desc)
+            lay.addWidget(area)
+            _bind_toggle(title, area)
         box.addWidget(line)
     return host
 

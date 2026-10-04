@@ -1184,20 +1184,20 @@ class TestDetailView(unittest.TestCase):
                         f"没标出未解锁的链（{texts[-6:]}）")
 
     def test_skill_descriptions_available(self):
-        """★★ 技能的文字说明要能看到（tooltip / 点击弹窗）。
+        """★★ 技能的文字说明**能展开看到**。
 
-        用户 2026-10-05："技能详情…能拿到吗"
+        用户 2026-10-05::
 
-        能 —— 每个技能有 ``description``（实测最长 218 字）。
+            "技能详情…能拿到吗"                          ← 能
+            "点击的时候，往下展开说明，不是弹出说明"        ← 交互
 
-        ⚠ 说明挂在**图标控件**上 —— 而图标拿不到时我们**不摆那个控件**
-        （见"空方块"那次修复）。所以这里得**先造一个真缓存图标**，
-        否则 ``findChildren`` 一个 tooltip 都找不到（第一版就是这样假失败）。
+        ⚠ 这条原来是查 tooltip 的 —— 后来改成**就地展开**
+        （见 :class:`TestInlineExpand`），所以改成查展开区里有没有说明。
         """
         import tempfile
 
         from PySide6.QtGui import QPixmap
-        from PySide6.QtWidgets import QWidget
+        from PySide6.QtWidgets import QLabel, QWidget
 
         from src.core import icon_cache as IC
         from src.tools.game.character_build.detail_view import EchoDetailView
@@ -1223,10 +1223,14 @@ class TestDetailView(unittest.TestCase):
             view = EchoDetailView()
             view.show_detail(detail)
 
-            tips = [w.toolTip() for w in view.findChildren(QWidget)
-                    if w.toolTip()]
-            self.assertTrue(any("呼唤忧昙" in t for t in tips),
-                            f"技能说明没挂上去（tooltips={tips[:4]}）")
+            #: 说明文字在 expandArea 里（初始隐藏，但文字是有的）
+            areas = [w for w in view.findChildren(QWidget)
+                     if w.objectName() == "expandArea"]
+            self.assertTrue(areas, "技能没有展开区")
+            texts = [t.text() for a in areas
+                     for t in a.findChildren(QLabel) if t.text()]
+            self.assertTrue(any("呼唤忧昙" in t for t in texts),
+                            f"技能说明没写进展开区（{texts[:4]}）")
         finally:
             IC.icon_root = orig_root
             tmp.cleanup()
@@ -1627,6 +1631,231 @@ class TestStandardComparison(unittest.TestCase):
         self.assertEqual(got.get("暴击"), 78.4)
         self.assertEqual(got.get("生命"), 15465.0)
         self.assertNotIn("坏的", got, "解析不了的不该进 map")
+
+
+class TestInlineExpand(unittest.TestCase):
+    """★★ 技能 / 共鸣链：**点击往下展开**说明（不是弹窗），初始不显示。
+
+    用户 2026-10-05::
+
+        "技能、共鸣链，点击的时候，往下展开说明，不是弹出说明，
+         初始不点击的时候，不展示任何说明"
+
+    ⚠ 我原来做的是 ``_show_text_dialog``（弹窗）——
+    用户要的是**就地往下展开**。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _view(self):
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        detail = {
+            "role": {"roleName": "测试", "level": 90},
+            "skillList": [
+                {"level": 10, "skill": {
+                    "name": "应急预案", "type": "共鸣技能",
+                    "description": "呼唤忧昙攻击目标。", "iconUrl": ""}},
+            ],
+            "chainList": [
+                {"order": 1, "name": "极简与繁复", "unlocked": True,
+                 "description": "每消耗1点念意回复2.5点能量。",
+                 "iconUrl": ""},
+            ],
+            "phantomData": {"cost": 12, "equipPhantomList": []},
+        }
+        view = EchoDetailView()
+        view.show_detail(detail)
+        return view
+
+    @staticmethod
+    def _areas(view):
+        from PySide6.QtWidgets import QWidget
+
+        return [w for w in view.findChildren(QWidget)
+                if w.objectName() == "expandArea"]
+
+    def test_areas_exist(self):
+        """★ 技能 + 共鸣链各有一块说明区。"""
+        view = self._view()
+        self.assertGreaterEqual(len(self._areas(view)), 2,
+                                "没找到展开说明区")
+
+    def test_areas_hidden_initially(self):
+        """★★ **初始一个说明都不显示**。"""
+        view = self._view()
+        shown = [a for a in self._areas(view) if a.isVisible()]
+        self.assertEqual(shown, [],
+                         f"有 {len(shown)} 块说明初始就显示了 —— 用户要求隐藏")
+
+    def test_not_a_dialog(self):
+        """★★ 说明是**就地展开**，不是弹窗。
+
+        ⚠ 我第一版做的是弹窗 —— 用户明确说"不是弹出说明"。
+        而且弹窗会**阻塞自动化测试**（``exec()`` 卡住），
+        实测护栏验证时就是这样超时的。
+        """
+        import inspect
+
+        from src.tools.game.character_build import detail_view as DV
+
+        for fn in (DV._skills_block, DV._chains_block):
+            with self.subTest(fn=fn.__name__):
+                src = inspect.getsource(fn)
+                self.assertNotIn("_show_text_dialog", src,
+                                 f"{fn.__name__} 还在弹窗")
+
+    def test_no_blocking_dialog_anywhere(self):
+        """★★ 整个模块**不该有** ``QDialog`` / ``exec()`` —— 会卡住测试。"""
+        text = (ROOT / "src" / "tools" / "game" / "character_build"
+                / "detail_view.py").read_text(encoding="utf-8")
+        self.assertNotIn("QDialog", text,
+                         "detail_view 里有 QDialog —— 弹窗会阻塞测试")
+        self.assertNotIn(".exec()", text,
+                         "detail_view 里有 exec() —— 会阻塞")
+
+    def test_toggle_shows_and_hides(self):
+        """★ 点一下展开、再点收起。"""
+        from src.tools.game.character_build.detail_view import (
+            _bind_toggle,
+            _expand_area,
+        )
+        from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+
+        host = QWidget()
+        box = QVBoxLayout(host)
+        lbl = QLabel("点我", host)
+        box.addWidget(lbl)
+        area = _expand_area(host, "标题", "说明文字")
+        box.addWidget(area)
+        host.show()
+        self.app.processEvents()
+
+        self.assertFalse(area.isVisible(), "初始就该隐藏")
+        _bind_toggle(lbl, area)
+        lbl.mousePressEvent(None)
+        self.assertTrue(area.isVisible(), "点一下该展开")
+        lbl.mousePressEvent(None)
+        self.assertFalse(area.isVisible(), "再点该收起")
+
+    def test_expand_area_is_scoped(self):
+        """★ 说明区样式要带选择器（否则会套到子控件上——之前踩过）。"""
+        from PySide6.QtWidgets import QWidget
+
+        view = self._view()
+        areas = self._areas(view)
+        self.assertTrue(areas)
+        for a in areas:
+            css = a.styleSheet()
+            self.assertIn("#expandArea", css,
+                          f"说明区样式没写选择器：{css[:50]}")
+
+
+class TestGapHint(unittest.TestCase):
+    """★★ 属性不足时：**红色高亮 + 括号说明差多少**。
+
+    用户 2026-10-05::
+
+        "哪条属性不足的，红色高亮显示，并加个括号说明差多少"
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def _detail(attrs: dict) -> dict:
+        return {
+            "role": {"roleName": "测试", "level": 90},
+            "roleAttributeList": [
+                {"attributeName": k, "attributeValue": v}
+                for k, v in attrs.items()],
+            "phantomData": {"cost": 12, "equipPhantomList": []},
+        }
+
+    @staticmethod
+    def _standard(pairs) -> dict:
+        return {"attrs": [
+            {"name": n, "recommend": f"{v}%", "value": v, "unit": "%",
+             "symbol": sym, "icon_url": ""}
+            for n, sym, v in pairs]}
+
+    def _view(self, attrs, pairs):
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        view = EchoDetailView()
+        view.show_detail(self._detail(attrs), None,
+                         self._standard(pairs))
+        return view
+
+    @staticmethod
+    def _texts(view):
+        from PySide6.QtWidgets import QLabel
+
+        return [w.text() for w in view.findChildren(QLabel) if w.text()]
+
+    def test_gap_shown_for_failing_attr(self):
+        """★★ 不足的那条要写「（差 N）」并在最前面标红。"""
+        from src.tools.game.character_build import detail_view as DV
+
+        view = self._view({"共鸣效率": "222.6%"},
+                          [("共鸣效率", "≥", 260.0)])
+        texts = self._texts(view)
+        self.assertTrue(any(t.startswith("（差") for t in texts),
+                        f"没写差额（{texts[:8]}）")
+        self.assertIn("（差 37.4%）", texts)
+
+        #: ★ 当前值 / 属性名 要标红
+        reds = [w.text() for w in view.findChildren(
+            __import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel)
+            if DV.BAD_FG in (w.styleSheet() or "") and w.text()]
+        self.assertIn("共鸣效率", reds, f"属性名没标红（{reds[:6]}）")
+
+    def test_no_gap_when_meets(self):
+        """★ 达标的**不写差额**，也不标红。"""
+        from src.tools.game.character_build import detail_view as DV
+        from PySide6.QtWidgets import QLabel
+
+        view = self._view({"暴击": "80.0%"}, [("暴击", "≥", 70.0)])
+        texts = self._texts(view)
+        self.assertFalse(any(t.startswith("（差") for t in texts),
+                         f"达标了还写差额（{texts[:8]}）")
+        reds = [w.text() for w in view.findChildren(QLabel)
+                if DV.BAD_FG in (w.styleSheet() or "") and w.text()]
+        self.assertEqual(reds, [], f"达标了还标红（{reds}）")
+
+    def test_gap_uses_absolute_difference(self):
+        """★ 差额取**绝对值** —— 符号可能是 ``>`` / ``≤`` 等各种方向。"""
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        #: >65 而当前 60 → 差 5
+        view = EchoDetailView()
+        view.show_detail(self._detail({"暴击": "60.0%"}), None,
+                         self._standard([("暴击", ">", 65.0)]))
+        self.assertIn("（差 5%）", self._texts(view))
+
+    def test_missing_attr_is_not_red(self):
+        """★ 面板里**没有**这个属性 → 显示「—」但**不标红**
+        （那不算"不达标"，是没数据）。"""
+        from src.tools.game.character_build import detail_view as DV
+        from PySide6.QtWidgets import QLabel
+
+        view = self._view({"暴击": "80.0%"},
+                          [("暴击", "≥", 70.0), ("重击伤害加成", "≥", 20.0)])
+        texts = self._texts(view)
+        self.assertIn("—", texts, "缺的属性该显示「—」")
+        #: 缺的那条不该产生差额
+        self.assertFalse(any(t.startswith("（差") for t in texts))
+        #: 属性名不该因为"缺"而标红
+        reds = [w.text() for w in view.findChildren(QLabel)
+                if DV.BAD_FG in (w.styleSheet() or "")]
+        self.assertNotIn("重击伤害加成", reds)
 
 
 class TestToolPage(unittest.TestCase):
