@@ -907,15 +907,45 @@ class TestDetailView(unittest.TestCase):
         self.assertIn("1", texts,
                       "命中数不对（这条数据里只有 1 条 valid）")
 
-    def test_marks_hit_and_miss(self):
-        """★ 副词条要区分命中（✓）/ 未命中（·）。"""
+    def test_no_check_marks_and_hits_are_highlighted(self):
+        """★★ 副词条：**不画 ✓/·**，命中的**整行黄底**。
+
+        用户 2026-10-04（截图圈出那列勾）："（这是）什么？去掉，
+        命中的词条黄色高亮就行"
+
+        ⚠ 我原来在每行前面画了个 ``✓`` / ``·`` —— 用户看不懂也不需要，
+        要的是**底色区分**（和官方一致）。
+        """
+        from PySide6.QtWidgets import QWidget
+
+        from src.tools.game.character_build import detail_view as DV
         from src.tools.game.character_build.detail_view import EchoDetailView
 
         view = EchoDetailView()
         view.show_detail(self._detail())
-        texts = self._texts(view)
-        self.assertIn("✓", texts, "没有命中标记")
-        self.assertIn("·", texts, "没有未命中标记")
+
+        #: ★ 1. 不该再有 ✓ / · 标记
+        marks = [t for t in self._texts(view) if t.strip() in ("✓", "·")]
+        self.assertEqual(marks, [],
+                         f"还有 ✓/· 标记 —— 用户要求去掉（找到 {marks}）")
+
+        #: ★ 2. 命中行必须有黄底
+        hit_rows = [w for w in view.findChildren(QWidget)
+                    if DV.SUB_HIT_BG in (w.styleSheet() or "")]
+        self.assertTrue(hit_rows, "命中的副词条没黄色高亮")
+
+        #: ★ 3. 未命中的行**不能**用黄底（否则等于没区分）
+        for w in view.findChildren(QWidget):
+            css = w.styleSheet() or ""
+            if DV.SUB_BG in css:
+                self.assertNotIn(DV.SUB_HIT_BG, css)
+
+    def test_hit_rows_actually_differ_from_miss_rows(self):
+        """★ 命中 / 未命中的底色必须是**两个不同的颜色**。"""
+        from src.tools.game.character_build import detail_view as DV
+
+        self.assertNotEqual(DV.SUB_HIT_BG, DV.SUB_BG,
+                            "命中色和未命中色一样 —— 等于没高亮")
 
     def test_shows_issues(self):
         from src.tools.game.character_build.detail_view import EchoDetailView

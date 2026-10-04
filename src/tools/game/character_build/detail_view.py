@@ -78,8 +78,10 @@ HIT_BADGE = 64
 MAIN_BG = "#fdf6e3"
 #: 主属性文字色
 MAIN_FG = "#8a6d1a"
-#: 副词条底色
+#: 副词条底色（未命中）
 SUB_BG = "#f7f7f7"
+#: ★ 副词条底色（**命中** —— 用户："命中的词条黄色高亮就行"）
+SUB_HIT_BG = "#fdf3d0"
 #: 命中 / 未命中的标记色
 HIT_FG = "#c8a02c"
 MISS_FG = "#9aa0a6"
@@ -232,7 +234,10 @@ def _phantom_card(item, parent) -> QWidget:
     if mains:
         box.addWidget(_prop_grid(mains, card, cols=1, highlight=True))
 
-    # ── 副词条（✓ 命中 / · 未命中）
+    # ── 副词条
+    #:
+    #: ★ 用户 2026-10-04："（前面的勾）是什么？去掉，命中的词条黄色高亮就行"
+    #: → **不画 ✓/·**，改成**命中的整行淡黄底**。
     subs = item.get("subProps") or []
     if subs:
         sub_host = QWidget(card)
@@ -240,18 +245,14 @@ def _phantom_card(item, parent) -> QWidget:
         sub_box.setContentsMargins(0, 0, 0, 0)
         sub_box.setSpacing(1)
         for s in subs:
+            hit = bool(s.get("valid"))
             line = QWidget(sub_host)
-            line.setStyleSheet(f"background: {SUB_BG}; border-radius: 3px;")
+            line.setStyleSheet(
+                f"background: {SUB_HIT_BG if hit else SUB_BG};"
+                f"border-radius: 3px;")
             row = QHBoxLayout(line)
             row.setContentsMargins(4, 1, 4, 1)
             row.setSpacing(4)
-
-            hit = bool(s.get("valid"))
-            mark = QLabel("✓" if hit else "·", line)
-            mark.setStyleSheet(
-                f"font-size: 11px; font-weight: bold;"
-                f"color: {HIT_FG if hit else MISS_FG};")
-            row.addWidget(mark)
 
             row.addWidget(_icon_label(s.get("iconUrl"), 14, line))
             nm = QLabel(str(s.get("attributeName") or "?"), line)
