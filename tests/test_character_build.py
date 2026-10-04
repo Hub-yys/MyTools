@@ -2033,6 +2033,161 @@ class TestGapHint(unittest.TestCase):
         self.assertNotIn("重击伤害加成", reds)
 
 
+class TestUnleveledFilter(unittest.TestCase):
+    """★★★ 没声骸数据 = **「未练」**，**不是「达标」**。
+
+    用户 2026-10-05（截图圈出「丽贝卡 Lv.40」在「达标」分类里）::
+
+        "分类有问题，40级的应该进未练的分类，怎么进达标的分类了"
+
+    ## 根因：``flagged`` 只遍历 ``details``
+
+    ::
+
+        flagged = {cid: _echo_issues(...) for cid in details}   # ← 只有有数据的
+        issues = flagged.get(cid)          # 没数据的角色 → None
+        if choice == "达标" and issues:     # None 是假 → 不排除 → 进"达标" ❌
+
+    **"没数据"被判成了"达标"。**
+
+    ## 而"没数据"其实是"没练"
+
+    实测 12 个没声骸数据的角色**全是低等级**::
+
+        秧秧 Lv40 / 炽霞 Lv40 / 丹瑾 Lv50 / 秋水 Lv1 / 渊武 Lv70 /
+        桃祈 Lv40 / 卡卡罗 Lv1 / 鉴心 Lv40 / 凌阳 Lv1 / 釉瑚 Lv40 /
+        灯灯 Lv40 / 丽贝卡 Lv40
+
+    → 游戏里**没装声骸**所以拿不到数据 → 那就是"没练"。
+
+    ## 所以现在是**三态**
+
+    ============  ==========================================
+    分类           含义
+    ============  ==========================================
+    **未练**       **拿不到**声骸数据
+    **未达标**     有数据，且官方标准没过
+    **达标**       有数据，且官方标准全过
+    ============  ==========================================
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def _panel(self):
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        return CharacterBuildPanel()
+
+    @staticmethod
+    def _good_detail(name: str) -> dict:
+        """一份**结构完美**的声骸（满级 / 同套装 / COST 4-3-3-1-1）。"""
+        def item(cost):
+            return {
+                "cost": cost, "level": 25, "quality": 5,
+                "phantomProp": {"name": "声骸"},
+                "fetterDetail": {"name": "套装"},
+                "mainProps": [{"attributeName": "攻击",
+                               "attributeValue": "1%", "valid": True}],
+                "subProps": [{"attributeName": "x",
+                              "attributeValue": "1%", "valid": True}],
+            }
+
+        return {"role": {"roleName": name, "level": 90},
+                "phantomData": {"cost": 12,
+                                "equipPhantomList": [item(c)
+                                                     for c in (4, 3, 3, 1, 1)]}}
+
+    def test_filter_choices_include_unleveled(self):
+        from src.tools.game.character_build import tool as T
+
+        self.assertIn("未练", T.FILTER_CHOICES)
+
+    def _data(self):
+        return {
+            "roleList": [
+                {"roleId": 1, "roleName": "有数据好的", "level": 90},
+                {"roleId": 2, "roleName": "没数据低级", "level": 40},
+            ],
+            "details": {
+                #: 只有 1 号有数据，而且结构完美 → 该进"达标"
+                "1": self._good_detail("有数据好的"),
+            },
+        }
+
+    def test_no_data_is_not_ok(self):
+        """★★★ **没数据 ≠ 达标**（用户报的 bug）。"""
+        p = self._panel()
+        p._data = self._data()
+        p._selected = "1"
+        p._filter_box.setCurrentText("达标")
+        p._render(p._data)
+        ids = [c._cid for c in p._cards]
+        self.assertIn("1", ids, "有数据且没问题的该在达标里")
+        self.assertNotIn("2", ids,
+                         "★ 没声骸数据的角色跑进「达标」了 —— 那是「未练」")
+
+    def test_no_data_goes_to_unleveled(self):
+        """★★★ 没数据的进**「未练」**。"""
+        p = self._panel()
+        p._data = self._data()
+        p._selected = "1"
+        p._filter_box.setCurrentText("未练")
+        p._render(p._data)
+        self.assertEqual([c._cid for c in p._cards], ["2"],
+                         "「未练」里应该是没数据的那个")
+
+    def test_no_data_not_in_unmet(self):
+        """★ 没数据也**不该**进「未达标」（那是"有数据但没过"）。
+
+        ⚠ 这条要能抓住"把 ``has_data`` 判断从条件里删掉"这种回归 ——
+        光看"没数据的在不在未达标里"不够（它可能被别的分支挡住）。
+        所以**同时放一个"真的未达标"的角色**当对照。
+        """
+        p = self._panel()
+        p._data = {
+            "roleList": [
+                {"roleId": 1, "roleName": "差数据", "level": 90},
+                {"roleId": 2, "roleName": "没数据", "level": 40},
+            ],
+            "details": {
+                #: 声骸很差 → 真的未达标
+                "1": {"role": {"roleName": "差数据", "level": 90},
+                      "phantomData": {"equipPhantomList": [
+                          {"cost": 4, "level": 1,
+                           "fetterDetail": {"name": "A"},
+                           "phantomProp": {"name": "x"},
+                           "mainProps": [], "subProps": []}]}},
+            },
+        }
+        p._selected = "1"
+        p._filter_box.setCurrentText("未达标")
+        p._render(p._data)
+        self.assertEqual([c._cid for c in p._cards], ["1"],
+                         "「未达标」该**只有**真的不达标那个；"
+                         "没数据的（2）该在「未练」里")
+
+    def test_three_states_are_disjoint(self):
+        """★★ 三态**互不重叠**、合起来等于全部。"""
+        p = self._panel()
+        p._data = self._data()
+        p._selected = "1"
+        seen: set[str] = set()
+        for choice in ("未练", "未达标", "达标"):
+            p._filter_box.setCurrentText(choice)
+            p._render(p._data)
+            ids = {c._cid for c in p._cards}
+            self.assertFalse(ids & seen,
+                             f"「{choice}」和之前的分类重叠了："
+                             f"{ids & seen}")
+            seen |= ids
+        self.assertEqual(seen, {"1", "2"},
+                         f"三态合起来不等于全部（{seen}）")
+
+
 class TestLevelFilter(unittest.TestCase):
     """★ 筛选下拉新增**「未满90级」**分类。
 

@@ -84,7 +84,12 @@ TILE_H = 132
 #: 「达标」筛选下拉的选项
 #:
 #: 用户 2026-10-05："增加一个分类，等级（未满90级的）"
-FILTER_CHOICES = ("全部", "未达标", "达标", "未满90级")
+#: 用户 2026-10-05："40级的应该进**未练**的分类"
+#:
+#: ⚠ **「未练」= 拿不到声骸数据**（游戏里没装声骸）。
+#: 实测 12 个没数据的角色**全是低等级**（Lv1/40/50/70）——
+#: "没数据"是"没练"，**不是"达标"**。
+FILTER_CHOICES = ("全部", "未达标", "达标", "未练", "未满90级")
 
 #: 满级线（用户要的这个分类就是按它筛）
 MAX_LEVEL = 90
@@ -869,11 +874,36 @@ class CharacterBuildPanel(ScrollArea):
         for role in ordered:
             cid = str(role.get("roleId"))
             issues = flagged.get(cid)
-            # ★ 达标筛选
-            if choice == "未达标" and not issues:
-                continue
-            if choice == "达标" and issues:
-                continue
+            has_data = cid in details
+
+            # ★★★ 筛选（**三态**：没数据 / 未达标 / 达标）
+            #
+            # ⚠⚠ 用户 2026-10-05 发现：「丽贝卡 Lv.40」出现在**「达标」**里。
+            #
+            # 根因：``flagged`` 只遍历 ``details``，**没声骸数据的角色
+            # 根本不在字典里** → ``issues`` 是 ``None`` → 判 False →
+            # 两个分支都跳过 → 落进"达标"。
+            #
+            # 而"没数据"其实是**没练**（游戏里没装声骸）——
+            # 实测 12 个没数据的角色**全是低等级**（Lv1/40/50/70）。
+            # **"没数据" ≠ "达标"** —— 这是两个完全不同的状态。
+            if choice == "未达标":
+                #: ⚠ ``flagged`` 只含**有数据**的角色，"没数据"天然不在这
+                #: —— 这个 ``has_data`` 是**防御性**的（以后改了
+                #: ``flagged`` 的构造方式也不会漏）。
+                if not has_data or not issues:
+                    continue
+            elif choice == "达标":
+                #: ★★★ **只有"有数据且没问题"才算达标**
+                #:
+                #: ⚠⚠ 这里漏掉 ``has_data`` 就是用户报的那个 bug：
+                #: "没数据"的 ``issues`` 是 ``None``（假），会被当成达标。
+                if not has_data or issues:
+                    continue
+            elif choice == "未练":
+                #: 没声骸数据 = 没练（用户："40级的应该进未练的分类"）
+                if has_data:
+                    continue
             # ★ 等级筛选（用户："增加一个分类，等级（未满90级的）"）
             if choice == "未满90级" and not is_below_max_level(role):
                 continue
