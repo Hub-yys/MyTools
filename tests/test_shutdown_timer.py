@@ -369,5 +369,149 @@ class TestShutdownCard(unittest.TestCase):
         self.assertIn("关机", widget.shutdown_state.text())
 
 
+class TestNoConfirmJustShutdown(TestShutdownCard):
+    """★★★ 到点**直接关机**，不再弹确认框（用户 2026-10-05）。
+
+        用户（截图圈出「定时关机」卡片）::
+
+            "这里改为不用确认，到时间就自动关机"
+
+    ## ⚠⚠ 为什么原来的模态确认框不只是"烦"，而是**逻辑上是坏的**
+
+    模态框只挡得住**调用方的代码**，``QTimer`` 轮询**照跑不误**::
+
+        t=0     启动，deadline = 60
+        t=1     should_warn → 弹模态框（用户还没点）
+        t=61    should_fire → **True** ← 框还开着，电脑照样关了
+
+    也就是说「取消关机」按钮**只有 60 秒有效期**，超时就点不动了 ——
+    用户以为能取消，其实早就关了。
+
+    改成"非模态通知 + 到点直接关"之后，这条时间线**不存在**了。
+
+    （继承 :class:`TestShutdownCard` 复用它的 `_widget()` 装置。）
+    """
+
+    def test_no_modal_confirm_left(self):
+        """★★★ 代码里**不许**再有那个模态确认框。"""
+        import inspect
+
+        from src.tools.game.auto_combat import tool as T
+
+        self.assertFalse(
+            hasattr(T.AutoCombatWidget, "_warn_before_shutdown"),
+            "旧的模态确认方法还在")
+        self.assertTrue(
+            hasattr(T.AutoCombatWidget, "_notify_before_shutdown"),
+            "没有新的非模态通知方法")
+
+        src = inspect.getsource(T.AutoCombatWidget._notify_before_shutdown)
+        self.assertNotIn("exec()", src,
+                         "通知里还在 exec() —— 那就是模态框，会阻塞")
+
+    def test_fires_without_asking(self):
+        """★★★ 到点 → **直接**调关机，不问。"""
+        import time
+
+        widget = self._widget()
+        calls: list[str] = []
+        widget._do_shutdown = lambda: calls.append("shutdown")
+
+        widget._shutdown = shutdown_timer.ShutdownTimer(1, warn_seconds=60)
+        widget._shutdown.start()
+        #: 通知已经发过（模拟"用户没理它"）
+        widget._shutdown._warned = True
+        widget._shutdown._deadline = time.monotonic() - 1
+
+        widget._tick_shutdown()
+        self.assertEqual(calls, ["shutdown"],
+                         "到点了却没直接关机 —— 是不是又在等确认？")
+
+    def test_warn_does_not_shutdown(self):
+        """★ 进通知窗口时**只通知**，不关机。"""
+        import time
+
+        widget = self._widget()
+        calls: list[str] = []
+        widget._do_shutdown = lambda: calls.append("shutdown")
+
+        widget._shutdown = shutdown_timer.ShutdownTimer(5, warn_seconds=60)
+        widget._shutdown.start()
+        widget._shutdown._deadline = time.monotonic() + 30   #: 还剩 30 秒
+
+        widget._tick_shutdown()
+        self.assertEqual(calls, [], "刚进通知窗口就关机了")
+
+    def test_cancel_button_undoes_it(self):
+        """★★★ 通知里的「取消」按钮**真的能撤掉**本次自动关机。
+
+        ⚠ 去掉确认框之后，这是**唯一**的反悔路径 —— 必须好使。
+        """
+        from qfluentwidgets import HyperlinkButton
+
+        widget = self._widget()
+        widget._shutdown = shutdown_timer.ShutdownTimer(5, warn_seconds=60)
+        widget._shutdown.start()
+        self.assertTrue(widget._shutdown.active)
+
+        widget._notify_before_shutdown()
+        for _ in range(3):
+            self.app.processEvents()
+
+        btns = [b for b in widget.findChildren(HyperlinkButton)
+                if b.text() == "取消"]
+        self.assertTrue(btns, "通知里没有「取消」按钮")
+
+        btns[0].click()
+        self.assertFalse(widget._shutdown.active,
+                         "点了取消但定时器还在跑 —— 会照样关机")
+
+    def test_cancel_still_works_before_deadline(self):
+        """★★ 通知发过之后、到点之前，取消仍然有效。
+
+        （"到点直接关"意味着到点那一刻之后就没机会了，
+        所以到点前必须一直有效。）
+        """
+        widget = self._widget()
+        widget._shutdown = shutdown_timer.ShutdownTimer(5, warn_seconds=60)
+        widget._shutdown.start()
+        widget._shutdown._warned = True          #: 通知已发
+
+        widget._cancel_shutdown("测试取消")
+        self.assertFalse(widget._shutdown.active)
+        self.assertIn("取消", widget.shutdown_state.text())
+
+    def test_card_text_matches_new_behavior(self):
+        """★★ 卡片**实际文案**不许再写"弹提醒 / 随时可以取消"。
+
+        ⚠ 文案和实际行为不符比没文案更坑 —— 用户会以为还有个框在等他点。
+
+        ⚠⚠ 别扫整个函数源码：**docstring 里会引用旧文案**（为了说明改了什么），
+        那样会误报。这里只取**传给 ``ConfigCard`` 的那两行字面量**。
+        """
+        import inspect
+        import re
+
+        from src.tools.game.auto_combat import tool as T
+
+        src = inspect.getsource(T.AutoCombatWidget._build_shutdown_card)
+        #: 去掉 docstring（它是解释性文字，不是界面文案）
+        body = re.sub(r'""".*?"""', "", src, flags=re.S)
+
+        self.assertNotIn("随时可以取消", body,
+                         "卡片文案还在说「随时可以取消」（确认框时代的话）")
+        self.assertIn("弹通知", body, "卡片文案没说明会弹通知")
+        self.assertIn("直接关机", body, "卡片文案没说明到点直接关")
+
+    def test_state_line_matches_new_behavior(self):
+        """★ 倒计时那行也不能再写"可取消"。"""
+        widget = self._widget()
+        widget._shutdown = shutdown_timer.ShutdownTimer(30)
+        widget._shutdown.start()
+        widget._refresh_shutdown_state()
+        text = widget.shutdown_state.text()
+        self.assertIn("直接关", text, f"状态行文案没更新：{text}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

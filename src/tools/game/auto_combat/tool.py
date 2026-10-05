@@ -22,8 +22,10 @@ from qfluentwidgets import (
     CaptionLabel,
     CheckBox,
     FluentIcon,
+    HyperlinkButton,
     IconWidget,
     InfoBar,
+    InfoBarPosition,
     LineEdit,
     MessageBox,
     PrimaryPushButton,
@@ -321,12 +323,17 @@ class AutoCombatWidget(ScrollArea):
         """定时关机设置卡（2026-10-01 用户要求）。
 
         * **跑 N 分钟后关**（从点「启动」开始计时）；
-        * 关机前**提前提醒且可取消**。
+        * 关机前**提前通知**（不挡路），**到点直接关、不再确认**。
+
+        ⚠ 用户 2026-10-05："这里改为不用确认，到时间就自动关机"
+        （截图圈的就是这张卡）—— 原来那句"关机前会弹提醒，随时可以取消"
+        是**模态确认框**的说明，已经不准了。
         """
         card = ConfigCard(
             "定时关机",
             "跑够指定分钟数后自动关机（从点「启动」开始计时）；"
-            f"关机前 {shutdown_timer.WARN_SECONDS} 秒会弹提醒，随时可以取消。",
+            f"关机前 {shutdown_timer.WARN_SECONDS} 秒会弹通知，"
+            "到点直接关机（想反悔就点通知里的「取消」）。",
             page)
 
         row = QHBoxLayout()
@@ -390,7 +397,7 @@ class AutoCombatWidget(ScrollArea):
         if self._shutdown is not None and self._shutdown.active:
             self.shutdown_state.setText(
                 f"将在 {self._shutdown.remaining_text()} 后关机"
-                "（关机前会弹提醒，可取消）")
+                "（关机前会弹通知，到点直接关）")
             self.shutdown_state.setTextColor("#C9514C", "#E6B4AC")
             return
 
@@ -403,34 +410,58 @@ class AutoCombatWidget(ScrollArea):
             self.shutdown_state.setText("未启用（不勾选就不会关机）。")
 
     def _tick_shutdown(self) -> None:
-        """轮询里调 —— 检查该提醒 / 该关机了。"""
+        """轮询里调 —— 检查该通知 / 该关机了。"""
         timer = self._shutdown
         if timer is None or not timer.active:
             return
 
         if timer.should_warn():
-            self._warn_before_shutdown()
+            self._notify_before_shutdown()
             return
         if timer.should_fire():
             self._do_shutdown()
             return
         self._refresh_shutdown_state()
 
-    def _warn_before_shutdown(self) -> None:
-        """关机前提醒 —— **可取消**（用户明确要求）。"""
+    def _notify_before_shutdown(self) -> None:
+        """关机前的**通知** —— 不挡路、也不等用户点。
+
+        ## 用户 2026-10-05
+
+            "这里改为不用确认，到时间就自动关机"
+
+        ⚠⚠ 原来是弹**模态** ``MessageBox``（"立即关机 / 取消关机"）——
+        那不但烦，而且**逻辑上是坏的**：
+
+        模态框只挡得住**调用方的代码**，``QTimer`` 轮询照跑 ——
+        提醒窗口一过（60 秒），``should_fire()`` 就是 True，
+        **框还开着电脑也照关**。也就是说「取消关机」按钮
+        **只有 60 秒有效期**，超时就点不动了。
+
+        → 改成非模态 InfoBar：不阻塞、到点直接关，
+        想反悔就点通知里的「取消」。
+        """
         seconds = shutdown_timer.WARN_SECONDS
-        box = MessageBox(
-            "即将自动关机",
-            f"定时关机时间到了 —— 电脑将在 {seconds} 秒后关机。\n\n"
-            "要继续的话点「取消关机」（本次不再自动关）。",
-            self.window())
-        box.yesButton.setText("立即关机")
-        box.cancelButton.setText("取消关机")
-        accepted = box.exec()
-        if not accepted:
-            self._cancel_shutdown("已取消自动关机。")
-            return
-        self._do_shutdown()
+        #: ⚠ ``InfoBar`` 的按钮得自己挂 —— 默认没有 action 按钮
+        bar = InfoBar.new(
+            icon=FluentIcon.HISTORY,
+            title="即将自动关机",
+            content=f"电脑将在 {seconds} 秒后关机。想反悔就点右边的「取消」。",
+            orient=Qt.Orientation.Horizontal,
+            isClosable=False,
+            position=InfoBarPosition.TOP_RIGHT,
+            duration=-1,                       #: 一直显示到关机
+            parent=self,
+        )
+        bar.addWidget(self._make_cancel_button(bar))
+        bar.show()
+
+    def _make_cancel_button(self, bar):
+        """InfoBar 里的「取消」按钮 —— 点了就撤掉本次自动关机。"""
+        button = HyperlinkButton("", "取消", self)
+        button.clicked.connect(lambda: self._cancel_shutdown("已取消自动关机。"))
+        button.clicked.connect(bar.close)
+        return button
 
     def _do_shutdown(self) -> None:
         ok, message = shutdown_timer.shutdown()
