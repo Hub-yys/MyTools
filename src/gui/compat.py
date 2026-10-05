@@ -21,6 +21,10 @@ StrongBodyLabel = getattr(qfw, "StrongBodyLabel", QLabel)
 BodyLabel = getattr(qfw, "BodyLabel", QLabel)
 CaptionLabel = getattr(qfw, "CaptionLabel", QLabel)
 SearchLineEdit = getattr(qfw, "SearchLineEdit", QLineEdit)
+#: ★ 页面基类（ScrollArea）—— 侧栏页面都要用它 + ``setWidget(view)``，
+#: 用裸 ``QWidget`` 整页不显示（皮肤页第一版踩过）
+ScrollArea = getattr(qfw, "ScrollArea", __import__(
+    "PySide6.QtWidgets", fromlist=["QScrollArea"]).QScrollArea)
 # Fluent 版树控件：Qt 原生 QTreeWidget 会吃系统调色板，在深色系统上变黑底，
 # 和浅色窗口对不上，所以优先用它。
 TreeWidget = getattr(qfw, "TreeWidget", QTreeWidget)
@@ -33,6 +37,7 @@ __all__ = [
     "BodyLabel",
     "CaptionLabel",
     "SearchLineEdit",
+    "ScrollArea",
     "TreeWidget",
     "ElidedLabel",
     "resolve_icon",
@@ -134,6 +139,8 @@ _ICON_CANDIDATES: dict[str, tuple[str, ...]] = {
     "DATABASE": ("DATABASE", "CLOUD", "APPLICATION"),
     "UPDATE": ("UPDATE", "SYNC", "DOWNLOAD", "APPLICATION"),
     "TASK": ("BOOK_INDEX", "APPOINTMENT", "CALENDAR", "LIBRARY", "APPLICATION"),
+    #: ★ 皮肤（用户 2026-10-05："皮肤加在左侧边栏"）
+    "SKIN": ("PALETTE", "BRUSH", "CONSTRACT", "COLOR", "APPLICATION"),
     "PANEL_COLLAPSED": ("CHEVRON_DOWN_MED", "ARROW_DOWN", "DOWN", "APPLICATION"),
     "PANEL_EXPANDED": ("UP", "CARE_UP_SOLID", "CHEVRON_DOWN_MED", "APPLICATION"),
 }

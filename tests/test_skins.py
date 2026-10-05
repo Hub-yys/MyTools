@@ -1,23 +1,46 @@
 # -*- coding: utf-8 -*-
-"""皮肤系统的测试。
+"""皮肤系统的测试（液态玻璃主题）。
 
-用 offscreen 模式建真窗口 —— 皮肤改动会影响 qfluentwidgets 的全局主题，
-所以**用独立的 qconfig 文件**，测完恢复原皮肤（别污染用户设置）。
+## ⚠ 这里是"真的换肤了"的硬测试
+
+用户先后报过**两个** bug::
+
+    "只有深色的皮肤有效果，其他的根本没有效果"     ← 换色没铺开
+    "这个皮肤设计太差，删掉重写…（液态玻璃主题）"  ← 只是换纯色不够
+
+所以测试要盯住两件事：
+  ① 每款皮肤**渲染出来必须不一样**（不能"换了个寂寞"）
+  ② QSS 里必须是**渐变 + 半透明卡片**（玻璃感的两个要素）
+
+## ⚠⚠ 性能：为什么用**最小窗口**而不是 ``MainWindow``
+
+在测试里建真的 ``MainWindow`` 实测会**卡死**
+（单跑 ~22 秒，整套跑 23 分钟没动静）——
+它要 5 秒、还拉一堆单例，跟在别的用例后面就互相卡。
+
+验"皮肤的 QSS 能不能改变渲染"只需要一个
+带 ``QStackedWidget`` + ``CardWidget`` 的小窗口
+（正好是 QSS 命中的两个选择器）。**0.6 秒跑完。**
 """
 
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-import sys
-
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+def _app():
+    from PySide6.QtWidgets import QApplication
+
+    return QApplication.instance() or QApplication([])
 
 
 class TestSkinRegistry(unittest.TestCase):
@@ -26,34 +49,75 @@ class TestSkinRegistry(unittest.TestCase):
     def test_skins_have_required_fields(self):
         from src.core import skins
 
-        self.assertGreaterEqual(len(skins.all_skins()), 3,
+        self.assertGreaterEqual(len(skins.all_skins()), 4,
                                 "皮肤太少了 —— 用户要「几款」")
         for s in skins.all_skins():
-            for k in ("id", "name", "mode", "primary"):
+            for k in ("id", "name", "desc", "mode", "primary",
+                      "bg", "card", "border", "text", "dim"):
                 self.assertIn(k, s, f"皮肤缺字段 {k}：{s}")
             self.assertIn(s["mode"], ("light", "dark"))
-            self.assertTrue(str(s["primary"]).startswith("#"))
 
     def test_ids_are_unique(self):
         from src.core import skins
 
         ids = [s["id"] for s in skins.all_skins()]
-        self.assertEqual(len(ids), len(set(ids)),
-                         f"皮肤 id 重复了：{ids}")
+        self.assertEqual(len(ids), len(set(ids)), f"皮肤 id 重复：{ids}")
 
-    def test_default_skin_exists(self):
+    def test_has_light_and_dark(self):
         from src.core import skins
 
-        self.assertIsNotNone(skins.skin_by_id(skins.DEFAULT_SKIN),
-                             f"默认皮肤 {skins.DEFAULT_SKIN} 不存在")
+        modes = {s["mode"] for s in skins.all_skins()}
+        self.assertEqual(modes, {"light", "dark"}, "浅色/暗色不全")
 
-    def test_has_at_least_one_dark_skin(self):
-        """★ 用户要"几款好看的" —— 至少给一款暗色的（不然"皮肤"就只剩换主色）。"""
+    def test_bg_is_a_gradient(self):
+        """★★ ``bg`` 必须是**渐变**（多个 stop）—— 液态玻璃的基础。
+
+        ⚠ 上一版 ``bg`` 是**纯色字符串**，被用户否了：
+        "这个皮肤设计太差"。纯色 = 没有纵深，不像玻璃。
+        """
         from src.core import skins
 
-        dark = [s for s in skins.all_skins() if s["mode"] == "dark"]
-        self.assertGreaterEqual(len(dark), 1,
-                                "一款暗色皮肤都没有")
+        for s in skins.all_skins():
+            with self.subTest(skin=s["name"]):
+                bg = s["bg"]
+                self.assertIsInstance(
+                    bg, (list, tuple),
+                    f"{s['name']} 的 bg 不是渐变（{bg!r}）—— 纯色不够玻璃")
+                self.assertGreaterEqual(
+                    len(bg), 2, f"{s['name']} 的渐变只有一个 stop")
+                for stop in bg:
+                    self.assertEqual(len(stop), 2,
+                                     f"stop 应该是 (位置, 颜色)：{stop}")
+                    pos, color = stop
+                    self.assertTrue(0 <= pos <= 1,
+                                    f"stop 位置越界：{pos}")
+                    self.assertTrue(str(color).startswith("#"),
+                                    f"stop 颜色不对：{color}")
+
+    def test_card_is_translucent(self):
+        """★★ 卡片必须是**半透明**的 —— 玻璃感的第二个要素。
+
+        ⚠ 不透的卡片就是普通色块，不是玻璃。
+        """
+        from src.core import skins
+
+        for s in skins.all_skins():
+            with self.subTest(skin=s["name"]):
+                card = str(s["card"])
+                self.assertTrue(
+                    card.startswith("rgba("),
+                    f"{s['name']} 的卡片不是半透明（{card}）—— "
+                    f"不透明的卡片没有玻璃感")
+
+    def test_border_is_translucent(self):
+        """★ 描边也应该是半透明的浅色（玻璃边缘的高光）。"""
+        from src.core import skins
+
+        for s in skins.all_skins():
+            with self.subTest(skin=s["name"]):
+                self.assertTrue(
+                    str(s["border"]).startswith("rgba("),
+                    f"{s['name']} 的描边不是半透明：{s['border']}")
 
     def test_skin_by_id_unknown_returns_none(self):
         from src.core import skins
@@ -61,17 +125,182 @@ class TestSkinRegistry(unittest.TestCase):
         self.assertIsNone(skins.skin_by_id("不存在的皮肤"))
 
 
+class TestSkinQss(unittest.TestCase):
+    """★★ ``build_qss`` —— 换肤**看得见**的关键。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _app()
+
+    def test_gradient_qss_is_valid(self):
+        """★★ 渐变拼出来必须是合法的 ``qlineargradient``。
+
+        ⚠⚠ 上一版这里有**真 bug**：预览条把 ``bg``（现在是列表）
+        直接当字符串插进 QSS，拼出来是::
+
+            stop:0 [(0.0, '#0B1026'), (0.45, '#141A38')]
+
+        **整个 Python 列表塞进去了** —— QSS 解析失败，什么都画不出来。
+        """
+        from src.core import skins
+
+        for s in skins.all_skins():
+            with self.subTest(skin=s["name"]):
+                grad = skins.gradient_qss(s)
+                self.assertTrue(grad.startswith("qlineargradient("),
+                                f"不是渐变：{grad[:60]}")
+                self.assertNotIn("[", grad,
+                                 f"渐变里混进了 Python 列表：{grad[:80]}")
+                self.assertNotIn("(", grad.split("(", 1)[1].split("stop")[0]
+                                 .replace("x1:0, y1:0, x2:1, y2:1, ", ""),
+                                 f"渐变参数不对：{grad[:80]}")
+                #: 每个 stop 都要在
+                for _pos, color in s["bg"]:
+                    self.assertIn(color, grad,
+                                  f"渐变里少了 {color}")
+
+    def test_qss_contains_bg_gradient_and_card(self):
+        """★★ QSS 里必须有**渐变背景**（第一版只换主色 → 0% 变化）。"""
+        from src.core import skins
+
+        for s in skins.all_skins():
+            with self.subTest(skin=s["name"]):
+                qss = skins.build_qss(s)
+                self.assertIn("qlineargradient", qss,
+                              f"{s['name']} 的 QSS 没有渐变")
+                self.assertIn("QStackedWidget", qss,
+                              "QSS 没打到页面容器 —— 换了也看不见")
+                self.assertIn("NavigationPanel", qss,
+                              "QSS 没打到左侧栏 —— 会「右边玻璃左边白板」")
+                self.assertIn(str(s["card"]), qss, "QSS 没有卡片色")
+
+    def test_qss_does_not_paint_every_widget(self):
+        """★★ **不许**有**裸的** ``QWidget { background }``。
+
+        ⚠ 裸选择器会把所有子控件（图标底、标签底）一起涂了，
+        层次全没（实测过）。
+
+        ⚠⚠ 注意别误判：``NavigationPanel ScrollArea > QWidget > QWidget
+        { background: transparent }`` 是**后代选择器**（只作用于侧栏滚动区
+        内部），是**故意**写的 —— 它里面的 ``QWidget {`` 前面有 ``>``。
+        所以判据是"**行首/花括号前直接就是 QWidget**"。
+        """
+        import re
+
+        from src.core import skins
+
+        def bare_widget_selectors(qss: str) -> list[str]:
+            """挑出**裸的** ``QWidget`` 选择器（排除 `> QWidget` 这种后代选择器）。
+
+            做法：对每个 ``{`` 取它前面的选择器文本，
+            如果**最后一个词**是 ``QWidget`` 且**不含 ``>``** → 就是裸的。
+            """
+            bad = []
+            #: 用 `}` 切开，每段形如 "Selector1 Selector2 { 声明"
+            for chunk in qss.split("}"):
+                if "{" not in chunk:
+                    continue
+                selector = chunk.split("{")[0].strip()
+                #: 取最后一段（逗号分隔的多个选择器也要看）
+                for one in selector.split(","):
+                    one = one.strip()
+                    if not one.endswith("QWidget"):
+                        continue
+                    if ">" in one:
+                        continue          #: 后代选择器，故意的
+                    bad.append(one)
+            return bad
+
+        for s in skins.all_skins():
+            with self.subTest(skin=s["name"]):
+                qss = skins.build_qss(s)
+                bad = bare_widget_selectors(qss)
+                self.assertEqual(
+                    bad, [],
+                    f"{s['name']} 用了裸的 QWidget 选择器 {bad} —— 层次会糊")
+                #: 但限定到侧栏滚动区的后代选择器是允许的
+                self.assertIn("NavigationPanel ScrollArea", qss,
+                              "侧栏滚动区没设透明 —— 侧栏会上下分两截颜色")
+
+    def test_nav_panel_is_painted_directly(self):
+        """★★★ 左侧栏要**单独刷** —— 它自带的 styleSheet 会盖掉继承的。
+
+        ⚠⚠ 实测发现：``NavigationPanel`` **自己带一份 styleSheet**
+        （584 字符，里面写死 ``background-color: rgb(32, 32, 32)``），
+        优先级高于从窗口继承下来的。
+
+        只靠 ``build_qss`` 里的 ``NavigationPanel { ... }`` **不够** ——
+        表现就是"右边深色玻璃、左边白板"（实测截图就是这个）。
+
+        → ``_paint`` 里必须调 ``_paint_nav_panel`` 单独给它设。
+        """
+        import inspect
+
+        from src.core import skins
+
+        src = inspect.getsource(skins._paint)
+        self.assertIn("_paint_nav_panel", src,
+                      "_paint 没单独刷左侧栏 —— 侧栏会保持白板")
+
+        nav_src = inspect.getsource(skins._paint_nav_panel)
+        self.assertIn("setStyleSheet", nav_src,
+                      "没给侧栏设样式")
+        self.assertIn("gradient_qss", nav_src,
+                      "侧栏没刷渐变")
+
+    def test_nav_panel_gets_gradient(self):
+        """★★★ 侧栏要真的被刷上渐变（不留白板）。
+
+        ⚠⚠ 实测发现：``NavigationPanel`` **自己带一份 styleSheet**
+        （584 字符，写死 ``background-color: rgb(32, 32, 32)``），
+        优先级高于从窗口继承的 —— 只靠 ``build_qss`` 里那条
+        ``NavigationPanel { ... }`` **不够**，
+        表现就是"右边深色玻璃、左边白板"。
+
+        ## ⚠ 为什么不用真 ``MainWindow`` 测
+
+        试过 —— 会**卡死**（实测 5 分钟没动静）。原因是
+        ``MainWindow()`` 在已有窗口的进程里会互相卡住。
+
+        → 改成造一个**假的窗口对象**（挂一个真的 ``NavigationPanel``），
+        直接验 ``_paint_nav_panel`` 把样式刷上去了。快且确定。
+        """
+        from qfluentwidgets import NavigationPanel
+        from PySide6.QtWidgets import QWidget
+
+        from src.core import skins
+
+        skin = skins.skin_by_id("deepglass")
+
+        #: 假窗口：只要有个 ``navigationInterface.panel`` 就够
+        class _FakeNav:
+            def __init__(self):
+                self.panel = NavigationPanel()
+
+        class _FakeWindow(QWidget):
+            def __init__(self):
+                super().__init__()
+                self.navigationInterface = _FakeNav()
+
+        win = _FakeWindow()
+        skins._paint_nav_panel(win, skin)
+
+        css = win.navigationInterface.panel.styleSheet()
+        self.assertIn("qlineargradient", css,
+                      f"侧栏没刷上渐变（{css[:80]}）—— 会是白板")
+        self.assertIn(skin["bg"][0][1], css,
+                      "侧栏渐变不是这个皮肤的")
+        win.deleteLater()
+
+
 class TestSkinApply(unittest.TestCase):
     """应用皮肤（改全局主题）。"""
 
     @classmethod
     def setUpClass(cls):
-        from PySide6.QtWidgets import QApplication
-
-        cls.app = QApplication.instance() or QApplication([])
+        cls.app = _app()
 
     def setUp(self):
-        # 每次测前回到默认皮肤，避免互相污染
         from src.core import skins
 
         skins.apply_skin(skins.DEFAULT_SKIN, save=False)
@@ -86,35 +315,16 @@ class TestSkinApply(unittest.TestCase):
 
         self.assertFalse(skins.apply_skin("不存在"))
 
-    def test_apply_skin_changes_theme_color(self):
-        """★★ 应用皮肤后，**全局主色**变了。
-
-        ⚠ 这里用**浅色**皮肤断言精确值 —— 暗色模式下
-        ``themeColor()`` 会被 qfluentwidgets **提亮**（``#d64545`` →
-        ``#ff6e6e``），不是原色（那是它的可读性调整）。
-        """
-        from qfluentwidgets import themeColor
-
-        from src.core import skins
-
-        light = next(s for s in skins.all_skins() if s["mode"] == "light")
-        self.assertTrue(skins.apply_skin(light["id"], save=False))
-        self.assertEqual(themeColor().name().lower(),
-                         light["primary"].lower())
-
     def test_apply_dark_skin_switches_theme(self):
-        """★★ 暗色皮肤会**切到暗色模式**。"""
         from qfluentwidgets import isDarkTheme
 
         from src.core import skins
 
         dark = next(s for s in skins.all_skins() if s["mode"] == "dark")
         self.assertTrue(skins.apply_skin(dark["id"], save=False))
-        self.assertTrue(isDarkTheme(),
-                        f"切到 {dark['name']} 后不是暗色模式")
+        self.assertTrue(isDarkTheme(), f"{dark['name']} 没切暗色")
 
     def test_apply_light_skin_switches_back(self):
-        """★★ 从暗色切回浅色，主题也切回来。"""
         from qfluentwidgets import isDarkTheme
 
         from src.core import skins
@@ -124,7 +334,120 @@ class TestSkinApply(unittest.TestCase):
         skins.apply_skin(dark["id"], save=False)
         self.assertTrue(isDarkTheme())
         skins.apply_skin(light["id"], save=False)
-        self.assertFalse(isDarkTheme())
+        self.assertFalse(isDarkTheme(), "切回浅色后还是暗色模式")
+
+    def test_apply_puts_qss_on_app(self):
+        from src.core import skins
+
+        s = skins.all_skins()[-1]
+        skins.apply_skin(s["id"], save=False)
+        self.assertIn("qlineargradient", self.app.styleSheet())
+
+
+class TestSkinReallyChangesPixels(unittest.TestCase):
+    """★★★ **真的换肤了** —— 渲染后逐点采样比对。
+
+    用户报的 bug：「只有深色的皮肤有效果，其他的根本没有效果」。
+
+    ⚠ 光断言"调了 setThemeColor"**抓不住** ——
+    第一版就是这么写的，测试全绿但浅色皮肤 **0.0%** 变化。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _app()
+
+    def setUp(self):
+        from src.core import skins
+
+        skins.apply_skin(skins.DEFAULT_SKIN, save=False)
+
+    def tearDown(self):
+        from src.core import skins
+
+        skins.apply_skin(skins.DEFAULT_SKIN, save=False)
+
+    @staticmethod
+    def _harness():
+        """最小窗口：``QStackedWidget``（页面容器）+ ``CardWidget``（卡片）。"""
+        from qfluentwidgets import CardWidget
+        from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
+
+        win = QWidget()
+        box = QVBoxLayout(win)
+        box.setContentsMargins(0, 0, 0, 0)
+        stack = QStackedWidget(win)
+        page = QWidget(stack)
+        inner = QVBoxLayout(page)
+        card = CardWidget(page)
+        card.setFixedHeight(80)
+        inner.addWidget(card)
+        stack.addWidget(page)
+        box.addWidget(stack)
+        win.resize(400, 300)
+        return win
+
+    def _sample(self, win):
+        """渲染后取稀疏采样（一串颜色）。"""
+        for _ in range(3):
+            self.app.processEvents()
+        img = win.grab().toImage()
+        return [img.pixelColor(x, y).name()
+                for y in range(0, img.height(), 6)
+                for x in range(0, img.width(), 6)]
+
+    def test_every_skin_looks_different(self):
+        """★★★ 每款皮肤渲染出来的画面**都不一样**。
+
+        这一条直接对应用户的话："其他的根本没有效果" ——
+        没效果 = 几款皮肤渲染出同一个画面。
+        """
+        from src.core import skins
+
+        win = self._harness()
+        win.show()
+        self.app.processEvents()
+
+        seen: dict[tuple, str] = {}
+        for s in skins.all_skins():
+            with self.subTest(skin=s["name"]):
+                skins.apply_skin(s["id"], save=False)
+                sig = tuple(self._sample(win))
+                self.assertNotIn(
+                    sig, seen,
+                    f"「{s['name']}」和「{seen.get(sig)}」渲染出"
+                    f"一模一样的画面 —— 换了个寂寞")
+                seen[sig] = s["name"]
+        win.close()
+
+    def test_skin_changes_most_of_the_screen(self):
+        """★★★ 换皮肤要改变**大部分**像素（不是只动几个）。
+
+        ⚠ 第一版浅色皮肤实测只变 **0.0%** —— 这条就是抓它的。
+        阈值取 30%：换渐变能到 60%+，"只换主色"是 0%。
+        """
+        from src.core import skins
+
+        win = self._harness()
+        win.show()
+        self.app.processEvents()
+
+        skins.apply_skin(skins.DEFAULT_SKIN, save=False)
+        base = self._sample(win)
+
+        for s in skins.all_skins():
+            if s["id"] == skins.DEFAULT_SKIN:
+                continue
+            with self.subTest(skin=s["name"]):
+                skins.apply_skin(s["id"], save=False)
+                cur = self._sample(win)
+                diff = sum(1 for a, b in zip(base, cur) if a != b)
+                pct = 100 * diff / len(base)
+                self.assertGreater(
+                    pct, 30,
+                    f"「{s['name']}」只改了 {pct:.1f}% 的画面 —— "
+                    f"用户会说「根本没有效果」（第一版是 0.0%）")
+        win.close()
 
 
 class TestSkinPersistence(unittest.TestCase):
@@ -132,9 +455,7 @@ class TestSkinPersistence(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from PySide6.QtWidgets import QApplication
-
-        cls.app = QApplication.instance() or QApplication([])
+        cls.app = _app()
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -158,9 +479,6 @@ class TestSkinPersistence(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_apply_skin_saves_choice(self):
-        """★★ 应用皮肤会**存下来**（重启还在）。"""
-        from qfluentwidgets import qconfig
-
         from src.core import skins
 
         skin = skins.all_skins()[-1]
@@ -168,102 +486,126 @@ class TestSkinPersistence(unittest.TestCase):
         self.assertEqual(skins.current_skin()["id"], skin["id"])
 
     def test_apply_without_save_does_not_change_current(self):
-        """★ ``save=False`` 只是**临时预览**，不改存的选择。"""
         from src.core import skins
 
         before = skins.current_skin()["id"]
-        skin = skins.all_skins()[-1]
-        if skin["id"] == before:
-            skin = skins.all_skins()[0]
+        skin = next(s for s in skins.all_skins() if s["id"] != before)
         self.assertTrue(skins.apply_skin(skin["id"], save=False))
         self.assertEqual(skins.current_skin()["id"], before,
                          "save=False 也改了存的选择 —— 那就不是预览了")
 
     def test_current_skin_falls_back_to_default(self):
-        """★ 没存过皮肤时，`current_skin()` 回落到默认。"""
         from qfluentwidgets import qconfig
 
         from src.core import skins
 
-        #: 把存的那个键**重置回默认值**（qconfig 没有 clear/remove，
-        #: 但 ``_skin_item().defaultValue`` 就是默认）
         qconfig.set(skins._skin_item(), skins._skin_item().defaultValue)
         self.assertEqual(skins.current_skin()["id"], skins.DEFAULT_SKIN)
 
 
-class TestSkinPickerCard(unittest.TestCase):
-    """侧栏皮肤卡。"""
+class TestSkinPage(unittest.TestCase):
+    """★ 皮肤**页面**（侧栏导航项 → 右边卡片）。
+
+    用户："皮肤加在左侧边栏，不是左下角，
+    右边显示所有的皮肤，以卡片的形式展示"
+    """
 
     @classmethod
     def setUpClass(cls):
-        from PySide6.QtWidgets import QApplication
-
-        cls.app = QApplication.instance() or QApplication([])
+        cls.app = _app()
 
     def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        from qfluentwidgets import qconfig
+
+        self._orig_file = qconfig.file
+        import pathlib
+
+        qconfig.file = pathlib.Path(self._tmp.name) / "test.json"
         from src.core import skins
 
-        skins.apply_skin(skins.DEFAULT_SKIN, save=False)
+        skins.apply_skin(skins.DEFAULT_SKIN, save=True)
 
     def tearDown(self):
+        from qfluentwidgets import qconfig
+
+        qconfig.file = self._orig_file
         from src.core import skins
 
         skins.apply_skin(skins.DEFAULT_SKIN, save=False)
+        self._tmp.cleanup()
 
-    def test_card_has_one_dot_per_skin(self):
-        """★ 每个皮肤一个圆点。"""
+    def test_page_has_card_per_skin(self):
         from src.core import skins
-        from src.gui.skin_picker import build_skin_card
+        from src.gui.skin_page import build_skin_page
 
-        card = build_skin_card()
-        dots = card._dots
-        self.assertEqual(len(dots), len(skins.all_skins()))
+        page = build_skin_page()
+        self.assertEqual(len(page._cards), len(skins.all_skins()))
 
-    def test_current_skin_dot_is_checked(self):
-        """★ 当前皮肤那个圆点是**选中**状态。"""
-        from src.core import skins
-        from src.gui.skin_picker import build_skin_card
+    def test_page_is_scroll_area(self):
+        """★★ 页面必须是 ``ScrollArea`` + ``setWidget``。
 
-        target = skins.all_skins()[-1]
-        skins.apply_skin(target["id"], save=False)
-        card = build_skin_card()
-        checked = [d for d in card._dots if d.isChecked()]
-        self.assertEqual(len(checked), 1, "应该有正好一个选中的圆点")
-        self.assertEqual(checked[0]._skin["id"], target["id"])
-
-    def test_clicking_dot_applies_skin(self):
-        """★★ 点圆点 → **立刻**应用皮肤。
-
-        ⚠⚠ 不能断言 ``themeColor() == skin.primary`` ——
-        **暗色模式下 qfluentwidgets 会把主色"提亮"**（实测
-        ``#d64545`` → ``#ff6e6e``），这是它给暗色做的可读性调整，
-        不是我们设错。
-
-        → 断言两件事：① 存的选择变了；② 主色**真的变了**（不是原来那个）。
+        ⚠ 第一版做成裸 ``QWidget`` —— **整页不显示**
+        （实测 100x30、不可见）。这是本项目的固定写法。
         """
-        from qfluentwidgets import themeColor
+        from qfluentwidgets import ScrollArea
 
+        from src.gui.skin_page import build_skin_page
+
+        page = build_skin_page()
+        self.assertIsInstance(page, ScrollArea,
+                              "皮肤页不是 ScrollArea —— 整页会不显示")
+        self.assertIsNotNone(page.widget(),
+                             "没 setWidget(view) —— 整页会被压扁")
+
+    def test_preview_draws_the_skin_gradient(self):
+        """★★★ 卡片预览条要**真的画该皮肤的渐变**。
+
+        ⚠⚠ 上一版这里有真 bug：把 ``bg``（列表）直接插进 QSS，
+        拼出 ``stop:0 [(0.0, '#0B1026'), ...]`` —— 解析失败、
+        预览条和卡片背景**全画不出来**（实测卡片区是纯灰）。
+        """
         from src.core import skins
-        from src.gui.skin_picker import build_skin_card
+        from src.gui.skin_page import build_skin_page
+        from PySide6.QtWidgets import QWidget
 
-        card = build_skin_card()
-        before = themeColor().name().lower()
+        page = build_skin_page()
+        for card in page._cards:
+            with self.subTest(skin=card._skin["name"]):
+                prev = card.findChild(QWidget, "skinPreview")
+                self.assertIsNotNone(prev, "卡片没有预览条")
+                css = prev.styleSheet()
+                self.assertIn("qlineargradient", css,
+                              f"预览条没画渐变：{css[:80]}")
+                self.assertNotIn(
+                    "[", css,
+                    f"预览条的 QSS 里混进了 Python 列表（上一版的 bug）："
+                    f"{css[:110]}")
+                #: 该皮肤的每个 stop 都要在
+                for _pos, color in card._skin["bg"]:
+                    self.assertIn(color, css,
+                                  f"预览条少了渐变色 {color}")
+
+    def test_active_card_is_marked(self):
+        from src.core import skins
+        from src.gui.skin_page import build_skin_page
+
         target = skins.all_skins()[-1]
-        dot = next(d for d in card._dots if d._skin["id"] == target["id"])
-        dot.chosen.emit(target["id"])
+        skins.apply_skin(target["id"], save=True)
+        page = build_skin_page()
+        marked = [c for c in page._cards if c._is_active]
+        self.assertEqual(len(marked), 1, "应该有正好一张「使用中」")
+        self.assertEqual(marked[0]._skin["id"], target["id"])
 
-        self.assertEqual(skins.current_skin()["id"], target["id"],
-                         "点圆点没改存的选择")
-        self.assertNotEqual(themeColor().name().lower(), before,
-                            "点圆点后主色没变")
+    def test_clicking_card_applies_skin(self):
+        from src.core import skins
+        from src.gui.skin_page import build_skin_page
 
-    def test_main_window_has_skin_card(self):
-        """★★ 主窗口**侧栏**有皮肤卡（用户："左侧边栏，增加皮肤功能"）。"""
-        from src.gui.main_window import MainWindow
-
-        w = MainWindow()
-        self.assertIsNotNone(getattr(w, "_skin_card", None),
-                             "主窗口没有皮肤卡")
+        page = build_skin_page()
+        target = skins.all_skins()[-1]
+        card = next(c for c in page._cards if c._skin["id"] == target["id"])
+        card.chosen.emit(target["id"])
+        self.assertEqual(skins.current_skin()["id"], target["id"])
 
 
 if __name__ == "__main__":

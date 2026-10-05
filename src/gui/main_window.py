@@ -39,6 +39,7 @@ from .home_interface import HomeInterface
 from .library_interface import WuwaLibraryInterface
 from .nav_reorder import ORDER_KEY, NavReorderHelper
 from .tasks_interface import TasksInterface
+from .skin_page import build_skin_page
 from .widgets import ComingSoonWidget, tool_icon_of
 
 #: 侧栏里那个"工具"分组项的 routeKey
@@ -170,6 +171,15 @@ class MainWindow(FluentWindow):
             self.tasks_interface, resolve_icon("TASK"), "任务"
         )
 
+        #: ★ 皮肤页面 —— 用户："皮肤加在左侧边栏，不是左下角"（2026-10-05）
+        #:
+        #: ⚠ 第一版是塞在侧栏**底部**的一排小圆点，用户明确说不要那样：
+        #: "右边显示所有的皮肤，以卡片的形式展示" → 做成正式导航项。
+        self.skin_interface = build_skin_page(self)
+        self.addSubInterface(
+            self.skin_interface, resolve_icon("SKIN"), "皮肤"
+        )
+
         self._build_tool_group()
         self._build_library_group()
 
@@ -184,8 +194,6 @@ class MainWindow(FluentWindow):
         _skins.apply_current_skin()
         self._install_nav_resizer()
         self._tweak_navigation()
-        #: ★ 侧栏底部加皮肤选择卡 —— 见 :mod:`src.gui.skin_picker`
-        self._add_skin_card()
         self.center_on_screen()
 
         #: 真正退出时置真 —— ``closeEvent`` 靠它区分「用户要关」和「我们已经决定退了」，
@@ -414,6 +422,17 @@ class MainWindow(FluentWindow):
         )
 
     # ------------------------------------------------------------------ 跳转
+    def open_skin_page(self) -> None:
+        """切到皮肤页并把侧栏那一项高亮。
+
+        ⚠ 必须用 ``switchTo``（**不是** ``navigationInterface.setCurrentItem``）——
+        实测 ``setCurrentItem`` 只高亮侧栏，**页面不切换**
+        （皮肤页停在 100x30 / 不可见）。``open_tool`` 也是这么做的。
+        """
+        self.switchTo(self.skin_interface)
+        self.navigationInterface.setCurrentItem(
+            self.skin_interface.objectName())
+
     def open_tool(self, key: str) -> None:
         """打开某个工具：展开侧栏分组 → 切到面板 → 侧栏那一项选中高亮。"""
         host = self._tool_hosts.get(key)
@@ -493,35 +512,6 @@ class MainWindow(FluentWindow):
         button = getattr(getattr(nav, "panel", None), "menuButton", None)
         if button is not None:
             button.hide()
-
-    def _add_skin_card(self) -> None:
-        """★ 侧栏底部加**皮肤选择卡**。
-
-        用户 2026-10-05："左侧边栏，增加皮肤功能，并设计几款好看的皮肤"
-
-        `NavigationPanel.bottomLayout` 就是底部那一块（设置/主题图标都在那），
-        皮肤是**全局设置**，放这里合理。
-        """
-        nav = getattr(self, "navigationInterface", None)
-        panel = getattr(nav, "panel", None)
-        bottom = getattr(panel, "bottomLayout", None)
-        if bottom is None:
-            return
-
-        from src.gui.skin_picker import build_skin_card
-
-        card = build_skin_card(self)
-        card.skin_chosen.connect(self._on_skin_chosen)
-        bottom.addWidget(card)
-        self._skin_card = card
-
-    def _on_skin_chosen(self, skin_id: str) -> None:
-        """换了皮肤：通知一下（皮肤本身已经立刻生效了）。"""
-        from src.core import skins as _skins
-
-        skin = _skins.skin_by_id(skin_id)
-        if skin:
-            logger.info("皮肤已切换：%s", skin["name"])
 
     def center_on_screen(self) -> None:
         screen = QGuiApplication.primaryScreen()

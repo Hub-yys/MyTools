@@ -27,6 +27,11 @@ dist/*
 # ok-ww 运行时写出来的配置（热键 / 角色开关 / 分辨率探测缓存）—— 本机生成，不进库
 configs/
 
+# qfluentwidgets 自己写的主题/皮肤配置（config/config.json）。
+# ★ 侧栏皮肤功能（2026-10-05）让它在**工作目录**下生成 —— 本机数据，不进库。
+#   里面存着 ThemeColor / ThemeMode / 选的皮肤 id。
+/config/
+
 # 抓库街区时留下的页面快照（调试产物）
 .playwright-cli/
 
