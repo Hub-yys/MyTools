@@ -140,6 +140,14 @@ class UpdateCard(QWidget):
         box.addWidget(self.version_label)
 
         #: ── 按钮行
+        #:
+        #: ⚠⚠ 「启动时自动检查」那个勾选框**去掉了**（用户 2026-10-05）：
+        #:
+        #:     "这个不用显示出来"
+        #:
+        #: 自动检查**一直开着**（见 :func:`auto_check_enabled` —— 恒为 True）。
+        #: 用户不需要这个开关：有更新时侧栏会亮黄字提示，
+        #: 没更新就什么都不显示，本来也不打扰人。
         row = QHBoxLayout()
         row.setSpacing(10)
         self.check_btn = QPushButton("检查更新", self)
@@ -155,11 +163,6 @@ class UpdateCard(QWidget):
         self.install_btn.setVisible(False)
         row.addWidget(self.install_btn)
 
-        self.auto_box = QCheckBox("启动时自动检查", self)
-        self.auto_box.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.auto_box.setChecked(self.auto_check_enabled())
-        self.auto_box.toggled.connect(self.set_auto_check)
-        row.addWidget(self.auto_box)
         row.addStretch(1)
         box.addLayout(row)
 
@@ -187,15 +190,28 @@ class UpdateCard(QWidget):
 
     # ------------------------------------------------------------ 设置
     def auto_check_enabled(self) -> bool:
-        """启动时要不要自动检查（默认**开**）。"""
-        try:
-            return bool(_settings().get(AUTO_CHECK_KEY, True))
-        except Exception:                      # noqa: BLE001 - 存储坏了别崩
-            return True
+        """启动时要不要自动检查 —— **恒为 True**。
+
+        ## ⚠ 为什么不再是个开关（用户 2026-10-05）
+
+            用户（截图圈出那个勾选框）："这个不用显示出来"
+
+        用户不需要这个开关：
+          · 有更新时**侧栏会亮黄字**提示（看得见）
+          · 没更新就什么都不显示（不打扰）
+
+        所以自动检查一直开着，界面上去掉了那个框。
+
+        ⚠ 保留这个方法（和 :meth:`set_auto_check`）是为了**兼容旧设置**：
+        以前用户关过的话，这里**仍然返回 True** —— 因为那个开关
+        已经不在界面上了，再读旧值会让人"找不到地方打开"。
+        """
+        return True
 
     def set_auto_check(self, enabled: bool) -> None:
+        """（保留接口）—— 现在恒开，写进去也不影响行为。"""
         try:
-            _settings().set(AUTO_CHECK_KEY, bool(enabled))
+            _settings().set(AUTO_CHECK_KEY, True)
         except Exception:                      # noqa: BLE001
             logger.debug("存自动检查开关失败", exc_info=True)
 

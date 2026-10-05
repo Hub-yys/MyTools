@@ -22,6 +22,18 @@ if ROOT not in sys.path:
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+#: ★★★ 测试里**关掉自动检查更新**。
+#:
+#: ⚠⚠ 不关的话，每个 ``MainWindow()`` 都会在 3 秒后起一个**真网络线程**；
+#: 测试跑完一堆窗口正在被回收，后台线程却还在 ``setThemeColor()`` ——
+#: ``qfluentwidgets`` 遍历弱引用字典时撞上 GC，抛::
+#:
+#:     RuntimeError: dictionary changed size during iteration
+#:
+#: 而且是**时红时不红**、极难查（实测卡了很久）。
+#: 需要验自动检查的那两条测试会自己临时清掉这个变量。
+os.environ["MYTOOLS_NO_AUTO_UPDATE"] = "1"
+
 
 class TestVersions(unittest.TestCase):
     """★★★ 版本比较 —— **不能按字符串比**。
@@ -465,19 +477,35 @@ class TestUpdateCard(unittest.TestCase):
         self.assertIn("连不上", card.status.text())
         self.assertFalse(self._shown(card.install_btn))
 
-    def test_auto_check_defaults_on_and_persists(self):
-        """★★ 「启动时自动检查」默认**开**，且开关能存下来。"""
+    def test_auto_check_is_always_on(self):
+        """★★★ 自动检查**一直开着** —— 开关已经去掉（用户 2026-10-05）。
+
+            用户（截图圈出那个勾选框）："这个不用显示出来"
+
+        ⚠ 第一版有个勾选框，测试还验"能关掉、能存下来"——
+        现在那个框**不在界面上**了，所以：
+
+          * `auto_check_enabled()` **恒为 True**
+          * 界面上**不许**再有那个勾选框（否则用户又看见了）
+        """
+        from PySide6.QtWidgets import QCheckBox
+
         from src.gui.update_card import build_update_card
 
         card = build_update_card()
-        self.assertTrue(card.auto_check_enabled(), "默认该是开的")
+        self.assertTrue(card.auto_check_enabled(), "自动检查该一直开着")
 
+        #: 就算硬调 set_auto_check(False)，也还是开着
         card.set_auto_check(False)
-        card2 = build_update_card()
-        self.assertFalse(card2.auto_check_enabled(), "关掉之后没存下来")
+        self.assertTrue(build_update_card().auto_check_enabled(),
+                        "还能被关掉 —— 但界面上已经没有开关了，"
+                        "用户会找不到地方打开")
 
-        card2.set_auto_check(True)
-        self.assertTrue(build_update_card().auto_check_enabled())
+        #: 界面上不该再有那个勾选框
+        boxes = [c for c in card.findChildren(QCheckBox)
+                 if "自动检查" in (c.text() or "")]
+        self.assertEqual(boxes, [],
+                         "「启动时自动检查」勾选框还在 —— 用户要求去掉")
 
     def test_config_page_has_no_update_card(self):
         """★★★ 更新卡**不该**再塞在配置页里（用户要求放侧栏）。
@@ -620,79 +648,231 @@ class TestMainWindowAutoCheck(unittest.TestCase):
                 self.assertTrue(hasattr(w, name), f"主窗口少了 {name}")
 
     def test_auto_check_disabled_skips(self):
-        """★★ 关掉开关后，启动**不该**去查（不打扰用户）。"""
+        """★★ 自动检查**一直开着**，所以启动时总会去查。
+
+        ⚠ 原来这条测的是"关掉开关就不查" —— 但那个开关
+        已经被用户去掉了（"这个不用显示出来"），
+        所以现在改测"**没有任何设置能阻止它查**"。
+
+        ⚠ 本文件头上把自动检查整个关了（见那里的说明），
+        所以这里得**临时打开**才测得到。
+        """
+        import os
+
         from src.core import ui_state
         from src.gui.main_window import MainWindow
 
+        #: 塞个旧值（以前关过）—— 现在也该**照样查**
         ui_state.UiState().set("update_auto_check", False)
-        w = MainWindow()
-        called: list[bool] = []
-        w._auto_check_update = lambda: called.append(True)
-        w._maybe_auto_check_update()
-        #: 关掉时不该排定时器 → 立刻检查 called 还是空
-        self.assertEqual(called, [], "关掉了还去查")
+
+        scheduled: list[bool] = []
+
+        def _fake_single_shot(_ms, fn=None):
+            scheduled.append(True)
+
+        import PySide6.QtCore as QtCore
+
+        #: ⚠⚠ 必须**原样还回去**（包括它是 staticmethod 这件事）——
+        #: 还成普通函数的话，别的测试再调它就带上 self，报奇怪的错
+        orig = QtCore.QTimer.__dict__["singleShot"]
+        orig_env = os.environ.pop("MYTOOLS_NO_AUTO_UPDATE", None)
+        try:
+            w = MainWindow()
+            w._skip_auto_update = False      #: 清掉窗口上的保险
+            QtCore.QTimer.singleShot = staticmethod(_fake_single_shot)
+            w._maybe_auto_check_update()
+        finally:
+            QtCore.QTimer.singleShot = orig
+            if orig_env is not None:
+                os.environ["MYTOOLS_NO_AUTO_UPDATE"] = orig_env
+
+        self.assertTrue(scheduled,
+                        "旧设置里关过就真的不查了 —— 但界面上没开关可打开")
 
     def test_silent_when_no_update(self):
-        """★★★ 没更新时**什么都不做**（不许弹提示骚扰）。"""
+        """★★★ 没更新时**什么都不做**（不许打扰）。"""
         from src.core import updater as U
         from src.gui.main_window import MainWindow
 
         w = MainWindow()
-        #: 把 InfoBar 换成探针 —— 调用了就说明弹了
-        import qfluentwidgets
-
         hits: list[str] = []
-        orig = getattr(qfluentwidgets, "InfoBar", None)
-        try:
-            class _Probe:
-                @staticmethod
-                def new(**_kw):
-                    hits.append("shown")
+        w.set_update_badge = lambda v="": hits.append(v)
 
-                    class _B:
-                        def show(self):
-                            pass
-                    return _B()
-            qfluentwidgets.InfoBar = _Probe
+        w._on_auto_checked(U.ReleaseInfo(ok=True, current="1.0.0",
+                                         latest="v1.0.0", has_update=False))
+        self.assertEqual(hits, [], "没更新还提示了")
 
-            w._on_auto_checked(U.ReleaseInfo(ok=True, current="0.5.3",
-                                             latest="v0.5.3",
-                                             has_update=False))
-            self.assertEqual(hits, [], "没更新还弹提示了")
-        finally:
-            if orig is not None:
-                qfluentwidgets.InfoBar = orig
+    def test_badge_when_update_found(self):
+        """★★★ 有更新 → 侧栏那一项显示**黄字**。
 
-    def test_prompts_when_update_found(self):
-        """★★★ 有更新时**才**提示。"""
+        用户 2026-10-05（截图圈出侧栏「检查更新」）::
+
+            "有更新时，这里小黄字提示有更新即可"
+
+        ⚠ 原来是弹 **InfoBar**（右上角浮一条）—— 用户觉得多余，
+        改成侧栏直接显示黄字（位置固定、不打断）。
+        """
         from src.core import updater as U
         from src.gui.main_window import MainWindow
 
         w = MainWindow()
+        hits: list[str] = []
+        w.set_update_badge = lambda v="": hits.append(v)
+
+        w._on_auto_checked(U.ReleaseInfo(ok=True, current="1.0.0",
+                                         latest="v1.1.0", has_update=True))
+        self.assertEqual(hits, ["v1.1.0"],
+                         "有更新却没在侧栏提示")
+
+    def test_badge_sets_text_and_color(self):
+        """★★★ 提示要**真的写进导航项**：文字带版本号 + 颜色是黄的。
+
+        ## ⚠⚠ 两个坑（摸源码才搞清）
+
+        **① 必须用 ``setText()``，不能赋值 ``item.text``**
+        ``text`` 是基类**方法**，赋值会覆盖它 →
+        ``paintEvent`` 里 ``self.text()`` 报
+        ``'str' object is not callable`` → **界面一画就崩**。
+
+        **② 颜色不是 QSS，是 ``setTextColor``**
+        导航项是自绘的，写 ``styleSheet("color: ...")`` **没用**。
+        """
+        from src.core import skins
+        from src.gui.main_window import UPDATE_BADGE_COLOR, MainWindow
+        from PySide6.QtWidgets import QWidget
+
+        skins.apply_skin(skins.DEFAULT_SKIN, save=True)
+        w = MainWindow()
+        w.set_update_badge("v1.1.0")
+
+        item = w.navigationInterface.widget(
+            w.update_interface.objectName())
+        self.assertIsNotNone(item, "找不到「检查更新」导航项")
+        inner = item.findChild(QWidget)
+        target = inner if inner is not None else item
+
+        self.assertIn("v1.1.0", target.text(),
+                      f"导航项文字没带版本号：{target.text()!r}")
+        self.assertEqual(target.lightTextColor.name().lower(),
+                         UPDATE_BADGE_COLOR.lower(),
+                         "导航项文字不是黄的")
+        #: ⚠ text 必须还是**可调用**的（被赋值就崩了）
+        self.assertTrue(callable(target.text),
+                        "text 被赋成字符串了 —— paintEvent 会崩")
+
+    def test_badge_clears(self):
+        """★★ 传空 → 恢复默认文字和颜色。"""
+        from src.core import skins
+        from src.gui.main_window import MainWindow
+        from PySide6.QtWidgets import QWidget
+
+        skins.apply_skin(skins.DEFAULT_SKIN, save=True)
+        w = MainWindow()
+        w.set_update_badge("v1.1.0")
+        w.set_update_badge("")
+
+        item = w.navigationInterface.widget(
+            w.update_interface.objectName())
+        inner = item.findChild(QWidget)
+        target = inner if inner is not None else item
+        self.assertEqual(target.text(), "检查更新",
+                         f"提示没清掉：{target.text()!r}")
+        self.assertEqual(target.lightTextColor.name().lower(), "#000000",
+                         "颜色没恢复默认")
+        self.assertTrue(callable(target.text), "text 被赋成字符串了")
+
+
+class TestThemeColorGcRace(unittest.TestCase):
+    """★★★ ``setThemeColor`` 撞上 GC 要能自愈。
+
+    ## 这个 ``RuntimeError`` 是 qfluentwidgets 的 bug，不是我们的
+
+    它内部遍历**弱引用字典**::
+
+        for widget, file in list(styleSheetManager.items()):
+
+    正好有窗口被 GC 回收时，字典大小变了::
+
+        RuntimeError: dictionary changed size during iteration
+
+    **实测**：测试里连着建/销毁一堆 ``MainWindow`` 时，
+    ``tests/test_updater.py`` 里一条用例**稳定复现** ——
+    每个测试都会 ``apply_skin``，前面的窗口正好在那时候被回收。
+
+    生产环境窗口少、几乎撞不上，但**测试里必现**，
+    而且报错完全指不到"皮肤"上，极难查。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_retries_on_gc_race(self):
+        """★★★ 撞一次"字典变了"要**自己重试**，最后成功。"""
+        from src.core import skins
+
+        calls: list[str] = []
+
+        def _flaky(color, save=False):
+            calls.append(color)
+            if len(calls) == 1:
+                raise RuntimeError("dictionary changed size during iteration")
+
+        skins._set_theme_color(_flaky, "#123456")
+        self.assertEqual(len(calls), 2, "没重试（应该试两次就成功）")
+
+    def test_gives_up_gracefully(self):
+        """★★ 一直失败也**不该把界面弄崩**（记日志、继续走）。"""
+        from src.core import skins
+
+        calls: list[str] = []
+
+        def _always(color, save=False):
+            calls.append(color)
+            raise RuntimeError("dictionary changed size during iteration")
+
+        skins._set_theme_color(_always, "#123456", tries=3)
+        self.assertEqual(len(calls), 3, "没按 tries 次数重试")
+
+    def test_other_runtime_errors_still_raise(self):
+        """★ 别的 ``RuntimeError`` **照抛**（别把真错误也吞了）。"""
+        from src.core import skins
+
+        def _boom(color, save=False):
+            raise RuntimeError("控件已销毁")
+
+        with self.assertRaises(RuntimeError):
+            skins._set_theme_color(_boom, "#123456")
+
+    def test_apply_skin_survives_the_race(self):
+        """★★★ 真调一次 ``apply_skin`` —— 底层撞竞态也不该冒泡出来。"""
+        from src.core import skins
+
+        #: 把 setThemeColor 换成"第一次必炸"的
         import qfluentwidgets
 
-        hits: list[str] = []
-        orig = getattr(qfluentwidgets, "InfoBar", None)
+        real = qfluentwidgets.setThemeColor
+        calls: list[int] = []
+
+        def _flaky(color, save=False):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("dictionary changed size during iteration")
+            return real(color, save=save)
+
+        orig = skins.__dict__.get("setThemeColor")
         try:
-            class _Probe:
-                @staticmethod
-                def new(**kw):
-                    hits.append(str(kw.get("content") or ""))
-
-                    class _B:
-                        def show(self):
-                            pass
-                    return _B()
-            qfluentwidgets.InfoBar = _Probe
-
-            w._on_auto_checked(U.ReleaseInfo(ok=True, current="0.5.3",
-                                             latest="v0.6.0",
-                                             has_update=True))
-            self.assertTrue(hits, "有更新却没提示")
-            self.assertIn("0.6.0", hits[0])
+            #: ``apply_skin`` 里是 ``from qfluentwidgets import setThemeColor``
+            #: 之后当参数传进去的 —— 直接换掉那个模块属性即可
+            qfluentwidgets.setThemeColor = _flaky
+            self.assertTrue(skins.apply_skin(skins.DEFAULT_SKIN,
+                                             save=False))
         finally:
+            qfluentwidgets.setThemeColor = real
             if orig is not None:
-                qfluentwidgets.InfoBar = orig
+                skins.setThemeColor = orig
 
 
 class TestPublishScript(unittest.TestCase):

@@ -259,7 +259,7 @@ def apply_skin(skin_id: str, *, save: bool = True) -> bool:
 
     setTheme(Theme.DARK if skin["mode"] == "dark" else Theme.LIGHT,
              save=False)
-    setThemeColor(skin["primary"], save=False)
+    _set_theme_color(setThemeColor, skin["primary"])
 
     #: ★★★ 记住"**当前真正在用的**皮肤"—— 见 :func:`active_skin` 的说明。
     #: 必须在 ``_paint`` 之前设，否则 QSS 和明暗模式会对不上。
@@ -273,6 +273,43 @@ def apply_skin(skin_id: str, *, save: bool = True) -> bool:
 
         qconfig.set(_skin_item(), skin["id"])
     return True
+
+
+def _set_theme_color(set_theme_color, color, *, tries: int = 3) -> None:
+    """调 ``setThemeColor``，**容忍 qfluentwidgets 的 GC 竞态**。
+
+    ## ⚠⚠ 这个 ``RuntimeError`` 是它的 bug，不是我们的
+
+    它内部是::
+
+        for widget, file in list(styleSheetManager.items()):
+            #  styleSheetManager 是 WeakKeyDictionary
+
+    遍历**弱引用字典**时，如果正好有窗口被 GC 回收，字典大小就变了::
+
+        RuntimeError: dictionary changed size during iteration
+
+    **实测**：测试里连着建/销毁一堆 ``MainWindow`` 时，
+    ``tests/test_updater.py`` 里一条用例**稳定复现**
+    （每个测试都会 ``apply_skin``，而前面的窗口正好在那时候被回收）。
+
+    这是纯粹的时间竞态 —— 生产环境窗口少、几乎撞不上，
+    但**测试里必现**，而且报错信息完全指不到"皮肤"这件事上，
+    非常难查。
+
+    → 重试几次。字典遍历是**幂等**的：重来一遍就好了。
+    真的一直失败也不该把界面弄崩 —— 记个日志、继续往下走。
+    """
+    for attempt in range(max(1, tries)):
+        try:
+            set_theme_color(color, save=False)
+            return
+        except RuntimeError as exc:
+            if "changed size" not in str(exc):
+                raise                          #: 别的 RuntimeError 照抛
+            logger.debug("setThemeColor 撞上 GC 竞态（第 %d 次）",
+                         attempt + 1)
+    logger.warning("setThemeColor 重试 %d 次仍失败（GC 竞态）", tries)
 
 
 #: ★★★ **当前真正在用的皮肤 id**（不是"存的那个"）

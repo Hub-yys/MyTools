@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 from qfluentwidgets import FluentWindow, NavigationItemPosition, setThemeColor
 
@@ -57,6 +57,14 @@ TASKS_KEY = "TasksInterface"
 #: 值必须和 :class:`WuwaLibraryInterface` 的 ``objectName`` 一致，
 #: 侧栏高亮和拖拽排序都按它找项。
 LIBRARY_KEY = "WuwaLibraryInterface"
+
+#: ★ 侧栏「检查更新」有新版时的**提示色**（黄）
+#:
+#: 用户 2026-10-05："有更新时，这里小黄字提示有更新即可"
+#:
+#: ⚠ 用的是**偏金的黄**（不是纯黄 `#ffff00`）—— 纯黄在浅色背景上
+#: 几乎看不清；这个色在浅色和暗色皮肤下都够亮。
+UPDATE_BADGE_COLOR = "#E8A33D"
 
 
 class ToolInterfaceHost(QWidget):
@@ -265,19 +273,31 @@ class MainWindow(FluentWindow):
         用户要的是"有更新能自动更新"，但**不该**每次启动都弹框问
         "要不要检查更新" —— 那是骚扰。
 
-        → 开关在**配置页的更新卡**上（默认开）。开了就：
-        延迟几秒（让界面先画出来）→ 后台查 → **只有真有更新**才提示。
+        → 延迟几秒（让界面先画出来）→ 后台查 →
+        **只有真有更新**才在侧栏亮黄字（见 :meth:`set_update_badge`）。
+
+        ⚠ 自动检查**一直开着**（用户 2026-10-05 去掉了那个开关：
+        "这个不用显示出来"）—— 有更新侧栏会提示，没更新不打扰，
+        本来就不需要开关。
 
         ⚠ 延迟是必须的：启动阶段一堆单例在建，这时候抢网络 + 建线程
         会让首屏明显变慢。
-        """
-        try:
-            from src.core import ui_state
 
-            if not bool(ui_state.UiState().get("update_auto_check", True)):
-                return
-        except Exception:                      # noqa: BLE001 - 读不到就当开
-            pass
+        ⚠⚠ **测试里必须关掉它**（置 ``self._skip_auto_update = True``）。
+        不关的话每个 ``MainWindow()`` 都会在 3 秒后起一个**真网络线程**；
+        测试跑完一堆窗口正在被回收，而后台线程还在
+        ``setThemeColor()`` → ``qfluentwidgets`` 遍历弱引用字典时撞上
+        GC → ``RuntimeError: dictionary changed size during iteration``
+        （实测就是这么红的，而且**时红时不红**、很难查）。
+        """
+        if getattr(self, "_skip_auto_update", False):
+            return
+        #: ⚠ 也认环境变量 —— 测试文件不用每个都去改窗口属性
+        #: （``tests/test_updater.py`` 和整仓测试都靠它）
+        import os
+
+        if os.environ.get("MYTOOLS_NO_AUTO_UPDATE"):
+            return
 
         from PySide6.QtCore import QTimer
 
@@ -299,24 +319,74 @@ class MainWindow(FluentWindow):
         thread.start()
 
     def _on_auto_checked(self, info) -> None:
-        """静默检查的结果 —— **只有真有更新**才提示。"""
+        """静默检查的结果 —— **只有真有更新**才在侧栏亮黄字。
+
+        ## 用户 2026-10-05（截图圈出侧栏「检查更新」那一项）
+
+            "有更新时，这里小黄字提示有更新即可"
+
+        ⚠ 原来弹的是 **InfoBar**（右上角浮一条）—— 用户觉得多余，
+        改成**侧栏那项直接显示黄字**：位置固定、不打断、
+        想看就去点。
+        """
         if not getattr(info, "has_update", False):
             return                           #: 没更新 / 查不到 → 什么都不做
-        try:
-            from qfluentwidgets import InfoBar, InfoBarPosition
+        self.set_update_badge(info.latest)
 
-            InfoBar.new(
-                title="发现新版本",
-                content=f"{info.current} → {info.latest}　"
-                        f"到「配置 → 检查更新」里一键更新",
-                orient=Qt.Orientation.Horizontal,
-                isClosable=True,
-                position=InfoBarPosition.TOP_RIGHT,
-                duration=8000,
-                parent=self,
-            ).show()
-        except Exception:                      # noqa: BLE001 - 提示失败无所谓
-            logger.debug("弹更新提示失败", exc_info=True)
+    def set_update_badge(self, version: str = "") -> None:
+        """★ 在侧栏「检查更新」那一项上显示**黄色提示**。
+
+        用户 2026-10-05（截图圈出侧栏「检查更新」）::
+
+            "有更新时，这里小黄字提示有更新即可"
+
+        :param version: 新版本号（显示成 ``检查更新 · v1.2.0``）；
+            传空字符串则**清掉**提示。
+
+        ## ⚠⚠ 两个坑（都是摸源码才搞清的）
+
+        **① 必须用 ``setText()``，不能赋值 ``item.text``**
+
+        ``text`` 是**基类的方法**（``NavigationWidget.text()``），
+        绘制时调的是 ``self.text()``。赋值成字符串会把它**覆盖掉**，
+        于是 ``paintEvent`` 里 ``self.text()`` 直接::
+
+            TypeError: 'str' object is not callable
+
+        —— 界面一画就崩（实测）。
+
+        **② 颜色也不是 QSS，是 ``setTextColor``**
+
+        ``NavigationTreeItem`` 是**自绘**的，颜色存在
+        ``lightTextColor`` / ``darkTextColor`` 两个 ``QColor`` 上。
+        写 ``styleSheet("color: ...")`` **没用**（第一版就这么写，白写）。
+        """
+        item = None
+        try:
+            item = self.navigationInterface.widget(
+                self.update_interface.objectName())
+        except (RuntimeError, AttributeError):
+            item = None
+        if item is None:
+            return
+
+        #: 真正画字的是里面的 NavigationTreeItem
+        inner = item.findChild(QWidget)
+        target = inner if inner is not None else item
+        base_text = "检查更新"
+
+        try:
+            target.setText(f"{base_text} · {version}" if version
+                           else base_text)
+            if version:
+                badge = QColor(UPDATE_BADGE_COLOR)
+                target.setTextColor(badge, badge)
+            else:
+                #: 恢复默认（浅色主题黑字 / 暗色主题白字）
+                target.setTextColor(QColor(0, 0, 0), QColor(255, 255, 255))
+            target.update()
+        except (RuntimeError, AttributeError):
+            logger.debug("设置侧栏更新提示失败", exc_info=True)
 
     # ------------------------------------------------------------------ 托盘 / 关闭
     def _setup_tray(self) -> None:
