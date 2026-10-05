@@ -261,6 +261,11 @@ def apply_skin(skin_id: str, *, save: bool = True) -> bool:
              save=False)
     setThemeColor(skin["primary"], save=False)
 
+    #: ★★★ 记住"**当前真正在用的**皮肤"—— 见 :func:`active_skin` 的说明。
+    #: 必须在 ``_paint`` 之前设，否则 QSS 和明暗模式会对不上。
+    global _ACTIVE_SKIN
+    _ACTIVE_SKIN = skin["id"]
+
     _paint(skin)
 
     if save:
@@ -270,10 +275,51 @@ def apply_skin(skin_id: str, *, save: bool = True) -> bool:
     return True
 
 
-def _paint(skin: dict) -> None:
-    """把皮肤的 QSS 刷到**所有窗口**上。
+#: ★★★ **当前真正在用的皮肤 id**（不是"存的那个"）
+#:
+#: ## ⚠⚠ 为什么需要这个（用户 2026-10-05 截图报的"字看不清"）
+#:
+#: 症状：界面上**背景是浅色、字也是浅色** → 看不清。
+#:
+#: 根因是两个"当前皮肤"**对不上**：
+#:
+#: * ``setTheme(DARK)`` 真的把 **明暗模式**切成了暗色
+#:   （qfluentwidgets 于是把文字画成浅色）
+#: * 但 ``current_skin()`` 读的是**存盘的那个**（还是浅色的 mist）
+#:   → ``refresh_windows()`` 拿 mist 的 QSS 去刷 → 背景画成浅色
+#:
+#: 实测::
+#:
+#:     apply_skin("deepglass", save=False)
+#:     current_skin()["id"]  →  "mist"      ← 存盘没变（预览的语义）
+#:     isDarkTheme()         →  True        ← 但主题真的切了
+#:     → 浅色背景 + 浅色文字 = 看不清
+#:
+#: → 用 ``_ACTIVE_SKIN`` 记住**实际刷上去的那个**；
+#: ``refresh_windows()`` / 建新窗口时都用它，两边就永远一致。
+_ACTIVE_SKIN: str = ""
 
-    ⚠ 挂 **app 级**（不是 window 级）—— 这样**对话框 / 弹窗**也一起换，
+
+def active_skin() -> dict:
+    """**当前真正在用的**皮肤（新窗口 / 重刷 QSS 都该用它）。
+
+    ⚠ 跟 :func:`current_skin` 的区别：
+    ``current_skin()`` 是**存盘的选择**（用户点"使用这款"才会变），
+    ``active_skin()`` 是**此刻界面上真正生效的**（预览也会让它变）。
+
+    没有过任何 apply 时回落到 ``current_skin()``。
+    """
+    if _ACTIVE_SKIN:
+        skin = skin_by_id(_ACTIVE_SKIN)
+        if skin is not None:
+            return skin
+    return current_skin()
+
+
+def _paint(skin: dict) -> None:
+    """把皮肤的配色刷到**所有窗口 + Qt 调色板**上。
+
+    ⚠ 挂 **app 级** QSS（不是 window 级）—— 这样**对话框 / 弹窗**也一起换，
     不然弹出的窗口还是旧配色（看着很割裂）。
 
     ⚠ 还要**逐个顶层窗口再设一遍** —— 主窗口有自己的调色板，
@@ -295,6 +341,7 @@ def _paint(skin: dict) -> None:
         return
     qss = build_qss(skin)
     app.setStyleSheet(qss)
+    _paint_palette(app, skin)
     for w in app.topLevelWidgets():
         try:
             w.setStyleSheet(qss)
@@ -303,6 +350,110 @@ def _paint(skin: dict) -> None:
         _paint_nav_panel(w, skin)
         _paint_title_bar(w, skin)
         _paint_pages(w)
+
+
+def _paint_palette(app, skin: dict) -> None:
+    """★ 同步 **Qt 系统调色板** —— 让**裸 Qt 控件**也跟着换色。
+
+    ## ⚠⚠ 为什么必须做（用户 2026-10-05 截图："不然看不清字了"）
+
+    有些控件是**裸 Qt 控件**，不认 qfluentwidgets 的主题：
+
+    * ``QTextEdit``（「资源库更新」那个日志框）
+    * 原生 ``QLabel`` / ``QLineEdit`` / ``QTreeWidget`` …
+
+    它们用**系统调色板**取色。实测::
+
+        深空玻璃（暗色）:  QTextEdit 底色=#ffffff  字色=#000000
+
+    也就是说切到暗色皮肤后，**它还是白底黑字**；
+    而玻璃 QSS 又把它的底压暗了 → **深底 + 深字 = 看不见**
+    （用户截图里圈的就是这个）。
+
+    → 把皮肤的颜色**同步写进 Qt 调色板**，裸控件就跟着变了。
+    """
+    from PySide6.QtGui import QColor, QPalette
+
+    dark = skin["mode"] == "dark"
+    bg = QColor(skin["bg"][0][1])              #: 渐变第一个 stop 当底色
+    card = _solid_card(skin, bg, dark)
+    text = QColor(skin["text"])
+    dim = QColor(skin["dim"])
+
+    pal = app.palette()
+    for role, color in (
+        (QPalette.ColorRole.Window, bg),
+        (QPalette.ColorRole.WindowText, text),
+        (QPalette.ColorRole.Base, card),
+        (QPalette.ColorRole.AlternateBase, bg),
+        (QPalette.ColorRole.Text, text),
+        (QPalette.ColorRole.Button, bg),
+        (QPalette.ColorRole.ButtonText, text),
+        (QPalette.ColorRole.ToolTipBase, card),
+        (QPalette.ColorRole.ToolTipText, text),
+        (QPalette.ColorRole.PlaceholderText, dim),
+        (QPalette.ColorRole.Highlight, QColor(skin["primary"])),
+        (QPalette.ColorRole.HighlightedText,
+         QColor("#ffffff" if dark else "#ffffff")),
+    ):
+        pal.setColor(role, color)
+    #: 禁用态也给它一套（不然"未启用"的控件会刺眼）
+    pal.setColor(QPalette.ColorGroup.Disabled,
+                 QPalette.ColorRole.Text, dim)
+    pal.setColor(QPalette.ColorGroup.Disabled,
+                 QPalette.ColorRole.WindowText, dim)
+    app.setPalette(pal)
+
+
+def _rgba(text: str) -> tuple[int, int, int, float]:
+    """解析 ``"rgba(255, 255, 255, 0.055)"`` → ``(r, g, b, alpha 0~1)``。
+
+    ⚠⚠ **不能直接 ``QColor("rgba(...)")``** —— 实测它解析不出来，
+    返回的是**黑色**（alpha 也丢了）。我的第一版就是这么写的，
+    结果 ``Base`` 被设成 ``#000000``（暗色皮肤下日志框还是黑底）。
+
+    解析不了就回落到 ``(255, 255, 255, 1.0)``。
+    """
+    import re
+
+    m = re.match(
+        r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)"
+        r"(?:\s*,\s*([\d.]+)\s*)?\)",
+        str(text or "").strip(), re.I)
+    if not m:
+        return 255, 255, 255, 1.0
+    r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    alpha = float(m.group(4)) if m.group(4) is not None else 1.0
+    return r, g, b, max(0.0, min(1.0, alpha))
+
+
+def _solid_card(skin: dict, bg, dark: bool):
+    """把**半透明的卡片色**算成一个**实色**（Qt 调色板不吃 alpha）。
+
+    ``rgba(255,255,255,0.055)`` 直接当颜色用是不行的 ——
+    得**垫在底色上**混一下，才是它实际看起来的颜色。
+
+    ⚠ 第一版拿 ``QColor(skin["card"])`` 去读 rgba，读出**黑色**，
+    于是 ``Base`` 成了黑的（实测 ``#000000``）。见 :func:`_rgba`。
+    """
+    from PySide6.QtGui import QColor
+
+    if not str(skin["card"]).lower().startswith("rgba"):
+        return QColor(skin["card"])
+    r, g, b, a = _rgba(skin["card"])
+    return _blend(bg, QColor(r, g, b), a)
+
+
+def _blend(base, top, alpha: float):
+    """把 ``top`` 按 ``alpha`` 混到 ``base`` 上（算个实色）。"""
+    from PySide6.QtGui import QColor
+
+    a = max(0.0, min(1.0, alpha))
+    return QColor(
+        int(base.red() * (1 - a) + top.red() * a),
+        int(base.green() * (1 - a) + top.green() * a),
+        int(base.blue() * (1 - a) + top.blue() * a),
+    )
 
 
 def _paint_title_bar(window, skin: dict) -> None:
@@ -474,5 +625,9 @@ def refresh_windows() -> None:
     """新窗口建好后调一次 —— 让它也带上当前皮肤。
 
     （``apply_skin`` 只刷**当时已存在**的窗口。）
+
+    ⚠⚠ 用 :func:`active_skin`（**真正在用的**），不是 ``current_skin()``
+    （存盘的那个）—— 两者在"预览"时会不一致，
+    拿错的去刷就会出现**浅色背景 + 浅色字**（用户截图报过）。
     """
-    _paint(current_skin())
+    _paint(active_skin())

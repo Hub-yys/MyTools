@@ -109,16 +109,45 @@ class ToolInterfaceHost(QWidget):
 
 
 class NavResizer(QWidget):
-    """导航栏右边缘的分隔条，按住左右拖动即可调整侧栏宽度。"""
+    """导航栏右边缘的分隔条，按住左右拖动即可调整侧栏宽度。
+
+    ## ⚠⚠ 它是**那条白缝**的来源（用户 2026-10-05 截图圈出来的）
+
+        "另外这个白色的缝隙是什么"
+
+    它是个 5px 宽的**裸 ``QWidget``** —— 不透明，于是在深色玻璃背景上
+    就是一条白竖条。
+
+    → 设成透明（让玻璃透出来），只留**拖动**功能。
+    悬停时给一点点高亮，用户才知道这里能拖。
+    """
 
     def __init__(self, nav, parent=None):
         super().__init__(parent)
         self._nav = nav
         self._start_global_x = 0
         self._start_width = NAV_EXPAND_WIDTH
+        self.setObjectName("navResizer")
         self.setFixedWidth(5)
         self.setCursor(Qt.CursorShape.SizeHorCursor)
         self.setToolTip("拖动可调整侧栏宽度")
+        #: ⚠ 必须透明 —— 不设的话就是那条白缝
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._paint(False)
+
+    def _paint(self, hover: bool) -> None:
+        """背景透明；悬停时给一点点可见的提示。"""
+        color = ("rgba(127, 127, 127, 0.35)" if hover else "transparent")
+        #: ⚠ 带选择器（不带会级联到子控件 —— 项目里的统一规则）
+        self.setStyleSheet(f"#navResizer {{ background: {color}; }}")
+
+    def enterEvent(self, event):  # noqa: N802 - Qt 回调
+        self._paint(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt 回调
+        self._paint(False)
+        super().leaveEvent(event)
 
     def _apply(self, width: int) -> None:
         width = max(MIN_NAV_WIDTH, width)

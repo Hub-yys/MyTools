@@ -487,6 +487,188 @@ class TestSkinQss(unittest.TestCase):
         win.deleteLater()
 
 
+class TestNativeWidgetPalette(unittest.TestCase):
+    """★★★ **裸 Qt 控件**也要跟着换肤（用户 2026-10-05 报的"看不清字"）。
+
+        用户（截图圈出「资源库更新」的日志框）::
+
+            "如果皮肤颜色比较深，字体颜色应该相应调浅比如调成白色，
+             不然看不清字了"
+
+    ## 根因
+
+    有些控件是**裸 Qt 控件**，不认 qfluentwidgets 的主题：
+
+    * ``QTextEdit``（「资源库更新」那个日志框）
+    * 原生 ``QLabel`` / ``QLineEdit`` / ``QTreeWidget`` …
+
+    它们从**系统调色板**取色。实测切到深色皮肤后::
+
+        QTextEdit 底色=#ffffff  字色=#000000     ← 还是白底黑字
+
+    而玻璃 QSS 又把它的底压暗 → **深底 + 深字 = 看不见**。
+
+    → ``apply_skin`` 必须**同步 Qt 调色板**。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _app()
+
+    def setUp(self):
+        from src.core import skins
+
+        skins.apply_skin(skins.DEFAULT_SKIN, save=True)
+
+    def tearDown(self):
+        from src.core import skins
+
+        skins.apply_skin(skins.DEFAULT_SKIN, save=True)
+
+    @staticmethod
+    def _lum(color) -> float:
+        return (0.299 * color.red() + 0.587 * color.green()
+                + 0.114 * color.blue())
+
+    def test_native_controls_get_palette(self):
+        """★★★ 每种皮肤下，裸控件的**底/字对比度方向**必须对。
+
+        浅色皮肤 → 底亮字暗；暗色皮肤 → 底暗字亮。
+        """
+        from PySide6.QtGui import QPalette
+        from PySide6.QtWidgets import QLineEdit, QTextEdit, QTreeWidget
+
+        from src.core import skins
+
+        for skin in skins.all_skins():
+            dark = skin["mode"] == "dark"
+            skins.apply_skin(skin["id"], save=True)
+            for _ in range(3):
+                self.app.processEvents()
+            for cls in (QTextEdit, QLineEdit, QTreeWidget):
+                with self.subTest(skin=skin["name"], widget=cls.__name__):
+                    w = cls()
+                    pal = w.palette()
+                    base = pal.color(QPalette.ColorRole.Base)
+                    text = pal.color(QPalette.ColorRole.Text)
+                    w.deleteLater()
+                    if dark:
+                        self.assertGreater(
+                            self._lum(text), self._lum(base),
+                            f"{skin['name']}/{cls.__name__}：暗色皮肤下"
+                            f"字({text.name()})比底({base.name()})还暗 —— 看不清")
+                    else:
+                        self.assertLess(
+                            self._lum(text), self._lum(base),
+                            f"{skin['name']}/{cls.__name__}：浅色皮肤下"
+                            f"字({text.name()})比底({base.name()})还亮 —— 看不清")
+
+    def test_card_color_is_not_black(self):
+        """★★★ 半透明卡片色算出来**不能是黑色**。
+
+        ⚠⚠ 我的第一版直接 ``QColor("rgba(255,255,255,0.055)")`` ——
+        **Qt 解析不出来，返回黑色**，于是 ``Base`` 被设成 ``#000000``
+        （暗色皮肤下日志框还是黑底、字也看不清）。
+        得**自己解析 rgba 再混到底色上**。
+        """
+        from PySide6.QtGui import QPalette
+
+        from src.core import skins
+
+        for skin in skins.all_skins():
+            with self.subTest(skin=skin["name"]):
+                skins.apply_skin(skin["id"], save=True)
+                for _ in range(3):
+                    self.app.processEvents()
+                base = self.app.palette().color(QPalette.ColorRole.Base)
+                self.assertNotEqual(
+                    base.name(), "#000000",
+                    f"{skin['name']} 的 Base 是纯黑 —— rgba 解析失败了吧")
+
+    def test_rgba_parser(self):
+        """★ ``_rgba`` 要能解析出正确的 r/g/b/alpha。"""
+        from src.core import skins
+
+        self.assertEqual(skins._rgba("rgba(255, 255, 255, 0.055)"),
+                         (255, 255, 255, 0.055))
+        self.assertEqual(skins._rgba("rgb(10, 20, 30)"),
+                         (10, 20, 30, 1.0))
+        self.assertEqual(skins._rgba("rgba(0,0,0,1)"), (0, 0, 0, 1.0))
+        #: 解析不了 → 回落白色（不是黑）
+        self.assertEqual(skins._rgba("不是颜色"), (255, 255, 255, 1.0))
+        self.assertEqual(skins._rgba(""), (255, 255, 255, 1.0))
+        self.assertEqual(skins._rgba(None), (255, 255, 255, 1.0))
+
+
+class TestNavResizerTransparent(unittest.TestCase):
+    """★★★ 侧栏那条**白缝**要修掉（用户 2026-10-05 截图）。
+
+        用户::
+
+            "另外这个白色的缝隙是什么"
+
+    ``NavResizer`` 是个 5px 宽的**裸 ``QWidget``** —— 不透明，
+    在深色玻璃背景上就是一条白竖条。
+
+    ## ⚠⚠ 两条测试纪律（都踩过）
+
+    1. **别调 ``w.close()``** —— ``closeEvent`` 会弹「确认关闭」模态框
+       （``tray.ask_close``），测试**直接卡死**（实测 20 秒超时）。
+       窗口建了就不用管，进程结束自然回收。
+    2. **别建 ``MainWindow`` 超过必要次数** —— 一次约 5 秒。
+    """
+
+    #: 整个类共用**一个**窗口
+    _window = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _app()
+
+    @classmethod
+    def _window_once(cls):
+        if cls._window is None:
+            from src.core import skins
+            from src.gui.main_window import MainWindow
+
+            skins.apply_skin("deepglass", save=True)
+            w = MainWindow()
+            w.resize(1000, 700)
+            w.show()
+            skins.refresh_windows()
+            for _ in range(4):
+                cls.app.processEvents()
+            cls._window = w
+        return cls._window
+
+    def test_nav_resizer_is_transparent(self):
+        """★★★ ``NavResizer`` 默认**必须透明**。"""
+        w = self._window_once()
+        resizer = getattr(w, "nav_resizer", None)
+        self.assertIsNotNone(resizer, "主窗口没有 nav_resizer")
+        css = resizer.styleSheet()
+        self.assertIn("transparent", css,
+                      f"NavResizer 没设透明 —— 那就是那条白缝（{css[:60]}）")
+
+    def test_nav_resizer_is_scoped(self):
+        """★ 样式要带选择器（项目里的统一规则，防级联）。"""
+        from src.gui.main_window import NavResizer
+
+        w = self._window_once()
+        resizer = NavResizer(w.navigationInterface, w)
+        self.assertIn("#navResizer", resizer.styleSheet(),
+                      "样式没带选择器 —— 会级联到子控件")
+
+    def test_resizer_still_drags(self):
+        """★ 透明之后**拖动功能不能丢**（不然白缝没了但也不能调宽了）。"""
+        w = self._window_once()
+        resizer = w.nav_resizer
+        resizer._start_width = 200
+        resizer._apply(240)
+        self.assertEqual(w.navigationInterface.width(), 240,
+                         "拖宽侧栏没生效 —— 透明把功能弄坏了？")
+
+
 class TestSkinApply(unittest.TestCase):
     """应用皮肤（改全局主题）。"""
 
