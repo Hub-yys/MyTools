@@ -96,6 +96,14 @@ class ToolInterfaceHost(QWidget):
 
         self._layout.addWidget(panel)
         self._panel = panel
+
+        # ★ 工具面板是**懒创建**的 —— 皮肤刷 QSS 那会儿它还不存在，
+        #   所以这里建好后要补一次透明（否则它在玻璃背景上是一块白）。
+        #   见 src/core/skins.py 的 paint_page_widget 说明。
+        from src.core import skins as _skins
+
+        _skins.paint_page_widget(self)
+        _skins.paint_page_widget(panel)
         return panel
 
 

@@ -202,6 +202,11 @@ def build_qss(skin: dict) -> str:
     ``NavigationPanel ScrollArea`` 是侧栏里那块**滚动区** ——
     它有自己的 viewport，不一起设的话侧栏上下会分成两截颜色。
 
+    ``FluentTitleBar`` 是**顶部标题栏** —— 实测它**自带 1990 字符的
+    styleSheet** 且 ``WA_StyledBackground=False``，从窗口继承的渐变
+    **根本到不了**它，顶部会留一条白/浅灰（用户截图圈的就是这个）。
+    必须**单独设**（见 :func:`_paint_title_bar`）。
+
     ``CardWidget`` 是 qfluentwidgets 的卡片基类 —— 半透明填充 +
     浅色细边 = 玻璃面板。
 
@@ -215,8 +220,24 @@ def build_qss(skin: dict) -> str:
         f" NavigationPanel ScrollArea {{ background: transparent; }}"
         f" NavigationPanel ScrollArea > QWidget > QWidget"
         f" {{ background: transparent; }}"
+        f" FluentTitleBar {{ background: {grad}; }}"
         f" CardWidget {{ {card_qss(skin)} }}"
     )
+
+
+def page_transparent_qss() -> str:
+    """★ 给**工具页 / 页面**用的透明样式。
+
+    ## 为什么单独一份（用户截图："这里也是白色，跟现有配色完全不符"）
+
+    工具页的宿主（``ToolInterfaceHost``）和工具面板本身都是**裸
+    ``QWidget``** —— 它们不透明，于是在玻璃背景上盖了一块**纯白**。
+
+    ⚠ 只在**页面这一层**设透明是安全的（它没有别的子控件要靠它取色）——
+    这也是为什么不能用笼统的 ``QWidget { background: transparent }``
+    （那会把卡片、图标底全弄没）。
+    """
+    return "background: transparent;"
 
 
 def apply_skin(skin_id: str, *, save: bool = True) -> bool:
@@ -259,6 +280,10 @@ def _paint(skin: dict) -> None:
     （实测 584 字符，里面写死 ``background-color: rgb(32,32,32)``），
     优先级高于从窗口继承下来的 —— **必须单独给它设**，
     否则就是"右边深色玻璃、左边白板"（实测截图就是这个）。
+
+    ⚠⚠ ``FluentTitleBar``（顶部标题栏）同理 —— 它自带 **1990 字符**的
+    styleSheet 且 ``WA_StyledBackground=False``，渐变到不了它，
+    顶部会留一条浅灰（用户第二个截图圈的就是这个）。
     """
     from PySide6.QtWidgets import QApplication
 
@@ -273,6 +298,143 @@ def _paint(skin: dict) -> None:
         except (RuntimeError, AttributeError):   #: 已销毁的窗口
             continue
         _paint_nav_panel(w, skin)
+        _paint_title_bar(w, skin)
+        _paint_pages(w)
+
+
+def _paint_title_bar(window, skin: dict) -> None:
+    """单独给顶部标题栏刷渐变（它自带 styleSheet，会盖掉继承的）。
+
+    ⚠ 光设 ``setStyleSheet`` **不够** —— 它的
+    ``WA_StyledBackground`` 默认是 ``False``，Qt 不会拿样式表画它的底，
+    必须一起打开（实测：只设样式时顶部还是浅灰）。
+    """
+    bar = getattr(window, "titleBar", None)
+    if bar is None:
+        return
+    try:
+        bar.setStyleSheet(
+            f"FluentTitleBar {{ background: {gradient_qss(skin)}; }}")
+        bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    except (RuntimeError, AttributeError):
+        return
+
+
+def _paint_pages(window) -> None:
+    """把**页面这一层**设成透明，露出玻璃背景。
+
+    ## 用户报的（第二个截图）
+
+        "这里也是白色，跟现有配色完全不符"
+
+    ## 实测：工具页有**三层**白底
+
+    ::
+
+        ToolInterfaceHost        WA_StyledBackground=False  ← 裸 QWidget
+        AutoCombatWidget         WA_StyledBackground=False  ← ScrollArea
+        qt_scrollarea_viewport   WA_StyledBackground=False  ← 滚动区 viewport
+
+    全部不透明 → 在玻璃背景上盖了一块**纯白**（实测取色 ``#efefef``）。
+
+    ## 做法：从 ``stackedWidget`` 往下走一层，都设透明
+
+    ⚠ 只对**页面这一层**设透明是安全的 ——
+    它们没有"别的子控件要靠它取色"的情况。
+    **不能**用全局 ``QWidget { background: transparent }``
+    （那会把卡片、图标底全弄没）。
+    """
+    from PySide6.QtWidgets import QAbstractScrollArea, QStackedWidget
+
+    stack = getattr(window, "stackedWidget", None)
+    if not isinstance(stack, QStackedWidget):
+        return
+
+    for i in range(stack.count()):
+        page = stack.widget(i)
+        if page is None:
+            continue
+        _make_transparent(page)
+        #: ★ ``ScrollArea`` 子类还要额外处理 viewport
+        #: （它自己吃系统底色，光设控件本身不够）
+        if isinstance(page, QAbstractScrollArea):
+            vp = page.viewport()
+            if vp is not None:
+                _make_transparent(vp)
+
+
+def paint_page_widget(page) -> None:
+    """★ 给**单个页面**上透明 —— 工具页**懒创建**，建好之后要再调一次。
+
+    ## 为什么需要这个
+
+    ``ToolInterfaceHost`` 是**延迟宿主**：工具面板到第一次
+    ``showEvent`` 才创建。所以 ``_paint`` 跑的时候它可能还不存在 ——
+    等它建好了，又没人给它设透明，于是**还是白的**。
+
+    → ``ToolInterfaceHost.ensure_panel()`` 建完面板后调这个。
+
+    ## ⚠⚠ 实测有**四层**白底要处理
+
+    ::
+
+        ToolInterfaceHost        ← 懒创建的宿主
+        AutoCombatWidget         ← ScrollArea 本身
+        qt_scrollarea_viewport   ← 滚动区 viewport
+        auto_combat_page         ← ★ **ScrollArea 的内层 view**（最容易漏）
+
+    最后那层是 ``setWidget(view)`` 交进去的内层控件 ——
+    它**不是** ``viewport()`` 返回的那个，得单独找出来。
+    """
+    from PySide6.QtWidgets import QAbstractScrollArea, QWidget
+
+    if page is None:
+        return
+    _make_transparent(page)
+
+    #: 页面自己就是滚动区 → 处理 viewport  +  内层 view
+    if isinstance(page, QAbstractScrollArea):
+        _transparent_scroll_area(page)
+    #: 页面里**套着**的滚动区也要处理（工具面板常见）
+    for child in page.findChildren(QAbstractScrollArea):
+        _transparent_scroll_area(child)
+    #: 兜底：页面首层子控件里那种"铺满的裸 QWidget"（内层 view 的常见形态）
+    for child in page.findChildren(QWidget):
+        if child.parent() is page and not child.objectName().startswith("qt_"):
+            _make_transparent(child)
+
+
+def _transparent_scroll_area(area) -> None:
+    """把一个 ``QAbstractScrollArea`` 的 viewport + 内层 view 都设透明。"""
+    from PySide6.QtWidgets import QAbstractScrollArea
+
+    if not isinstance(area, QAbstractScrollArea):
+        return
+    vp = area.viewport()
+    if vp is not None:
+        _make_transparent(vp)
+    #: ★ ``setWidget(view)`` 交进去的内层 view —— 不是 viewport
+    inner = None
+    if hasattr(area, "widget"):
+        try:
+            inner = area.widget()
+        except (RuntimeError, AttributeError):
+            inner = None
+    if inner is not None and inner is not vp:
+        _make_transparent(inner)
+
+
+def _make_transparent(widget) -> None:
+    """把一个控件设成"透明背景"（带 objectName 时用选择器，避免级联）。"""
+    try:
+        widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        name = widget.objectName()
+        if name:
+            widget.setStyleSheet(f"#{name} {{ background: transparent; }}")
+        else:
+            widget.setStyleSheet("background: transparent;")
+    except (RuntimeError, AttributeError):
+        return
 
 
 def _paint_nav_panel(window, skin: dict) -> None:

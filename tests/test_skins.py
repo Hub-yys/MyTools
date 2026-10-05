@@ -222,6 +222,176 @@ class TestSkinQss(unittest.TestCase):
                 self.assertIn("NavigationPanel ScrollArea", qss,
                               "侧栏滚动区没设透明 —— 侧栏会上下分两截颜色")
 
+    def test_title_bar_is_painted(self):
+        """★★★ 顶部标题栏要**单独刷**（否则顶部留一条白/浅灰）。
+
+        ⚠⚠ 实测：``FluentTitleBar`` 自带 **1990 字符**的 styleSheet，
+        而且 ``WA_StyledBackground=False`` —— 从窗口继承的渐变
+        **根本到不了**它。用户第二个截图圈的就是这条白带
+        （取色 ``#f3f3f3``）。
+
+        ⚠ 光 ``setStyleSheet`` 还不够 —— 必须把
+        ``WA_StyledBackground`` 打开，否则 Qt 不拿样式表画它的底。
+        """
+        import inspect
+
+        from src.core import skins
+
+        self.assertIn("_paint_title_bar",
+                      inspect.getsource(skins._paint),
+                      "_paint 没刷标题栏 —— 顶部会留白条")
+        src = inspect.getsource(skins._paint_title_bar)
+        self.assertIn("setStyleSheet", src)
+        self.assertIn("WA_StyledBackground", src,
+                      "没开 WA_StyledBackground —— 设了样式也不画")
+
+    def test_title_bar_gradient_on_fake_window(self):
+        """★★★ 真的给一个标题栏刷一下，确认刷上了**并且**开了底绘制。
+
+        ⚠ 只查源码里有没有 ``WA_StyledBackground`` 是不够的
+        （把那一行删掉，字符串还在 import 别处）——
+        这里**真的建一个标题栏、真的刷一次、真的读它的属性**。
+        """
+        from qfluentwidgets import FluentTitleBar
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QWidget
+
+        from src.core import skins
+
+        skin = skins.skin_by_id("deepglass")
+
+        class _FakeWindow(QWidget):
+            def __init__(self):
+                super().__init__()
+                self.titleBar = FluentTitleBar(self)
+
+        win = _FakeWindow()
+        #: 先造一个"和真标题栏一样麻烦"的初始状态
+        win.titleBar.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, False)
+        win.titleBar.setStyleSheet("QWidget { background: #f3f3f3; }")
+
+        skins._paint_title_bar(win, skin)
+
+        css = win.titleBar.styleSheet()
+        self.assertIn("qlineargradient", css,
+                      f"标题栏没刷上渐变（{css[:80]}）")
+        self.assertIn(skin["bg"][0][1], css)
+        self.assertTrue(
+            win.titleBar.testAttribute(
+                Qt.WidgetAttribute.WA_StyledBackground),
+            "标题栏没开 WA_StyledBackground —— Qt 不会拿样式表画它的底，"
+            "顶部会留白条")
+        win.deleteLater()
+
+    def test_pages_are_made_transparent(self):
+        """★★★ 页面这一层要设透明（否则工具页是**一块白**）。
+
+        ⚠⚠ 实测工具页有**四层**白底::
+
+            ToolInterfaceHost        ← 懒创建的宿主
+            AutoCombatWidget         ← ScrollArea 本身
+            qt_scrollarea_viewport   ← 滚动区 viewport
+            auto_combat_page         ← ★ ScrollArea 的内层 view（最容易漏）
+
+        用户第二个截图："这里也是白色，跟现有配色完全不符"。
+        """
+        import inspect
+
+        from src.core import skins
+
+        self.assertIn("_paint_pages", inspect.getsource(skins._paint),
+                      "_paint 没处理页面透明 —— 工具页会是白板")
+
+        src = inspect.getsource(skins.paint_page_widget)
+        area_src = inspect.getsource(skins._transparent_scroll_area)
+        #: ScrollArea 的 viewport 和**内层 view** 都要处理
+        self.assertIn("viewport", src, "没处理滚动区 viewport")
+        self.assertIn("widget()", area_src,
+                      "没处理 ScrollArea 的内层 view（setWidget 交进去那个）")
+
+    def test_pages_transparent_on_fake_page(self):
+        """★★★ 真的造一个"宿主 + ScrollArea + 内层 view"，确认都透明了。"""
+        from qfluentwidgets import ScrollArea
+        from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+        from src.core import skins
+
+        #: 完全照工具页的结构：宿主(QWidget) → ScrollArea → 内层 view
+        host = QWidget()
+        host.setObjectName("tool_fake")
+        lay = QVBoxLayout(host)
+        area = ScrollArea(host)
+        area.setObjectName("fake_scroll")
+        inner = QWidget()
+        inner.setObjectName("fake_page")
+        area.setWidget(inner)
+        area.setWidgetResizable(True)
+        lay.addWidget(area)
+
+        skins.paint_page_widget(host)
+
+        for name, w in (("宿主", host), ("滚动区", area),
+                        ("viewport", area.viewport()), ("内层 view", inner)):
+            with self.subTest(part=name):
+                self.assertIn(
+                    "transparent", w.styleSheet(),
+                    f"{name} 没设透明 —— 会是一块白")
+        host.deleteLater()
+
+    def test_lazy_tool_panel_gets_painted(self):
+        """★★★ 工具面板**懒创建** —— 建好后要**真的**补刷透明。
+
+        ``ToolInterfaceHost`` 到第一次 ``showEvent`` 才建面板，
+        所以 ``_paint`` 跑的时候它还不存在 —— 建好了得补一次，
+        否则**还是白的**。
+
+        ⚠ 这里**真的建一个宿主、真的 ensure_panel**，
+        再读面板的样式 —— 光查源码字符串抓不住"补刷被删掉"这种回归。
+        """
+        from src.core import skins
+        from src.core.tool_base import ToolCategory, ToolMeta
+        from src.gui.main_window import ToolInterfaceHost
+
+        skins.apply_skin(skins.DEFAULT_SKIN, save=False)
+        host = ToolInterfaceHost(ToolMeta(
+            key="fake_tool", name="假工具",
+            category=list(ToolCategory)[0]))
+        panel = host.ensure_panel()
+        self.assertIsNotNone(panel)
+
+        #: ★ 宿主和面板都该被设成透明
+        for name, w in (("宿主", host), ("面板", panel)):
+            with self.subTest(part=name):
+                self.assertIn(
+                    "transparent", w.styleSheet(),
+                    f"{name} 没被补刷透明 —— 工具页会是一块白")
+        host.deleteLater()
+        """★★★ 左侧栏要**单独刷** —— 它自带的 styleSheet 会盖掉继承的。
+
+        ⚠⚠ 实测发现：``NavigationPanel`` **自己带一份 styleSheet**
+        （584 字符，里面写死 ``background-color: rgb(32, 32, 32)``），
+        优先级高于从窗口继承下来的。
+
+        只靠 ``build_qss`` 里的 ``NavigationPanel { ... }`` **不够** ——
+        表现就是"右边深色玻璃、左边白板"（实测截图就是这个）。
+
+        → ``_paint`` 里必须调 ``_paint_nav_panel`` 单独给它设。
+        """
+        import inspect
+
+        from src.core import skins
+
+        src = inspect.getsource(skins._paint)
+        self.assertIn("_paint_nav_panel", src,
+                      "_paint 没单独刷左侧栏 —— 侧栏会保持白板")
+
+        nav_src = inspect.getsource(skins._paint_nav_panel)
+        self.assertIn("setStyleSheet", nav_src,
+                      "没给侧栏设样式")
+        self.assertIn("gradient_qss", nav_src,
+                      "侧栏没刷渐变")
+
     def test_nav_panel_is_painted_directly(self):
         """★★★ 左侧栏要**单独刷** —— 它自带的 styleSheet 会盖掉继承的。
 
