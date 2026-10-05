@@ -40,6 +40,7 @@ from .library_interface import WuwaLibraryInterface
 from .nav_reorder import ORDER_KEY, NavReorderHelper
 from .tasks_interface import TasksInterface
 from .skin_page import build_skin_page
+from .update_card import build_update_page
 from .widgets import ComingSoonWidget, tool_icon_of
 
 #: 侧栏里那个"工具"分组项的 routeKey
@@ -186,6 +187,15 @@ class MainWindow(FluentWindow):
         self.skin_interface = build_skin_page(self)
         self.addSubInterface(
             self.skin_interface, resolve_icon("SKIN"), "皮肤"
+        )
+
+        #: ★ 检查更新页面 —— 用户 2026-10-05："侧边栏的检查更新呢"
+        #:
+        #: ⚠⚠ 第一版把更新卡**塞在配置页里面** —— 用户要的是
+        #: **侧栏一个导航项**（跟「皮肤」一样）。配置页那份已删。
+        self.update_interface = build_update_page(self)
+        self.addSubInterface(
+            self.update_interface, resolve_icon("UPDATE"), "检查更新"
         )
 
         self._build_tool_group()
@@ -505,6 +515,20 @@ class MainWindow(FluentWindow):
         self.switchTo(self.skin_interface)
         self.navigationInterface.setCurrentItem(
             self.skin_interface.objectName())
+
+    def open_update_page(self) -> None:
+        """切到「检查更新」页（用户 2026-10-05："侧边栏的检查更新呢"）。
+
+        ⚠⚠ 必须 ``switchTo`` —— **不是** ``navigationInterface.setCurrentItem``。
+
+        实测 ``setCurrentItem`` 只把侧栏那一项**高亮**，
+        **页面根本不切换**（停在 ``100x30`` / ``isVisible()=False``，
+        看着就是"点了没反应"）。``open_tool`` / ``open_skin_page``
+        也都是先 ``switchTo`` 再 ``setCurrentItem``。
+        """
+        self.switchTo(self.update_interface)
+        self.navigationInterface.setCurrentItem(
+            self.update_interface.objectName())
 
     def open_tool(self, key: str) -> None:
         """打开某个工具：展开侧栏分组 → 切到面板 → 侧栏那一项选中高亮。"""

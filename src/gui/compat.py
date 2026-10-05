@@ -137,6 +137,9 @@ _ICON_CANDIDATES: dict[str, tuple[str, ...]] = {
     "CHECK": ("CHECK", "ACCEPT", "COMPLETED"),
     "LIBRARY": ("LIBRARY", "BOOK_SHELF", "ALBUM", "DICTIONARY", "FOLDER"),
     "DATABASE": ("DATABASE", "CLOUD", "APPLICATION"),
+    #: ★ ``UPDATE`` 早就有了（资源库更新工具在用）——
+    #: 「检查更新」直接复用，**别再加一条重复的键**
+    #: （2026-10-05：我加重复了 —— dict 里后一条会**静默覆盖**前一条）
     "UPDATE": ("UPDATE", "SYNC", "DOWNLOAD", "APPLICATION"),
     "TASK": ("BOOK_INDEX", "APPOINTMENT", "CALENDAR", "LIBRARY", "APPLICATION"),
     #: ★ 皮肤（用户 2026-10-05："皮肤加在左侧边栏"）

@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 
 from ..core import updater
 from ..core import ui_state
+from .compat import ScrollArea
 
 logger = logging.getLogger(__name__)
 
@@ -309,3 +310,77 @@ class UpdateCard(QWidget):
 def build_update_card(parent=None) -> UpdateCard:
     """给配置页用。"""
     return UpdateCard(parent)
+
+
+class UpdateInterface(ScrollArea):
+    """★ 「检查更新」**页面**（侧栏导航项 → 右边整页）。
+
+    ## 用户 2026-10-05
+
+        "侧边栏的检查更新呢"（截图圈出侧栏那一列）
+
+    ⚠⚠ 我第一版把更新卡**塞在配置页里** —— 用户要的是**侧边栏一个导航项**
+    （跟「皮肤」一样）。所以这里做成独立页面，配置页那份**删掉**。
+
+    ## ⚠ 必须继承 ``ScrollArea`` 并 ``setWidget(view)``
+
+    这是本项目的**固定写法**（Home / Config / Tasks / Skin 都一样）。
+    用裸 ``QWidget`` 的话**整页不显示**（``100x30``、切过去是空白）——
+    皮肤页第一版就栽在这。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("UpdateInterface")
+        self.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        view = QWidget(self)
+        view.setObjectName("updateView")
+        layout = QVBoxLayout(view)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(8)
+
+        title = QLabel("检查更新", view)
+        title.setStyleSheet("font-size: 22px; font-weight: bold;")
+        layout.addWidget(title)
+
+        hint = QLabel(
+            "有新版本时点「下载并安装」，程序会自动下载并启动安装向导。",
+            view)
+        hint.setStyleSheet("font-size: 13px; color: #6b7280;")
+        layout.addWidget(hint)
+        layout.addSpacing(10)
+
+        self.card = UpdateCard(view)
+        self.card.setMaximumWidth(720)         #: 别拉满整页，卡片更好看
+        layout.addWidget(self.card)
+        layout.addStretch(1)
+
+        #: ⚠ 跟其它页面一样 —— 不写这几行整页不显示（见类文档）
+        self.setWidget(view)
+        self.setWidgetResizable(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("#UpdateInterface { background: transparent; }")
+        self.viewport().setStyleSheet("background: transparent;")
+
+    #: 让外部（测试 / 主窗口）能像用卡片一样用它
+    @property
+    def check_btn(self):
+        return self.card.check_btn
+
+    @property
+    def install_btn(self):
+        return self.card.install_btn
+
+    @property
+    def version_label(self):
+        return self.card.version_label
+
+    def check(self) -> None:
+        self.card.check()
+
+
+def build_update_page(parent=None) -> UpdateInterface:
+    """给侧栏用的更新页面。"""
+    return UpdateInterface(parent)

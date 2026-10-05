@@ -479,40 +479,105 @@ class TestUpdateCard(unittest.TestCase):
         card2.set_auto_check(True)
         self.assertTrue(build_update_card().auto_check_enabled())
 
-    def test_config_page_has_update_card(self):
-        """★★ 配置页里挂着这张卡（用户："增加检查更新功能"）。"""
-        from src.gui.config_interface import ConfigInterface
+    def test_config_page_has_no_update_card(self):
+        """★★★ 更新卡**不该**再塞在配置页里（用户要求放侧栏）。
 
-        page = ConfigInterface()
-        self.assertIsNotNone(getattr(page, "update_card", None),
-                             "配置页没有检查更新卡片")
+        用户 2026-10-05（截图圈出侧栏那一列）::
 
-    def test_update_card_is_above_the_role_list(self):
-        """★★★ 更新卡要放在**角色列表上面**，不能埋在最底下。
+            "侧边栏的检查更新呢"
 
-        ⚠⚠ 第一版放底部 —— 配置页是一长串角色配置，卡片被埋在
-        40 多个角色**底下**，用户根本看不见（实测截图里它完全在
-        可视区之外）。
-
-        判据：拿两个控件在**同一个父布局**里的 layering 顺序。
+        ⚠⚠ 第一版把卡片塞进**配置页** —— 位置不对，已删。
         """
         from src.gui.config_interface import ConfigInterface
 
         page = ConfigInterface()
-        layout = page.root_layout
-        order = []
-        for i in range(layout.count()):
-            w = layout.itemAt(i).widget()
-            if w is None:
-                continue
-            if w is page.update_card:
-                order.append("card")
-            elif w is page.list_host:
-                order.append("list")
-        self.assertIn("card", order, "布局里找不到更新卡")
-        self.assertIn("list", order, "布局里找不到角色列表")
-        self.assertLess(order.index("card"), order.index("list"),
-                        "更新卡排在角色列表**下面** —— 会被埋在长列表底下看不见")
+        self.assertFalse(
+            hasattr(page, "update_card"),
+            "配置页里还挂着更新卡 —— 用户要的是侧栏导航项")
+
+    def test_update_page_is_scroll_area(self):
+        """★★ 更新页必须是 ``ScrollArea`` + ``setWidget``。
+
+        ⚠ 用裸 ``QWidget`` 会**整页不显示**（100x30、切过去是空白）——
+        皮肤页第一版就栽在这。
+        """
+        from qfluentwidgets import ScrollArea
+
+        from src.gui.update_card import build_update_page
+
+        page = build_update_page()
+        self.assertIsInstance(page, ScrollArea,
+                              "更新页不是 ScrollArea —— 整页会不显示")
+        self.assertIsNotNone(page.widget(),
+                             "没 setWidget(view) —— 整页会被压扁")
+
+    def test_main_window_has_update_nav_item(self):
+        """★★★ 主窗口侧栏有「检查更新」这一项。"""
+        from src.gui.main_window import MainWindow
+
+        w = MainWindow()
+        self.assertIsNotNone(getattr(w, "update_interface", None),
+                             "主窗口没有检查更新页")
+
+    def test_update_nav_icon_is_registered(self):
+        """★ ``UPDATE`` 图标键要在 ``compat._ICON_CANDIDATES`` 里。
+
+        ⚠ ``resolve_icon`` 缺键时会**降级**成默认图标（不报错）——
+        所以光看"界面能不能起来"抓不住这个回归，得**直接查那张表**。
+        """
+        from src.gui import compat
+
+        self.assertIn("UPDATE", compat._ICON_CANDIDATES,
+                      "compat 里没注册 UPDATE 图标键")
+        icon = compat.resolve_icon("UPDATE")
+        self.assertIsNotNone(icon, "UPDATE 图标解析不出来")
+
+    def test_icon_candidates_has_no_duplicate_keys(self):
+        """★★★ ``_ICON_CANDIDATES`` 里**不许有重复的键**。
+
+        ⚠⚠ 我 2026-10-05 踩过：以为要"新增" ``UPDATE`` 键，
+        其实**早就有了** —— 我加的那条在后面，dict **静默覆盖**了前一条，
+        源码里看着有两条、实际只有一条生效。
+
+        Python 的 dict 字面量对重复键**不报错**（后写胜），
+        所以只能靠**扫源码**抓。
+        """
+        import re
+        from pathlib import Path
+
+        from src.gui import compat
+
+        text = Path(compat.__file__).read_text(encoding="utf-8")
+        #: 抓 `"KEY": (...)` 这种行（只看那张表那一段）
+        start = text.index("_ICON_CANDIDATES")
+        end = text.index("}", text.index("{", start))
+        block = text[start:end]
+        keys = re.findall(r'^\s*"([A-Z_]+)"\s*:', block, re.M)
+        dupes = {k for k in keys if keys.count(k) > 1}
+        self.assertEqual(
+            dupes, set(),
+            f"_ICON_CANDIDATES 里有重复的键 {sorted(dupes)} —— "
+            f"dict 会静默覆盖，源码里看着两条实际只生效一条")
+
+    def test_open_update_page_switches(self):
+        """★★ 切到更新页**真的切过去**（页面要变大、可见）。
+
+        ⚠ 必须用 ``switchTo``（``setCurrentItem`` 只高亮侧栏不切页）。
+        """
+        from src.gui.main_window import MainWindow
+
+        w = MainWindow()
+        w.resize(1000, 700)
+        w.show()
+        for _ in range(4):
+            self.app.processEvents()
+        w.open_update_page()
+        for _ in range(4):
+            self.app.processEvents()
+        page = w.update_interface
+        self.assertTrue(page.isVisible(), "切过去了但页面不可见")
+        self.assertGreater(page.width(), 300,
+                           f"页面还是 {page.width()} 宽 —— 没真的切过去")
 
 
 class TestMainWindowAutoCheck(unittest.TestCase):
