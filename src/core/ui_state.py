@@ -51,3 +51,14 @@ class UiState:
     def set_list(self, key: str, values: list[str]) -> None:
         self._data[key] = [str(v) for v in values]
         self.save()
+
+    #: ★ 通用取值 —— 「检查更新」的"启动时自动检查"开关要用
+    #: （原来只有 get_list/set_list，存个 bool 都不行）
+    def get(self, key: str, default=None):
+        """取任意值；没有就返回 ``default``。"""
+        return self._data.get(key, default)
+
+    def set(self, key: str, value) -> None:
+        """存任意值（bool / str / 数字都行）并落盘。"""
+        self._data[key] = value
+        self.save()

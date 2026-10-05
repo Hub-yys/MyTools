@@ -214,6 +214,71 @@ class MainWindow(FluentWindow):
         self.task_started.connect(self.go_background_to_game)
         self._listen_task_started()
 
+        #: ★ 启动后静默检查更新 —— 用户 2026-10-05："增加检查更新功能"
+        self._maybe_auto_check_update()
+
+    # ------------------------------------------------------------------ 自动更新
+    def _maybe_auto_check_update(self) -> None:
+        """启动后**悄悄地**查一下有没有新版本（不打扰用户）。
+
+        ## 为什么要"静默"
+
+        用户要的是"有更新能自动更新"，但**不该**每次启动都弹框问
+        "要不要检查更新" —— 那是骚扰。
+
+        → 开关在**配置页的更新卡**上（默认开）。开了就：
+        延迟几秒（让界面先画出来）→ 后台查 → **只有真有更新**才提示。
+
+        ⚠ 延迟是必须的：启动阶段一堆单例在建，这时候抢网络 + 建线程
+        会让首屏明显变慢。
+        """
+        try:
+            from src.core import ui_state
+
+            if not bool(ui_state.UiState().get("update_auto_check", True)):
+                return
+        except Exception:                      # noqa: BLE001 - 读不到就当开
+            pass
+
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(3000, self._auto_check_update)
+
+    def _auto_check_update(self) -> None:
+        """真正去查（延迟后由 QTimer 调起来）。"""
+        try:
+            from src.core import updater
+            from src.gui.update_card import CheckThread
+        except Exception:                      # noqa: BLE001
+            return
+
+        #: ⚠ 线程要挂个"长命"的父对象 + 留个引用，否则函数一返回就被回收、
+        #:    信号也收不到（实测：不挂父对象时回调根本不触发）
+        thread = CheckThread(updater._current_version(), self)
+        self._update_thread = thread
+        thread.done.connect(self._on_auto_checked)
+        thread.start()
+
+    def _on_auto_checked(self, info) -> None:
+        """静默检查的结果 —— **只有真有更新**才提示。"""
+        if not getattr(info, "has_update", False):
+            return                           #: 没更新 / 查不到 → 什么都不做
+        try:
+            from qfluentwidgets import InfoBar, InfoBarPosition
+
+            InfoBar.new(
+                title="发现新版本",
+                content=f"{info.current} → {info.latest}　"
+                        f"到「配置 → 检查更新」里一键更新",
+                orient=Qt.Orientation.Horizontal,
+                isClosable=True,
+                position=InfoBarPosition.TOP_RIGHT,
+                duration=8000,
+                parent=self,
+            ).show()
+        except Exception:                      # noqa: BLE001 - 提示失败无所谓
+            logger.debug("弹更新提示失败", exc_info=True)
+
     # ------------------------------------------------------------------ 托盘 / 关闭
     def _setup_tray(self) -> None:
         """建托盘图标（拿不到就留 None，「隐藏」退化成最小化）。"""

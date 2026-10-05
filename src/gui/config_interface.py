@@ -229,6 +229,16 @@ class ConfigInterface(ScrollArea):
         row.addStretch(1)
         self.root_layout.addWidget(header)
 
+        #: ★ 「检查更新」卡片 —— 用户 2026-10-05："增加检查更新功能"
+        #:
+        #: ⚠⚠ 放**列表上面**，不是下面。第一版放底部 —— 但配置页是
+        #: 一长串角色配置，卡片被埋在 40 多个角色**底下**，
+        #: 用户根本看不见（实测截图里它完全在可视区之外）。
+        from .update_card import build_update_card
+
+        self.update_card = build_update_card(self.view)
+        self.root_layout.addWidget(self.update_card)
+
         # ---- 搜索框（用户 2026-09-30："加上搜索，和前面下拉列表搜索一样的"）----
         # "和下拉列表一样" = 复用 FilterComboBox 那套匹配：中文子串 +
         # **拼音全拼/首字母**都认（见 pickers.pinyin_keys / matches_keyword）。
