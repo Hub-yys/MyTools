@@ -52,6 +52,30 @@ logger = logging.getLogger(__name__)
 #:     dim       次要文字色
 SKINS: tuple[dict, ...] = (
     {
+        "id": "mist",
+        "name": "晨雾玻璃",
+        "desc": "浅色玻璃，白天用清爽不刺眼",
+        "mode": "light",
+        "primary": "#3B82F6",
+        "bg": [(0.0, "#F7F9FC"), (0.5, "#EDF2F9"), (1.0, "#E8EEF7")],
+        "card": "rgba(255, 255, 255, 0.72)",
+        "border": "rgba(255, 255, 255, 0.95)",
+        "text": "#1F2937",
+        "dim": "#6B7280",
+    },
+    {
+        "id": "sakura",
+        "name": "樱雾玻璃",
+        "desc": "浅粉玻璃，柔和",
+        "mode": "light",
+        "primary": "#EC4899",
+        "bg": [(0.0, "#FDF7FA"), (0.5, "#FAEFF5"), (1.0, "#F7E9F1")],
+        "card": "rgba(255, 255, 255, 0.75)",
+        "border": "rgba(255, 255, 255, 0.95)",
+        "text": "#3F2A35",
+        "dim": "#8B6B7A",
+    },
+    {
         "id": "deepglass",
         "name": "深空玻璃",
         "desc": "DSH 同款：深邃蓝黑渐变 + 冷调玻璃面板",
@@ -99,34 +123,13 @@ SKINS: tuple[dict, ...] = (
         "text": "#F5E4E4",
         "dim": "#A88B8B",
     },
-    {
-        "id": "mist",
-        "name": "晨雾玻璃",
-        "desc": "浅色玻璃，白天用清爽不刺眼",
-        "mode": "light",
-        "primary": "#3B82F6",
-        "bg": [(0.0, "#F7F9FC"), (0.5, "#EDF2F9"), (1.0, "#E8EEF7")],
-        "card": "rgba(255, 255, 255, 0.72)",
-        "border": "rgba(255, 255, 255, 0.95)",
-        "text": "#1F2937",
-        "dim": "#6B7280",
-    },
-    {
-        "id": "sakura",
-        "name": "樱雾玻璃",
-        "desc": "浅粉玻璃，柔和",
-        "mode": "light",
-        "primary": "#EC4899",
-        "bg": [(0.0, "#FDF7FA"), (0.5, "#FAEFF5"), (1.0, "#F7E9F1")],
-        "card": "rgba(255, 255, 255, 0.75)",
-        "border": "rgba(255, 255, 255, 0.95)",
-        "text": "#3F2A35",
-        "dim": "#8B6B7A",
-    },
 )
 
 #: 默认皮肤 id（启动时回落到它）
-DEFAULT_SKIN = "deepglass"
+#:
+#: ★ 用户 2026-10-05 定的：默认用**晨雾玻璃**（浅色那款）。
+#: 之前默认是「深空玻璃」（暗色）。
+DEFAULT_SKIN = "mist"
 
 #: 持久化用的 ``ConfigItem`` —— qconfig 只认它（**不是**裸字符串）
 #:

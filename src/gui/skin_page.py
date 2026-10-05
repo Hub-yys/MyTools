@@ -76,6 +76,15 @@ class SkinCard(QWidget):
 
     def _build(self, active: bool) -> None:
         s = self._skin
+        #: ★★★ 卡片上的**文字**用**当前生效皮肤**的颜色，不是被预览那个。
+        #:
+        #: ⚠⚠ 这里踩过坑：一开始用 ``s['text']``（被预览皮肤的文字色）——
+        #: 深色皮肤的文字是**浅色**，画在**当前皮肤**（也许是浅色）的页面底上
+        #: → **字几乎看不见**（用户截图里「深空玻璃」那几款就是这个）。
+        #:
+        #: 道理很简单：卡片坐落在**当前皮肤的页面**上，
+        #: 文字对比度该跟**页面**算，不该跟预览条算。
+        ui = skins.current_skin()
         box = QVBoxLayout(self)
         box.setContentsMargins(14, 14, 14, 14)
         box.setSpacing(9)
@@ -99,7 +108,7 @@ class SkinCard(QWidget):
         row.setSpacing(6)
         name = QLabel(s["name"], self)
         name.setStyleSheet(
-            f"font-size: 15px; font-weight: bold; color: {s['text']};")
+            f"font-size: 15px; font-weight: bold; color: {ui['text']};")
         row.addWidget(name)
         row.addStretch(1)
         if active:
@@ -112,11 +121,11 @@ class SkinCard(QWidget):
             row.addWidget(badge)
         box.addLayout(row)
 
-        #: ── ③ 说明
+        #: ── ③ 说明（用**当前皮肤**的次要色 —— 见上面 ui 的说明）
         desc = QLabel(s.get("desc") or "", self)
         desc.setWordWrap(True)
         desc.setMinimumHeight(34)               #: 高度对齐，卡片不会参差
-        desc.setStyleSheet(f"font-size: 12px; color: {s['dim']};")
+        desc.setStyleSheet(f"font-size: 12px; color: {ui['dim']};")
         box.addWidget(desc)
 
         #: ── ④ 主色点 + 色值
@@ -129,7 +138,7 @@ class SkinCard(QWidget):
         color_row.addWidget(dot)
         hexlab = QLabel(s["primary"].upper(), self)
         hexlab.setStyleSheet(
-            f"font-size: 11px; color: {s['dim']};"
+            f"font-size: 11px; color: {ui['dim']};"
             f" font-family: Consolas, monospace;")
         color_row.addWidget(hexlab)
         color_row.addStretch(1)
@@ -141,10 +150,11 @@ class SkinCard(QWidget):
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.setEnabled(not active)
         if active:
+            #: ⚠ 边框/文字也要用**当前皮肤**的色（用被预览皮肤的会糊在一起）
             btn.setStyleSheet(
                 f"#skinUseBtn {{ font-size: 12px; padding: 7px 0;"
                 f" border-radius: 6px; background: transparent;"
-                f" border: 1px solid {s['border']}; color: {s['dim']}; }}")
+                f" border: 1px solid {ui['border']}; color: {ui['dim']}; }}")
         else:
             btn.setStyleSheet(
                 f"#skinUseBtn {{ font-size: 12px; padding: 7px 0;"

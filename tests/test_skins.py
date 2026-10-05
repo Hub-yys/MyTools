@@ -119,6 +119,30 @@ class TestSkinRegistry(unittest.TestCase):
                     str(s["border"]).startswith("rgba("),
                     f"{s['name']} 的描边不是半透明：{s['border']}")
 
+    def test_default_skin_is_mist(self):
+        """★★★ 默认皮肤 = **晨雾玻璃**（用户 2026-10-05 指定）。
+
+            "默认这个"（截图圈出「晨雾玻璃」那张卡）
+
+        ⚠ 之前默认是「深空玻璃」（暗色）。
+        """
+        from src.core import skins
+
+        self.assertEqual(skins.DEFAULT_SKIN, "mist",
+                         "默认皮肤不是晨雾玻璃")
+        default = skins.skin_by_id(skins.DEFAULT_SKIN)
+        self.assertIsNotNone(default)
+        self.assertEqual(default["name"], "晨雾玻璃")
+        self.assertEqual(default["mode"], "light")
+
+    def test_default_skin_is_first_card(self):
+        """★★ 默认皮肤排在**第一张卡**（用户一眼就能看到当前是哪个）。"""
+        from src.core import skins
+
+        first = skins.all_skins()[0]
+        self.assertEqual(first["id"], skins.DEFAULT_SKIN,
+                         "默认皮肤不在第一位 —— 界面上一眼看不出默认是哪个")
+
     def test_skin_by_id_unknown_returns_none(self):
         from src.core import skins
 
@@ -755,6 +779,83 @@ class TestSkinPage(unittest.TestCase):
                 for _pos, color in card._skin["bg"]:
                     self.assertIn(color, css,
                                   f"预览条少了渐变色 {color}")
+
+    def test_card_text_uses_current_skin_not_own(self):
+        """★★★ 卡片上的**所有文字**都要用**当前皮肤**的颜色。
+
+        ## 为什么（用户截图里看出来的）
+
+        深色皮肤的 ``text`` / ``dim`` 是**浅色**（``#E8ECF5`` / ``#8B93A7``）——
+        如果卡片文字用它自己的色，画在**当前皮肤**（也许是浅色）的
+        页面底上 → **字几乎看不见**（用户截图里那三款深色卡片就是）。
+
+        道理：卡片坐落在**当前皮肤的页面**上，对比度该跟**页面**算。
+
+        ## ⚠ 覆盖名字 / 说明 / 色值**三处**
+
+        只测名字是不够的 —— 护栏验证时把 ``desc`` 单独改回旧写法，
+        测试**抓不住**（因为我只查了名字那个标签）。
+        """
+        from PySide6.QtWidgets import QLabel
+
+        from src.core import skins
+        from src.gui.skin_page import build_skin_page
+
+        dark = skins.skin_by_id("deepglass")
+        skins.apply_skin(dark["id"], save=True)
+
+        page = build_skin_page()
+        for card in page._cards:
+            s = card._skin
+            with self.subTest(skin=s["name"]):
+                #: ① 名字 → 当前皮肤的 text
+                nm = [w for w in card.findChildren(QLabel)
+                      if w.text() == s["name"]]
+                self.assertTrue(nm, f"找不到「{s['name']}」名字标签")
+                self.assertIn(
+                    dark["text"], nm[0].styleSheet(),
+                    f"「{s['name']}」名字没用当前皮肤的文字色 "
+                    f"（{nm[0].styleSheet()[:60]}）—— 浅色页面上看不见")
+
+                #: ② 说明 → 当前皮肤的 dim
+                desc = [w for w in card.findChildren(QLabel)
+                        if w.text() == s["desc"]]
+                self.assertTrue(desc, f"找不到「{s['name']}」说明标签")
+                self.assertIn(
+                    dark["dim"], desc[0].styleSheet(),
+                    f"「{s['name']}」说明没用当前皮肤的次要色 "
+                    f"（{desc[0].styleSheet()[:60]}）—— 会看不清")
+
+                #: ③ 色值 → 当前皮肤的 dim
+                hexlab = [w for w in card.findChildren(QLabel)
+                          if w.text() == s["primary"].upper()]
+                self.assertTrue(hexlab, f"找不到「{s['name']}」色值标签")
+                self.assertIn(
+                    dark["dim"], hexlab[0].styleSheet(),
+                    f"「{s['name']}」色值没用当前皮肤的次要色")
+
+    def test_card_text_switches_with_skin(self):
+        """★★ 换了当前皮肤，卡片文字色**跟着换**。"""
+        from PySide6.QtWidgets import QLabel
+
+        from src.core import skins
+        from src.gui.skin_page import build_skin_page
+
+        def name_css(skin_id: str) -> str:
+            skins.apply_skin(skin_id, save=True)
+            page = build_skin_page()
+            card = page._cards[0]
+            for w in card.findChildren(QLabel):
+                if w.text() == card._skin["name"]:
+                    return w.styleSheet()
+            return ""
+
+        light_css = name_css("mist")
+        dark_css = name_css("deepglass")
+        self.assertNotEqual(light_css, dark_css,
+                            "换皮肤后卡片文字色没变 —— 深色下会看不清")
+        self.assertIn(skins.skin_by_id("mist")["text"], light_css)
+        self.assertIn(skins.skin_by_id("deepglass")["text"], dark_css)
 
     def test_active_card_is_marked(self):
         from src.core import skins
