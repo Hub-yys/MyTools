@@ -407,6 +407,148 @@ class TestStore(unittest.TestCase):
             self.assertEqual(len(raw["records"]), 1)
 
 
+class TestMultiAccount(unittest.TestCase):
+    """★★★ **多账号隔离**（用户 2026-10-06："我要是换个账户了呢"）。
+
+    ## 原来的问题
+
+    身份键只有 ``(池子, 物品, 时间, resourceId)`` —— **没有账号**。后果：
+
+    * 换账号后**旧记录不会清掉** → 两个号的抽卡**混在一起统计**；
+    * A / B 两号有**一样的抽卡**（同池同物品同秒）→ 被去重成一条，**少算**。
+
+    用户选了「方案 A：按账号分开存」——
+    ``playerId`` 进身份键，换号自动切到那个号的数据。
+    """
+
+    def setUp(self):
+        self.history = gacha_store.GachaHistory()
+
+    def _merge(self, rows, who):
+        return self.history.merge(rows, pool_type="1", pool_name="P",
+                                  at="now", player_id=who)
+
+    def test_same_pull_different_accounts_both_kept(self):
+        """★★★ 两个号**完全一样的抽卡**必须各存一条（原来会互相吞）。
+
+        这是这次要修的核心：不加账号维度的话，第二条会被去重成"重复"。
+        """
+        a = rec("心", 5, "2026-01-01 10:00:00", 1311)
+        b = rec("心", 5, "2026-01-01 10:00:00", 1311)
+        self._merge([a], "111")
+        added = self._merge([b], "222")
+        self.assertEqual(added, 1, "另一个号的同一条抽卡被吞掉了")
+        self.assertEqual(len(self.history), 2)
+
+    def test_records_are_isolated_by_account(self):
+        """★★★ ``all_records(账号)`` 只看那个号的记录。"""
+        self._merge([rec("心", 5, "t1", 1)], "111")
+        self._merge([rec("绯雪", 5, "t2", 2)], "222")
+        self.assertEqual(len(self.history.all_records("111")), 1)
+        self.assertEqual(len(self.history.all_records("222")), 1)
+        self.assertEqual(
+            self.history.all_records("111")[0]["name"], "心",
+            "账号 A 看到了 B 的记录")
+
+    def test_players_lists_all_accounts(self):
+        """★ 能列出库里有哪些账号（界面要显示/切换）。"""
+        self._merge([rec("心", 5, "t1", 1)], "111")
+        self._merge([rec("心", 5, "t2", 2), rec("a", 3, "t3", 3)], "222")
+        #: 按记录数从多到少
+        self.assertEqual(self.history.players(), ["222", "111"])
+
+    def test_player_count(self):
+        self._merge([rec("心", 5, "t1", 1)], "111")
+        self._merge([rec("a", 3, "t2", 2), rec("b", 3, "t3", 3)], "222")
+        self.assertEqual(self.history.player_count("222"), 2)
+        self.assertEqual(self.history.player_count("111"), 1)
+        self.assertEqual(self.history.player_count("999"), 0)
+
+    def test_same_account_refetch_dedupes(self):
+        """★★ 同一个号重新拉同一批 → 仍然不重复入库。"""
+        rows = [rec("心", 5, "t1", 1)]
+        self._merge(rows, "111")
+        self.assertEqual(self._merge(rows, "111"), 0)
+
+    def test_unknown_account_is_legacy(self):
+        """★ 没给账号 → 归到 ``__legacy__``（**不猜**成别的号）。"""
+        self._merge([rec("心", 5, "t1", 1)], "")
+        self.assertEqual(self.history.players(), [gacha_store._LEGACY_PLAYER])
+
+    def test_legacy_claim_moves_records(self):
+        """★★★ 老数据（没有账号）能被认领给当前账号。"""
+        self._merge([rec("心", 5, "t1", 1)], "")
+        self.assertEqual(self.history.player_count("111"), 0)
+        claimed = self.history.claim_legacy("111")
+        self.assertEqual(claimed, 1)
+        self.assertEqual(self.history.player_count("111"), 1)
+        self.assertNotIn(gacha_store._LEGACY_PLAYER, self.history.players())
+
+    def test_legacy_claim_skipped_when_account_has_data(self):
+        """★★★ 这个号**已经有自己的数据**时不认领。
+
+        ⚠ 否则会把老数据硬塞给一个已经有很多记录的号（可能是误操作），
+        两个号的数据就混了 —— 正是这次要防的事。
+        """
+        self._merge([rec("心", 5, "t1", 1)], "111")
+        self._merge([rec("杂", 3, "t9", 9)], "")
+        claimed = self.history.claim_legacy("111")
+        self.assertEqual(claimed, 0, "不该认领")
+        self.assertEqual(self.history.player_count("111"), 1)
+        self.assertIn(gacha_store._LEGACY_PLAYER, self.history.players())
+
+    def test_claim_with_empty_id_is_noop(self):
+        self._merge([rec("心", 5, "t1", 1)], "")
+        self.assertEqual(self.history.claim_legacy(""), 0)
+
+    def test_merge_triggers_legacy_claim(self):
+        """★★ 认领是**自动**的 —— 拉一次就完成，用户不用手动做什么。"""
+        self._merge([rec("心", 5, "t1", 1)], "")          #: 老数据
+        self._merge([rec("杂", 3, "t2", 2)], "111")       #: 新版本第一次拉
+        self.assertEqual(self.history.player_count("111"), 2,
+                         "老数据没被自动认领")
+
+    def test_account_label_is_short(self):
+        """★ 界面上显示短名（playerId 是长数字，铺一长串不好看）。"""
+        self.assertEqual(gacha_store.account_label("113152489"), "…152489")
+        self.assertEqual(gacha_store.account_label("12345"), "12345")
+        self.assertEqual(gacha_store.account_label(""), "未知账号")
+        self.assertEqual(
+            gacha_store.account_label(gacha_store._LEGACY_PLAYER), "未知账号")
+
+    def test_snapshot_remembers_account(self):
+        """★★ 历史快照要记住是**哪个号**拉的（切号后要能分辨）。"""
+        self.history.add_snapshot(gacha_store.PullSnapshot(
+            at="2026-01-01", total=10, five=1, added=10, player_id="111"))
+        data = self.history.to_dict()
+        back = gacha_store.GachaHistory.from_dict(data)
+        self.assertEqual(back.snapshots[0].player_id, "111")
+
+    def test_old_snapshot_without_account_still_loads(self):
+        """★ 老快照没有 ``playerId`` → 空串，不能崩。"""
+        snap = gacha_store.PullSnapshot.from_dict(
+            {"at": "2026-01-01", "total": 5, "five": 0, "added": 5})
+        self.assertEqual(snap.player_id, "")
+        self.assertEqual(snap.total, 5)
+
+    def test_report_from_records_scoped_to_account(self):
+        """★★★ **端到端**：报告只统计指定账号的抽数。
+
+        ⚠ 这条直接对应"换号后两个号混在一起"那个 bug。
+        """
+        from src.core import gacha
+
+        self._merge([rec("心", 5, "t1", 1), rec("a", 3, "t2", 2)], "111")
+        self._merge([rec("绯雪", 5, "t3", 3)], "222")
+
+        r1 = gacha.report_from_records(self.history.all_records("111"),
+                                       player_id="111")
+        r2 = gacha.report_from_records(self.history.all_records("222"),
+                                       player_id="222")
+        self.assertEqual(r1.total, 2, f"账号 111 的总抽数不对（{r1.total}）")
+        self.assertEqual(r2.total, 1, f"账号 222 的总抽数不对（{r2.total}）")
+
+
 class TestReportFromRecords(unittest.TestCase):
     """★ 累计记录要能**重建出和实时拉取一模一样的报告结构**。"""
 

@@ -52,7 +52,40 @@ logger = logging.getLogger(__name__)
 DEFAULT_STORE_PATH = paths.user_data_dir() / "gacha_history.json"
 
 #: 存盘格式版本
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+
+#: ★★★ 多账号：老数据（没有 ``playerId``）归到哪个账号名下
+#:
+#: ## 背景（用户 2026-10-06："我要是换个账户了呢"）
+#:
+#: 原来身份键只有 ``(池子, 物品, 时间, resourceId)`` —— **没有账号**。
+#: 后果：
+#:
+#: * 换账号后**旧记录不会清掉** → 两个号的抽卡**混在一起统计**；
+#: * A / B 两号有**一样的抽卡**（同池同物品同秒）→ 被去重成一条，**少算**。
+#:
+#: 用户选了「方案 A：按账号分开存」——
+#: ``playerId`` 进身份键，换号自动切到那个号的数据，
+#: 切回来还能看到旧号历史。
+#:
+#: ## ⚠⚠ 老数据怎么办
+#:
+#: 已经存下的那些**没有 ``playerId``**。这里用 ``__legacy__`` 当它们的
+#: 账号名 —— **不猜**成"当前账号"（那会把老数据错误地认领给新号）。
+#:
+#: 首次用新版本拉取时 :meth:`GachaHistory.claim_legacy` 会把老数据
+#: **认领给当前账号** —— 但只在"这个账号还没有任何自己的数据"时做一次。
+_LEGACY_PLAYER = "__legacy__"
+
+
+def normalize_player(player_id: str) -> str:
+    """统一账号标识（去空白；空的就是 :data:`_LEGACY_PLAYER`）。
+
+    ⚠ 空值**不能**当成"当前账号" —— 老数据没有这个字段，
+    当成当前账号会把别的号的数据错误认领过来。
+    """
+    text = str(player_id or "").strip()
+    return text or _LEGACY_PLAYER
 
 #: 最多保留多少个"拉取时间点"快照 —— 够回看，又不至于把文件撑大
 MAX_SNAPSHOTS = 200
@@ -84,14 +117,22 @@ def record_key(record: dict) -> str:
 
         旧的 629 条 + 新的 790 条 = **1419 条**（库里真被翻了一倍）
 
-    → **修法：``_nth`` 为 0 时不加到键尾**。这样::
+    → 修法：``_nth`` 为 0 时**不加到键尾**，让老数据和新数据对上。
 
-        旧记录（无 _nth）      → ``p|n|t|r``      ✓
-        新的 _nth=0           → ``p|n|t|r``      ✓ 同一个键，正确去重
-        新的 _nth=1（真孪生）  → ``p|n|t|r|1``    ✓ 不同的键，两条都留
+    ### bug ③（2026-10-06 用户问"换个账户了呢"）：**不区分账号**
 
-    ⚠ **向后兼容是这里的关键**：老数据没有 ``_nth``，
-    新逻辑必须把它和 ``_nth=0`` 认成同一条。
+    键里没有账号 → 换号后两个号的记录**混在一起**，而且两个号
+    **相同的抽卡**（同池同物品同秒）会互相吞掉、**少算**。
+
+    → 修法：键**最前面**加 ``playerId``（见 :func:`normalize_player`）。
+
+    ## 最终形态
+
+    ::
+
+        <账号>|<池子>|<物品>|<时间>|<resourceId>[|<第几次>]
+
+    ⚠ ``_nth`` 为 0 时**不加**最后那一段（向后兼容，见 bug ②）。
 
     ⚠ 传进来不是 dict（``None`` / 字符串）时不抛异常 —— 这条被
     ``tests/test_gacha_store.py`` 钉着。去重是**批量**跑的，为一条脏数据
@@ -99,21 +140,22 @@ def record_key(record: dict) -> str:
     """
     if not isinstance(record, dict):
         return f"|junk|{record!r}"
+    who = normalize_player(record.get("playerId"))
     pool = str(record.get("pool_type") or record.get("cardPoolType") or "")
     name = str(record.get("name") or "")
     when = str(record.get("time") or "")
     rid = str(record.get("resourceId") or "")
     #: ★ 同秒同名的"第几次" —— 十连里两个同名武器靠它区分
     #:
-    #: ⚠ **0 不加到键尾**（见上面 bug ②）：老数据没这个字段，
+    #: ⚠ **0 不加到键尾**（见 bug ②）：老数据没这个字段，
     #: 加了就会和新的 ``_nth=0`` 对不上、把整份历史复制一遍。
     try:
         nth = int(record.get("_nth") or 0)
     except (TypeError, ValueError):
         nth = 0
     if nth > 0:
-        return f"{pool}|{name}|{when}|{rid}|{nth}"
-    return f"{pool}|{name}|{when}|{rid}"
+        return f"{who}|{pool}|{name}|{when}|{rid}|{nth}"
+    return f"{who}|{pool}|{name}|{when}|{rid}"
 
 
 def _seq_of(record: dict) -> int:
@@ -136,6 +178,7 @@ def _identity_without_nth(record: dict) -> str:
     """
     if not isinstance(record, dict):
         return f"|junk|{record!r}"
+    who = normalize_player(record.get("playerId"))
     pool = str(record.get("pool_type") or record.get("cardPoolType") or "")
     name = str(record.get("name") or "")
     when = str(record.get("time") or "")
@@ -170,10 +213,13 @@ class PullSnapshot:
     five: int = 0
     #: 这次**新增**了多少条（合并去重后）
     added: int = 0
+    #: ★ 这次拉的是**哪个账号**（多账号要分开列历史）
+    player_id: str = ""
 
     def to_dict(self) -> dict:
         return {"at": self.at, "total": self.total,
-                "five": self.five, "added": self.added}
+                "five": self.five, "added": self.added,
+                "playerId": self.player_id}
 
     @classmethod
     def from_dict(cls, data: dict) -> "PullSnapshot":
@@ -183,6 +229,8 @@ class PullSnapshot:
             total=_int(data.get("total")),
             five=_int(data.get("five")),
             added=_int(data.get("added")),
+            #: ⚠ 老快照没有这个字段 → 空串（= 未知账号）
+            player_id=str(data.get("playerId") or ""),
         )
 
     def describe(self) -> str:
@@ -191,6 +239,26 @@ class PullSnapshot:
         if self.added:
             text += f"（新增 {self.added}）"
         return text
+
+
+def account_label(player_id: str) -> str:
+    """把 ``playerId`` 显示成人看得懂的短名。
+
+    ``playerId`` 是一串长数字（实测 9 位），界面上直接铺一长串不好看，
+    所以只显示**后 6 位**，前面加省略号 —— 足够区分不同账号。
+
+    ⚠ 空值 / ``__legacy__`` 要显示成「未知账号」而不是空白：
+    用户得知道"这些数据不知道是谁的"。
+    """
+    who = str(player_id or "").strip()
+    if not who or who == _LEGACY_PLAYER:
+        return "未知账号"
+    return f"…{who[-6:]}" if len(who) > 6 else who
+
+
+def _guess_player_name(player_id: str) -> str:
+    """（兼容旧名）等价于 :func:`account_label`。"""
+    return account_label(player_id)
 
 
 @dataclass
@@ -203,11 +271,14 @@ class GachaHistory:
     snapshots: list[PullSnapshot] = field(default_factory=list)
 
     def merge(self, incoming: list[dict], *, pool_type: str,
-              pool_name: str, at: str = "") -> int:
+              pool_name: str, at: str = "", player_id: str = "") -> int:
         """把一次拉取的结果并进来，返回**新增**条数。
 
         ``incoming`` 是接口原始记录；这里统一补上 ``pool_type`` / ``pool``
         两个字段（接口给的是中文池名，历史里要留稳定的类型编号）。
+
+        ``player_id`` 是**哪个账号**的抽卡（见 :func:`record_key` 的 bug ③）——
+        它进身份键，所以换号后两个号的数据**分开存、不会互相吞**。
 
         ## ⚠⚠ ``_nth`` 是修"吞记录"的关键（2026-10-05）
 
@@ -230,6 +301,14 @@ class GachaHistory:
         """
         stamp = at or _now()
         added = 0
+        #: ★★★ 认领老数据（只在这个账号还没有自己的数据时做一次）
+        #:
+        #: 升级到多账号版本时，库里那几百条**都没有 ``playerId``**。
+        #: 首次用新版本拉取的时候把它们认领给**当前这个账号**
+        #: （合理推断：这些就是他自己之前抽的）。
+        #: 见 :meth:`claim_legacy` 的说明。
+        if player_id:
+            self.claim_legacy(player_id)
         seen: dict[tuple, int] = {}
         for seq, raw in enumerate(incoming):
             if not isinstance(raw, dict):
@@ -237,6 +316,16 @@ class GachaHistory:
             record = dict(raw)
             record["pool_type"] = pool_type
             record["pool"] = pool_name
+            #: ★★ 账号 —— 身份键的第一段（用户 2026-10-06："换个账户了呢"）
+            #:
+            #: ⚠ ``player_id`` 为空时**不覆盖**记录里已有的值：
+            #: 调用方偶尔拿不到（老链接 / 测试），但记录本身可能是
+            #: 之前带着账号存进来的。
+            who = str(player_id or "").strip()
+            if who:
+                record["playerId"] = who
+            elif not record.get("playerId"):
+                record.pop("playerId", None)
             #: ★★ ``_seq`` = 这条在**接口返回列表**里的下标
             #:
             #: ## ⚠⚠ 为什么必须有它（2026-10-05 第三次修这个统计）
@@ -325,12 +414,73 @@ class GachaHistory:
             self.records = rebuilt
         return removed
 
+    # ---------------------------------------------------------------- 多账号
+    def players(self) -> list[str]:
+        """库里有哪些账号（按记录数**从多到少**）。
+
+        ⚠ :data:`_LEGACY_PLAYER`（老数据）也算一个 ——
+        界面上要能看见它、并让用户决定认领给谁。
+        """
+        counts: dict[str, int] = {}
+        for rec in self.records.values():
+            who = normalize_player(rec.get("playerId"))
+            counts[who] = counts.get(who, 0) + 1
+        return sorted(counts, key=lambda w: (-counts[w], w))
+
+    def player_count(self, player_id: str) -> int:
+        """某个账号有多少条记录。"""
+        who = normalize_player(player_id)
+        return sum(1 for r in self.records.values()
+                   if normalize_player(r.get("playerId")) == who)
+
+    def claim_legacy(self, player_id: str) -> int:
+        """把**老数据**（没有账号的）认领给 ``player_id``，返回认领条数。
+
+        ## ⚠⚠ 只在这个账号"还没有自己的数据"时才认领
+
+        否则会把老数据硬塞给一个已经有很多记录的号（可能是误操作）。
+
+        ## 为什么要认领而不是"直接留着不分账号"
+
+        用户升级到多账号版本时，库里那几百条记录**都没有 ``playerId``**。
+        如果一直挂在 ``__legacy__`` 名下，界面就得同时显示"未知账号"
+        和真账号两份数据 —— 很怪。
+
+        → 首次拉取时把这些老数据认领给**当前正在拉的账号**（合理推断：
+        这些就是他自己抽的），之后就是干净的单账号数据。
+        """
+        who = str(player_id or "").strip()
+        if not who:
+            return 0
+        #: 这个账号已经有自己的数据 → 不认领（避免把别人的塞过来）
+        if self.player_count(who):
+            return 0
+
+        claimed = 0
+        for old_key, rec in list(self.records.items()):
+            if rec.get("playerId"):
+                continue
+            rec["playerId"] = who
+            new_key = record_key(rec)
+            if new_key == old_key:
+                continue
+            #: ⚠ 换键时要**重新挂到 dict 上**（键变了，位置也得变）
+            self.records.pop(old_key, None)
+            if new_key in self.records:
+                continue                        #: 已有同一条 → 丢弃多余的
+            self.records[new_key] = rec
+            claimed += 1
+        return claimed
+
     def add_snapshot(self, snapshot: PullSnapshot) -> None:
         self.snapshots.insert(0, snapshot)      # 最新的在前
         del self.snapshots[MAX_SNAPSHOTS:]
 
-    def all_records(self) -> list[dict]:
+    def all_records(self, player_id: str = "") -> list[dict]:
         """按时间**倒序**（最新在前）—— 和接口给的方向一致，方便直接喂 Pull。
+
+        ``player_id`` 给了就**只返回那个账号的**（多账号隔离，见
+        :func:`record_key` 的 bug ③）；不给就返回全部（含"未知账号"）。
 
         ## ⚠⚠ 同一秒内必须保住**接口原顺序**（2026-10-05 修了三轮）
 
@@ -374,6 +524,12 @@ class GachaHistory:
         """
         #: dict 插入顺序 = 接口返回顺序（merge 就是按那个顺序插的）
         raw = list(self.records.values())
+
+        #: ★ 多账号：只看这个账号的（不给就全看）
+        if player_id:
+            who = normalize_player(player_id)
+            raw = [r for r in raw
+                   if normalize_player(r.get("playerId")) == who]
 
         #: 第一步：有 ``_seq`` 的按它升序（接口最新在前 → _seq 越小越新）。
         #: ``sorted`` 是**稳定**的，所以没有 _seq 的（老数据）保持

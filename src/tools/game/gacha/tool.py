@@ -56,7 +56,7 @@ from qfluentwidgets import (
     TitleLabel,
 )
 
-from ....core import gacha, paths
+from ....core import gacha, gacha_store, paths
 from ....core.categories import ToolCategory
 from ....core.registry import registry
 from ....core.tool_base import BaseTool
@@ -168,18 +168,24 @@ class FetchThread(QThread):
             store = self._store or gacha_store.GachaHistoryStore()
             history = store.load()
             before = len(history)
+            #: ★ 这次拉的是**哪个账号** —— 多账号隔离靠它
+            #: （用户 2026-10-06："我要是换个账户了呢"）
+            who = str(self._params.get("playerId", "") or "").strip()
             added = 0
             for pool_type, display in gacha.POOLS:
                 added += history.merge(
                     raw.get(pool_type, []), pool_type=pool_type,
                     pool_name=display,
-                    at=self._params.get("_fetched_at", ""))
+                    at=self._params.get("_fetched_at", ""),
+                    player_id=who)
+            #: ★ 只统计**这个账号**的记录 —— 不给 player_id 会把
+            #: 别的号的数据也算进来（那正是这次要修的 bug）
             report = gacha.report_from_records(
-                history.all_records(),
-                player_id=self._params.get("playerId", ""))
+                history.all_records(who), player_id=who)
             history.add_snapshot(gacha_store.PullSnapshot(
                 at=self._params.get("_fetched_at", "") or "",
-                total=report.total, five=report.five_count, added=added))
+                total=report.total, five=report.five_count, added=added,
+                player_id=who))
             store.save(history)
         except Exception as exc:  # noqa: BLE001 - 存历史失败不该让"分析"白跑
             logger.warning("抽卡历史合并/保存失败", exc_info=True)
@@ -473,6 +479,11 @@ class GachaWidget(ScrollArea):
         """用本地累积的记录渲染界面。**返回是否渲染了**。
 
         没有历史 → 保持空状态（返回 False，让"点获取"的引导留在那）。
+
+        ## ★ 多账号（用户 2026-10-06："我要是换个账户了呢"）
+
+        只渲染**最近一次拉取的那个账号**的数据。用户的库里有几个号时，
+        换号后再打开页面会**自动切到新号**，不会两个号混着显示。
         """
         try:
             history = self._get_store().load()
@@ -482,9 +493,13 @@ class GachaWidget(ScrollArea):
         if not len(history):
             return False
 
-        report = gacha.report_from_records(
-            history.all_records(),
-            player_id=str(history.snapshots[0].at if history.snapshots else ""))
+        #: ★ 最近一次拉取是哪个账号 —— 就用它来筛
+        who = str(history.snapshots[0].player_id if history.snapshots else "")
+        rows = history.all_records(who)
+        if not rows:
+            #: 快照里的账号没有数据（比如老快照没 player_id）→ 退回"全部"
+            rows = history.all_records()
+        report = gacha.report_from_records(rows, player_id=who)
         if not report.total:
             return False
 
@@ -492,8 +507,10 @@ class GachaWidget(ScrollArea):
         self.render(report)
         # ⚠ 状态栏要写清"这是**本地累计**，不是这次拉的" ——
         #   否则用户会以为刚点的那一下就拉到了这么多。
+        scope = f"（{gacha_store.account_label(who)}）" if who else ""
         self.status.setText(
-            f"显示的是本地累计的 {report.total} 抽（{len(history)} 条记录）。"
+            f"显示的是本地累计的 {report.total} 抽"
+            f"{scope}（{len(rows)} 条记录）。"
             "点「分析」可以把最新记录并进来。")
         return True
 
@@ -509,6 +526,11 @@ class GachaWidget(ScrollArea):
 
         ⚠ 历史是**每次拉取时累计到了多少**，不是"每次单独的结果" ——
         因为接口只返回最近一段，只有累计才代表账号全貌。
+
+        ## ★ 多账号：每行标出是**哪个号**拉的
+
+        用户 2026-10-06 选了"按账号分开存"，所以要能一眼看出
+        每条历史属于哪个账号（切号之后尤其重要）。
         """
         while self.history_box.count():
             item = self.history_box.takeAt(0)
@@ -530,24 +552,54 @@ class GachaWidget(ScrollArea):
             return
 
         total = len(history)
-        note = CaptionLabel(
-            f"本地已累积 {total} 条记录（每分析一次就把新记录并进来，"
-            "所以数字会随时间变多）。", self.history_host)
+        #: ★ 多账号：说清**每个号各多少条** —— 只写一个总数用户会以为
+        #: 都是当前号的（用户 2026-10-06 选了"按账号分开存"）
+        players = history.players()
+        if len(players) > 1:
+            detail = "、".join(
+                f"{gacha_store.account_label(w)} {history.player_count(w)} 条"
+                for w in players[:4])
+            note_text = (f"本地已累积 {total} 条记录，分属 {len(players)} 个账号："
+                         f"{detail}。每分析一次就把新记录并进来。")
+        else:
+            note_text = (f"本地已累积 {total} 条记录（每分析一次就把新记录"
+                         "并进来，所以数字会随时间变多）。")
+        note = CaptionLabel(note_text, self.history_host)
         note.setTextColor(*MUTED)
         note.setWordWrap(True)
         self.history_box.addWidget(note)
 
         for snapshot in history.snapshots[:20]:      # 只列最近 20 次，够看
-            row = CaptionLabel("· " + snapshot.describe(), self.history_host)
+            #: ★ 多账号：标出这次是**哪个号**拉的（用户 2026-10-06）
+            label = gacha_store.account_label(snapshot.player_id)
+            row = CaptionLabel(
+                f"· [{label}] " + snapshot.describe(), self.history_host)
             row.setTextColor(*MUTED)
             self.history_box.addWidget(row)
 
     def clear_history(self) -> None:
-        """清空本地累积记录（用户要求能重置）。"""
+        """清空本地累积记录（用户要求能重置）。
+
+        ⚠ 多账号（2026-10-06）：这是**所有账号**的记录一起清掉 ——
+        确认框里要说清楚，别让用户以为是只清当前号。
+        """
+        players = []
+        try:
+            players = self._get_store().load().players()
+        except Exception:  # noqa: BLE001
+            pass
+
+        detail = ""
+        if len(players) > 1:
+            detail = ("\n\n⚠ 这会清掉**全部 %d 个账号**的记录：%s"
+                      % (len(players),
+                         "、".join(gacha_store.account_label(w)
+                                   for w in players[:4])))
         box = MessageBox(
             "清空抽卡历史",
             "删掉本地累积的全部抽卡记录？\n"
-            "下次「分析」会重新从接口拉最近一段，之前的累积就没了。",
+            "下次「分析」会重新从接口拉最近一段，之前的累积就没了。"
+            + detail,
             self.window())
         box.yesButton.setText("清空")
         box.cancelButton.setText("取消")
