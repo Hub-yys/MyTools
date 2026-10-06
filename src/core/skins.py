@@ -356,37 +356,75 @@ def active_skin() -> dict:
 def _paint(skin: dict) -> None:
     """把皮肤的配色刷到**所有窗口 + Qt 调色板**上。
 
-    ⚠ 挂 **app 级** QSS（不是 window 级）—— 这样**对话框 / 弹窗**也一起换，
-    不然弹出的窗口还是旧配色（看着很割裂）。
+    ## ⚠⚠ 这里是"改一下要等好久"的元凶（2026-10-05 实测查出来）
 
-    ⚠ 还要**逐个顶层窗口再设一遍** —— 主窗口有自己的调色板，
-    只设 app 级会被它盖掉（实测 app 级 74.4%，window 级 99.1%）。
+    现象：**点一下皮肤卡片，界面卡 4.9 秒**；整套测试从 12 分钟涨到 42 分钟。
 
-    ⚠⚠ ``NavigationPanel``（左侧栏）**自己带一份 styleSheet**
-    （实测 584 字符，里面写死 ``background-color: rgb(32,32,32)``），
-    优先级高于从窗口继承下来的 —— **必须单独给它设**，
-    否则就是"右边深色玻璃、左边白板"（实测截图就是这个）。
+    根因：``app.setStyleSheet()`` 会**递归套用到所有 widget**，
+    开销是 **O(总 widget 数)**::
 
-    ⚠⚠ ``FluentTitleBar``（顶部标题栏）同理 —— 它自带 **1990 字符**的
-    styleSheet 且 ``WA_StyledBackground=False``，渐变到不了它，
-    顶部会留一条浅灰（用户第二个截图圈的就是这个）。
+        窗口 1 个, widget  2572 → 1.67s
+        窗口 2 个, widget  5144 → 3.26s
+        窗口 4 个, widget 10288 → 6.15s
+
+    一个 ``MainWindow`` 就有 **2570 个 widget**（工具页 + 卡片 + 列表）。
+    测试里建几十个窗口不关 → 累积上万 widget → 越跑越慢。
+
+    ## 两道优化
+
+    **① app 级 QSS 只在"皮肤真的变了"时设**
+
+    实测 ``app.setStyleSheet`` **1.39s** vs ``window.setStyleSheet``
+    **0.34s**（快 4 倍）—— 但 app 级是**必须**的：
+    只设 window 级的话，新弹的**对话框**拿不到配色
+    （实测裸 ``QDialog`` 里的 label ``styleSheet()`` 是空的）。
+
+    → 折中：**app 级保留**（保证对话框也对），但
+    ① 同一个皮肤重复 apply 时**直接跳过**（用户连点两次不该卡两次）；
+    ② 只对 ``isVisible()`` 的窗口做那几个"必须单独设"的活。
+
+    **② 自带 styleSheet 的控件仍然单独设** —— 那是**必须**的：
+    ``NavigationPanel``（584 字符）/ ``FluentTitleBar``（1990 字符）
+    优先级高于继承，不单独设就会"右边玻璃左边白板"。
     """
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance()
     if app is None:
         return
+
+    global _PAINTED_QSS
     qss = build_qss(skin)
+
+    #: ★ 同一个皮肤重复 apply → 不必再刷（app 级那 1.4 秒省掉）
+    if qss == _PAINTED_QSS:
+        return
+
     app.setStyleSheet(qss)
     _paint_palette(app, skin)
+
     for w in app.topLevelWidgets():
+        #: ⚠ 只处理**看得见**的窗口（测试里建了没显示的不用管）
         try:
-            w.setStyleSheet(qss)
-        except (RuntimeError, AttributeError):   #: 已销毁的窗口
+            if not w.isVisible():
+                continue
+        except (RuntimeError, AttributeError):
             continue
-        _paint_nav_panel(w, skin)
-        _paint_title_bar(w, skin)
-        _paint_pages(w)
+        #: ⚠ **不**再 ``w.setStyleSheet(qss)`` —— app 级的会继承下来，
+        #: 逐个再设一遍纯属重复（而且随窗口数线性变慢）
+        _paint_nav_panel(w, skin)       #: 自带 styleSheet，必须单独设
+        _paint_title_bar(w, skin)       #: 同上
+        _paint_pages(w)                 #: 页面那几层要显式透明
+
+    #: ★ 记下"已经刷过这份 QSS"—— 下次同一个皮肤直接跳过（见函数文档）
+    _PAINTED_QSS = qss
+
+
+#: ★ 上一次**真正刷上去**的 QSS（用来跳过重复刷）
+#:
+#: 用户连点两次同一款皮肤、或者测试里反复 apply 默认皮肤时，
+#: 那 1.4 秒的 ``app.setStyleSheet`` 完全可以省掉。
+_PAINTED_QSS: str = ""
 
 
 def _paint_palette(app, skin: dict) -> None:
