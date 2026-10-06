@@ -48,6 +48,38 @@ class TestRecordKey(unittest.TestCase):
         b = rec("心", 5, "2026-09-10 11:36:14", 1)
         self.assertEqual(gacha_store.record_key(a), gacha_store.record_key(b))
 
+    def test_identical_twin_records_get_different_keys(self):
+        """★★★ **十连里两个完全一样的东西都要留下**（2026-10-05 用户报的 bug）。
+
+        ## 症状
+
+        用户："这里数据统计的不准" —— 工具显示 629 抽，
+        实际约 790 抽，**每段抽数都偏小**。
+
+        ## 根因
+
+        身份键是 ``(池子, 名字, 时间, resourceId)`` —— **没有"第几次"**。
+        十连是**同一秒**入账的，一抽里出两个**同名同 id** 的 3★ 武器
+        （实测「源能长刃·测壹」一抽出现两次）→ 键完全相同 →
+        **后面那条被当成重复丢掉**。
+
+        实测丢了多少::
+
+            每秒条数:  6条×6秒  7条×16秒  8条×35秒  9条×19秒  10条×3秒
+                       ↑ 十连该是 10 条 → 丢了约 161 条
+
+        ## 修法
+
+        ``merge`` 先扫一遍、给每条标上"同秒同名的第几次"（``_nth``），
+        身份键带上它 → 两条都留得下来。
+        """
+        twin = rec("源能长刃·测壹", 3, "t1", 2102)
+        a = dict(twin, _nth=0)
+        b = dict(twin, _nth=1)
+        self.assertNotEqual(
+            gacha_store.record_key(a), gacha_store.record_key(b),
+            "同秒同名同 id 的两条拿到同一个键 —— 会被吞掉一条")
+
     def test_key_tolerates_junk(self):
         self.assertTrue(gacha_store.record_key({}))
         self.assertTrue(gacha_store.record_key(None))
@@ -84,6 +116,55 @@ class TestMerge(unittest.TestCase):
         self.history.merge(batch, pool_type="1", pool_name="P", at="now")
         self.assertEqual(
             self.history.merge(batch, pool_type="1", pool_name="P", at="now"), 0)
+
+    def test_twins_in_one_ten_pull_both_kept(self):
+        """★★★ **一次十连里两个一模一样的东西，两条都要入库**。
+
+        ⚠ 这是 2026-10-05 用户报"统计不准"的根因：
+        十连同秒入账，两个**同名同 id** 的 3★ 武器身份键撞车 →
+        后面那条被丢掉 → 每段抽数都偏小（629 vs 实际 ~790）。
+        """
+        twin = rec("源能长刃·测壹", 3, "t1", 2102)
+        added = self.history.merge(
+            [dict(twin), dict(twin), dict(twin)],      #: 三个完全一样
+            pool_type="1", pool_name="P", at="now")
+        self.assertEqual(added, 3, "同名同秒的重复被吞掉了")
+        self.assertEqual(len(self.history), 3)
+
+    def test_twins_do_not_duplicate_on_refetch(self):
+        """★★★ 但**重新拉同一批**仍然不能重复入库（去重不能失效）。
+
+        ``_nth`` 每次拉取都从 0 重算 —— 同一抽在两次拉取里算出的序号
+        **一致**，所以键能稳定对上。
+        """
+        twin = rec("源能长刃·测壹", 3, "t1", 2102)
+        batch = [dict(twin), dict(twin)]
+        self.history.merge(batch, pool_type="1", pool_name="P", at="now")
+        added = self.history.merge(batch, pool_type="1", pool_name="P",
+                                   at="now2")
+        self.assertEqual(added, 0, "重新拉取时重复入库了")
+        self.assertEqual(len(self.history), 2)
+
+    def test_refetch_with_more_history_keeps_twins(self):
+        """★★★ 真实场景：第二次拉到的列表**更长**（往前多了一段）。
+
+        同一抽在两次拉取里的 ``_nth`` 必须一致 ——
+        否则要么重复入库、要么又把 twins 吞掉。
+        """
+        twin = rec("源能长刃·测壹", 3, "t1", 2102)
+        old = [rec("旧", 3, "t0", 99)]          #: 更早的一抽
+
+        #: 第一次：窗口只覆盖到 twin 那两个
+        self.history.merge([dict(twin), dict(twin)],
+                           pool_type="1", pool_name="P", at="now")
+        self.assertEqual(len(self.history), 2)
+
+        #: 第二次：窗口往前挪了，多带回一条更早的 + 同样的两个 twin
+        added = self.history.merge(
+            old + [dict(twin), dict(twin)],
+            pool_type="1", pool_name="P", at="now2")
+        self.assertEqual(added, 1, "只该新增那条更早的")
+        self.assertEqual(len(self.history), 3)
 
     def test_same_name_different_time_is_new(self):
         """同名但时间不同 = 两次不同的出货，都要留。"""

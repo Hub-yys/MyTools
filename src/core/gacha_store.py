@@ -61,8 +61,30 @@ MAX_SNAPSHOTS = 200
 def record_key(record: dict) -> str:
     """一条记录的身份键（去重靠它）。
 
-    ``(卡池, 物品名, 时间, resourceId)`` —— **带上 resourceId**：
-    同一秒十连出两个同名物品时，前三个字段会撞车，光靠它们会把其中一条丢掉。
+    ## ⚠⚠ 这里修过一个**吞记录**的 bug（2026-10-05 用户报"统计不准"）
+
+    原来的键是 ``(池子, 物品名, 时间, resourceId)`` —— **没有"第几次"**。
+
+    十连是**同一秒**入账的，一抽里出两个**同名同 id** 的 3★ 武器
+    （实测：「源能长刃·测壹」一抽里出现两次）→ 键**完全相同** →
+    后面那条被当成重复**丢掉**。
+
+    实测后果::
+
+        每秒条数:  6 条×6 秒  7 条×16 秒  8 条×35 秒  9 条×19 秒  10 条×3 秒
+                   ↑ 十连应该都是 10 条，实际大多只有 6~9 条 → 丢了约 161 条
+        结果：用户实际 ~790 抽，工具只显示 **629** —— 每段抽数都偏小
+
+    用户原话："这里数据统计的不准"。
+
+    ## 修法：**带上"这条在原始列表里的位置"**
+
+    ``_seq`` 是接口返回顺序里的下标（见 :meth:`GachaHistory.merge`）。
+    同一批拉取里，位置一定不同 → 两条都能留下来。
+
+    ⚠ 但**跨批次**不能用 ``_seq`` 比 —— 两次拉取的列表长度不同、
+    同一抽的下标会变。所以键里**不用** ``_seq`` 本身，而是用
+    :func:`_occurrence` 算出的"同秒同名的第几次"（见它的说明）。
 
     ⚠ 传进来不是 dict（``None`` / 字符串）时不抛异常 —— 这条被
     ``tests/test_gacha_store.py`` 钉着。去重是**批量**跑的，为一条脏数据
@@ -74,7 +96,27 @@ def record_key(record: dict) -> str:
     name = str(record.get("name") or "")
     when = str(record.get("time") or "")
     rid = str(record.get("resourceId") or "")
-    return f"{pool}|{name}|{when}|{rid}"
+    #: ★ 同秒同名的"第几次" —— 十连里两个同名武器靠它区分
+    nth = str(record.get("_nth") or "")
+    return f"{pool}|{name}|{when}|{rid}|{nth}"
+
+
+def _occurrence(record: dict, seen: dict[tuple, int]) -> int:
+    """这条记录在**本次拉取**里是"同秒同名"的第几次（从 0 开始）。
+
+    ``seen`` 是本次拉取的计数器（键 = ``(时间, 名字, resourceId)``）。
+
+    ⚠ 这个计数**只在本次拉取内有效** —— 它用来在同一次返回里
+    区分"同一秒抽到的两个同名东西"。跨批次比对时，同一个东西
+    在两次拉取里算出的序号**是一样的**（都是从 0 数起），
+    所以键能稳定对上去重。
+    """
+    key = (str(record.get("time") or ""),
+           str(record.get("name") or ""),
+           str(record.get("resourceId") or ""))
+    n = seen.get(key, 0)
+    seen[key] = n + 1
+    return n
 
 
 @dataclass
@@ -124,15 +166,31 @@ class GachaHistory:
 
         ``incoming`` 是接口原始记录；这里统一补上 ``pool_type`` / ``pool``
         两个字段（接口给的是中文池名，历史里要留稳定的类型编号）。
+
+        ## ⚠⚠ ``_nth`` 是修"吞记录"的关键（2026-10-05）
+
+        十连是**同一秒**入账，一抽里可能出**两个同名同 id** 的 3★ 武器。
+        原来的身份键没有"第几次"→ 第二条被当重复丢掉（用户报"统计不准"，
+        实测少了约 161 条）。
+
+        → 先扫一遍、给每条标上"同秒同名的第几次"（``_nth``），
+        身份键里带上它，两条就都留得下来。
+
+        ⚠ ``_nth`` **每次拉取都重算**（不能沿用旧的）：两次拉取的列表
+        长度不同，但"同秒同名的第几次"都是从 0 数起，所以**稳定**——
+        同一抽在两次拉取里算出的序号一致，去重仍然正确、不会重复入库。
         """
         stamp = at or _now()
         added = 0
+        seen: dict[tuple, int] = {}
         for raw in incoming:
             if not isinstance(raw, dict):
                 continue
             record = dict(raw)
             record["pool_type"] = pool_type
             record["pool"] = pool_name
+            #: ★ 标上"同秒同名的第几次" —— 见方法文档
+            record["_nth"] = _occurrence(record, seen)
             key = record_key(record)
             if key in self.records:
                 continue
