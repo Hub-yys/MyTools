@@ -116,6 +116,18 @@ def record_key(record: dict) -> str:
     return f"{pool}|{name}|{when}|{rid}"
 
 
+def _seq_of(record: dict) -> int:
+    """``_seq``（接口列表下标）—— 越小越新；拿不到就是 0。
+
+    ⚠ 拿不到时返回 **0 而不是大数**：``all_records`` 靠**稳定排序**
+    保住"没有 _seq 的老数据"的 dict 顺序，只要这个值**一致**就行。
+    """
+    try:
+        return int((record or {}).get("_seq") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _identity_without_nth(record: dict) -> str:
     """身份（**不含** ``_nth``）—— 清理重复时按它分组。
 
@@ -248,11 +260,19 @@ class GachaHistory:
                 record.pop("_nth", None)
             key = record_key(record)
             if key in self.records:
-                #: ★ 已存在也应**刷新 _seq**：这次拉取的列表可能更完整
-                #: （顺序更可信），老记录里的 _seq 可能是上一批的错值。
-                if seq < int(self.records[key].get("_seq") or 0) or \
-                        "_seq" not in self.records[key]:
-                    self.records[key]["_seq"] = seq
+                #: ★★★ 已存在也要**刷新 `_seq`** —— 用**这一批**的顺序。
+                #:
+                #: ## ⚠⚠ 这里踩过坑（2026-10-05）
+                #:
+                #: 第一版我写的是 ``if seq < 已有值`` —— **只在新值更小时更新**。
+                #: 结果：第二批把同一抽排到了不同位置（接口每次顺序可能不同），
+                #: 老值更小就**永远刷不掉** → 同秒顺序一直是第一批的（可能过时）。
+                #:
+                #: 实测表现：``test_same_second_order_survives_reinsertion``
+                #: 报 ``'物品0' != '物品4'``。
+                #:
+                #: → 直接**用这次的值覆盖**：最新拉取到的顺序最可信。
+                self.records[key]["_seq"] = seq
                 continue
             record.setdefault("_first_seen", stamp)
             self.records[key] = record
@@ -312,34 +332,58 @@ class GachaHistory:
     def all_records(self) -> list[dict]:
         """按时间**倒序**（最新在前）—— 和接口给的方向一致，方便直接喂 Pull。
 
-        ## ⚠⚠ 同一秒内必须按 ``_seq`` 排（2026-10-05 第三次修这个统计）
+        ## ⚠⚠ 同一秒内必须保住**接口原顺序**（2026-10-05 修了三轮）
 
         接口把**一次十连的 10 条放在同一秒**，且**列表有序**。
         抽数的段边界（"这个金花了几抽"）依赖**同秒内的先后**。
 
-        只按 ``time`` 排的话，同一秒的 10 条是**任意顺序** →
-        五星在十连里的位置错 → 每段差 2~3 抽
-        （实测：我 23/26/25 抽，用户截图 25/24/28）。
+        只按 ``time`` 排的话，同一秒的 10 条变成**任意顺序** →
+        五星在十连里的位置错 → 每段差 2~3 抽。
 
-        → ``_seq``（接口列表下标）做**第二关键字**：
-        同秒按接口原顺序排。
+        ## 实测三种排法（拿用户游戏截图当真值对照）
 
-        ⚠ ``time`` 相同才看 ``_seq``。跨秒的 ``_seq`` 没有比较意义
-        （每次拉取的列表长度不同），所以**必须先按时间分组**。
+        ::
+
+            真值      50  25  24  28  71  14  43  21 ...
+            A 现状    50  15  36  12  69  26  37  19 ...  差 90
+            B 稳定    50  23  26  25  71  17  43  21 ...  差 **14**
+            C 反转    50  17  34  15  69  23  37  19 ...  差 76
+
+        **B 最好** —— 而且累计差回零（前面偏、后面补回来），
+        说明**记录一条不缺**，只是同秒顺序还有局部偏差。
+
+        ## 做法
+
+        1. **有 ``_seq`` 就按它排**（重新拉过的数据，顺序最准）；
+        2. **没有就靠 dict 的插入顺序** —— ``merge`` 是按接口顺序插的，
+           Python 3.7+ 的 dict 保证插入顺序，所以这**就是接口原顺序**；
+        3. 用 ``sorted`` 的**稳定性**：先给每条一个"原始下标"当兜底键，
+           这样同秒内不会被重排。
+
+        ⚠ 关键是**别用不带兜底的 ``sorted``** —— 那会把同秒的块重排掉。
+
+        ## ⚠⚠ 兜底键别用 ``-idx``（我第一版就错在这）
+
+        ``sorted(..., reverse=True)`` 会把**所有**键分量一起反转 ——
+        包括那个兜底下标。用 ``-_idx`` 当兜底，反转后变成按 ``+idx`` 排，
+        正好把插入顺序**倒过来**（实测又退回"方案 A"的差 90）。
+
+        → 用一个**排他性**的兜底：有 ``_seq`` 就用它（越新 _seq 越小），
+        没有就沿用 dict 顺序。做法是**先按 (time) 稳定排序，
+        再在每次"同一秒的连续块"里保持原有先后** —— 不引入会被反转的量。
         """
-        def _sort_key(r: dict):
-            when = str(r.get("time") or "")
-            #: 同一秒内用 _seq 兜底；没有 _seq 的老数据给个大数（排后面，
-            #: 但不能是 0 —— 0 是"接口里第一条"）
-            try:
-                seq = int(r.get("_seq") or 0)
-            except (TypeError, ValueError):
-                seq = 0
-            return (when, seq)
+        #: dict 插入顺序 = 接口返回顺序（merge 就是按那个顺序插的）
+        raw = list(self.records.values())
 
-        #: 时间倒序（最新在前）；同一秒内 _seq **也倒序**才符合接口方向
-        #: （接口最新在前，_seq=0 是最新的那条）
-        return sorted(self.records.values(), key=_sort_key, reverse=True)
+        #: 第一步：有 ``_seq`` 的按它升序（接口最新在前 → _seq 越小越新）。
+        #: ``sorted`` 是**稳定**的，所以没有 _seq 的（老数据）保持
+        #: dict 插入顺序不变。
+        step1 = sorted(raw, key=_seq_of)
+
+        #: 第二步：按时间倒序。**也是稳定排序** → 同一秒内保持 step1 的顺序
+        #: （也就是"接口原顺序"或"按 _seq 排好的顺序"）。
+        step1.sort(key=lambda r: str(r.get("time") or ""), reverse=True)
+        return step1
 
     def __len__(self) -> int:
         return len(self.records)

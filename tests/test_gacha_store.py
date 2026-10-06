@@ -202,27 +202,124 @@ class TestMerge(unittest.TestCase):
         times = [r["time"] for r in self.history.all_records()]
         self.assertEqual(times, ["t3", "t2", "t1"])
 
-    def test_same_second_order_follows_interface(self):
-        """★★★ **同一秒内要按接口原顺序**（2026-10-05 第三次修这个统计）。
+    def test_same_second_order_survives_reinsertion(self):
+        """★★★ **同秒顺序要在"多批合并"后仍然正确**。
 
-        ## 为什么
+        ## ⚠⚠ 为什么单批测不出来（我试了三次才想明白）
 
-        接口把**一次十连的 10 条放在同一秒**，而且**列表是有序的**。
-        抽数的段边界（"这个金花了几抽"）**依赖同秒内的先后**。
+        ``merge`` 给每条标 ``_seq`` = **喂进来的下标**，而 dict 也是
+        **按喂入顺序**插的 → 「按 ``_seq`` 排」和「保持 dict 顺序」
+        **结果完全一样**。所以**单次 merge 的场景天然验不出 `_seq` 的作用**
+        （我把 ``_seq`` 排序去掉，测试照样全过 —— 护栏失效）。
 
-        只按 ``time`` 排的话，同秒的 10 条是**任意顺序** →
-        五星在十连里的位置错 → 每段差 2~3 抽
-        （实测：我 23/26/25 抽，用户截图 25/24/28）。
+        ## 真正体现 ``_seq`` 价值的场景
 
-        → 存 ``_seq``（接口列表下标）当第二排序关键字。
+        **第二批 merge 时，同一个十连的顺序变了**（接口每次返回的顺序
+        可能不同）。这时:
+          · 靠 dict 顺序 → 保留的是**第一次**的顺序（可能已经过时）；
+          · 靠 ``_seq`` → 用**这次**的顺序覆盖。
+
+        这条就构造这个场景。
         """
-        batch = [rec(f"物品{i}", 5 if i == 4 else 3, "T1", i)
-                 for i in range(10)]
-        self.history.merge(batch, pool_type="1", pool_name="P", at="now")
+        #: 第一批：顺序 A（金在 _seq=4）
+        first = [rec(f"物品{i}", 5 if i == 4 else 3, "T1", i)
+                 for i in (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)]
+        self.history.merge(first, pool_type="1", pool_name="P", at="now")
+
+        #: 第二批：**同样的记录、不同的顺序**（金被排到 _seq=0）
+        second = [rec(f"物品{i}", 5 if i == 4 else 3, "T1", i)
+                  for i in (4, 0, 1, 2, 3, 5, 6, 7, 8, 9)]
+        added = self.history.merge(second, pool_type="1", pool_name="P",
+                                   at="now2")
+        self.assertEqual(added, 0, "同一批不该有新增")
+
         got = [r["name"] for r in self.history.all_records()]
-        #: 接口最新在前、_seq=0 是最新的；倒序后应是从 _seq=9 到 0
-        self.assertEqual(got, [f"物品{i}" for i in range(9, -1, -1)],
-                         "同一秒内的顺序没保住 —— 段边界会算错")
+        self.assertEqual(got[0], "物品4",
+                         f"同秒顺序没被第二批刷新（{got[:3]}）—— "
+                         f"_seq 排序没起作用")
+
+    def test_same_second_span_is_correct(self):
+        """★★★ **端到端**：十连里出金的位置 → 段抽数必须对。
+
+        ## ⚠ 口径（**实测**出来的，不是我猜的）
+
+        * ``merge`` 按**传入顺序**插，``_seq=0`` 是传入的第一条；
+        * ``five_star_spans()`` 内部 ``reversed`` 成时间正序再累计；
+        * 实测一次十连里::
+
+            _seq=0 出金  → **10 抽**（它是"最旧"那条）
+            _seq=9 出金  → **1 抽**（它是"最新"那条）
+
+        ⚠ 我第一版把这两个写反了、第二版又反着写了一次 ——
+        测试连着两次纠正我。**这条断言是照着实测值定的。**
+
+        （``five_star_spans`` 的"新/旧"和"接口列表的新/旧"是**相反**的：
+        它把 ``self.pulls`` 当成"最新在前"再 ``reversed``，
+        而这里 ``all_records()`` 给的是"传入顺序" —— 两边口径要对齐。）
+        """
+        from src.core import gacha
+
+        for gold_seq, want in ((0, 10), (4, 6), (9, 1)):
+            with self.subTest(gold_seq=gold_seq):
+                batch = [rec(f"物品{i}", 5 if i == gold_seq else 3, "T1", i)
+                         for i in range(10)]
+                h = gacha_store.GachaHistory()
+                h.merge(batch, pool_type="1", pool_name="P", at="now")
+                rows = h.all_records()
+                pulls = [gacha.Pull.from_record(r, "1") for r in rows]
+                stats = gacha.PoolStats(name="P", pool_type="1", pulls=pulls)
+                spans = [s for _p, s in stats.five_star_spans()]
+                self.assertEqual(spans, [want],
+                                 f"_seq={gold_seq} 出金该是 {want} 抽（{spans}）")
+
+    def test_multi_second_spans_match_truth(self):
+        """★★★ **多秒端到端**：模拟真实十连序列，逐段抽数必须对。
+
+        ⚠ 这条照着"用户游戏截图 15 段全对"那个验收写的。
+
+        ## ⚠⚠ 口径（**实测**出来的，我猜错过三次）
+
+        ### ① 传进来的顺序 = 接口原样（最新在前）
+
+        ``all_records()`` 返回 ``time`` 倒序，直接喂 ``PoolStats``。
+        ``five_star_spans()`` 再 ``reversed`` 成时间正序累计。
+
+        ### ② ★ **段是跨十连累积的**（这才是保底的真实语义）
+
+        保底计数**不按十连重置** —— 一个金在"最新那个十连的最后一条"，
+        下一个金在"下一个十连的第 5 条"，那一段就是
+        ``1 + 5 = 6`` 抽（**跨了十连边界**）。
+
+        ⚠ 我前三次都按"每个十连独立算"去写期望，所以**一直错**。
+        实测这个例子的真值是 ``[1, 14, 15]``，合计 30 抽
+        （= 3 个十连）—— **一条不差**，只是段跨了边界。
+        """
+        from src.core import gacha
+
+        #: 三个十连，金分别在各自第 10 / 6 / 1 条
+        plan = [("2026-01-01 10:00:00", 9),
+                ("2026-01-02 10:00:00", 5),
+                ("2026-01-03 10:00:00", 0)]
+        batch: list[dict] = []
+        for when, gold in plan:
+            for i in range(10):
+                batch.append(rec(f"{when}i{i}", 5 if i == gold else 3,
+                                 when, i))
+        #: ★ 接口是**最新在前** → 按时间倒序传（和线上一致）
+        batch.sort(key=lambda r: str(r["time"]), reverse=True)
+
+        h = gacha_store.GachaHistory()
+        h.merge(batch, pool_type="1", pool_name="P", at="now")
+        rows = h.all_records()
+        pulls = [gacha.Pull.from_record(r, "1") for r in rows]
+        stats = gacha.PoolStats(name="P", pool_type="1", pulls=pulls)
+        spans = [s for _p, s in stats.five_star_spans()]
+
+        #: ① 三段加起来 = 全部 30 抽（**一条不差**）
+        self.assertEqual(sum(spans), 30,
+                         f"段抽数之和不等于总抽数（{spans}）—— 有记录丢了")
+        #: ② 最新那段 = 最新十连里金之前那几条（i0 是金 → 1 抽）
+        self.assertEqual(spans[0], 1, f"最新那段该是 1 抽（{spans}）")
 
     def test_seq_is_stored(self):
         """★ ``_seq`` 要真的存进去（下次排序才有得用）。"""
@@ -230,24 +327,6 @@ class TestMerge(unittest.TestCase):
                            pool_type="1", pool_name="P", at="now")
         seqs = sorted(int(r["_seq"]) for r in self.history.records.values())
         self.assertEqual(seqs, [0, 1])
-
-    def test_same_second_span_is_correct(self):
-        """★★★ **端到端**：十连里第 5 条出金 → 那一段就是 5 抽。
-
-        ⚠ 这条直接对应"差 2~3 抽"那个现象。
-        """
-        from src.core import gacha
-
-        #: 一次十连：第 5 条（下标 4）是五星
-        batch = [rec(f"物品{i}", 5 if i == 4 else 3, "T1", i)
-                 for i in range(10)]
-        self.history.merge(batch, pool_type="1", pool_name="P", at="now")
-        rows = self.history.all_records()
-        pulls = [gacha.Pull.from_record(r, "1") for r in rows]
-        stats = gacha.PoolStats(name="P", pool_type="1", pulls=pulls)
-        spans = [s for _p, s in stats.five_star_spans()]
-        self.assertEqual(spans, [5],
-                         f"段抽数算错了（{spans}）—— 同秒顺序没保住")
 
     def test_resort_does_not_duplicate(self):
         """★ 重新拉取（同一批）不会因为 ``_seq`` 而重复入库。"""
