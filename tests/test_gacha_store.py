@@ -202,6 +202,62 @@ class TestMerge(unittest.TestCase):
         times = [r["time"] for r in self.history.all_records()]
         self.assertEqual(times, ["t3", "t2", "t1"])
 
+    def test_same_second_order_follows_interface(self):
+        """★★★ **同一秒内要按接口原顺序**（2026-10-05 第三次修这个统计）。
+
+        ## 为什么
+
+        接口把**一次十连的 10 条放在同一秒**，而且**列表是有序的**。
+        抽数的段边界（"这个金花了几抽"）**依赖同秒内的先后**。
+
+        只按 ``time`` 排的话，同秒的 10 条是**任意顺序** →
+        五星在十连里的位置错 → 每段差 2~3 抽
+        （实测：我 23/26/25 抽，用户截图 25/24/28）。
+
+        → 存 ``_seq``（接口列表下标）当第二排序关键字。
+        """
+        batch = [rec(f"物品{i}", 5 if i == 4 else 3, "T1", i)
+                 for i in range(10)]
+        self.history.merge(batch, pool_type="1", pool_name="P", at="now")
+        got = [r["name"] for r in self.history.all_records()]
+        #: 接口最新在前、_seq=0 是最新的；倒序后应是从 _seq=9 到 0
+        self.assertEqual(got, [f"物品{i}" for i in range(9, -1, -1)],
+                         "同一秒内的顺序没保住 —— 段边界会算错")
+
+    def test_seq_is_stored(self):
+        """★ ``_seq`` 要真的存进去（下次排序才有得用）。"""
+        self.history.merge([rec("a", 3, "t1", 1), rec("b", 3, "t1", 2)],
+                           pool_type="1", pool_name="P", at="now")
+        seqs = sorted(int(r["_seq"]) for r in self.history.records.values())
+        self.assertEqual(seqs, [0, 1])
+
+    def test_same_second_span_is_correct(self):
+        """★★★ **端到端**：十连里第 5 条出金 → 那一段就是 5 抽。
+
+        ⚠ 这条直接对应"差 2~3 抽"那个现象。
+        """
+        from src.core import gacha
+
+        #: 一次十连：第 5 条（下标 4）是五星
+        batch = [rec(f"物品{i}", 5 if i == 4 else 3, "T1", i)
+                 for i in range(10)]
+        self.history.merge(batch, pool_type="1", pool_name="P", at="now")
+        rows = self.history.all_records()
+        pulls = [gacha.Pull.from_record(r, "1") for r in rows]
+        stats = gacha.PoolStats(name="P", pool_type="1", pulls=pulls)
+        spans = [s for _p, s in stats.five_star_spans()]
+        self.assertEqual(spans, [5],
+                         f"段抽数算错了（{spans}）—— 同秒顺序没保住")
+
+    def test_resort_does_not_duplicate(self):
+        """★ 重新拉取（同一批）不会因为 ``_seq`` 而重复入库。"""
+        batch = [rec(f"物品{i}", 3, "T1", i) for i in range(5)]
+        self.history.merge(batch, pool_type="1", pool_name="P", at="now")
+        added = self.history.merge(batch, pool_type="1", pool_name="P",
+                                   at="now2")
+        self.assertEqual(added, 0)
+        self.assertEqual(len(self.history), 5)
+
 
 class TestSnapshots(unittest.TestCase):
     """拉取时间点（用户要的"按时间保存为历史记录"）。"""

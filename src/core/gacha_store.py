@@ -61,30 +61,37 @@ MAX_SNAPSHOTS = 200
 def record_key(record: dict) -> str:
     """一条记录的身份键（去重靠它）。
 
-    ## ⚠⚠ 这里修过一个**吞记录**的 bug（2026-10-05 用户报"统计不准"）
+    ## ⚠⚠ 这里修过两个 bug —— 第二个是我修第一个时引入的
+
+    ### bug ①（2026-10-05 用户报"统计不准"）：**吞记录**
 
     原来的键是 ``(池子, 物品名, 时间, resourceId)`` —— **没有"第几次"**。
-
     十连是**同一秒**入账的，一抽里出两个**同名同 id** 的 3★ 武器
-    （实测：「源能长刃·测壹」一抽里出现两次）→ 键**完全相同** →
+    （实测「源能长刃·测壹」一抽出现两次）→ 键完全相同 →
     后面那条被当成重复**丢掉**。
 
     实测后果::
 
         每秒条数:  6 条×6 秒  7 条×16 秒  8 条×35 秒  9 条×19 秒  10 条×3 秒
-                   ↑ 十连应该都是 10 条，实际大多只有 6~9 条 → 丢了约 161 条
-        结果：用户实际 ~790 抽，工具只显示 **629** —— 每段抽数都偏小
+                   ↑ 十连该是 10 条 → 丢了约 161 条
+        工具显示 629 抽，实际 **790** —— 每段抽数都偏小
 
-    用户原话："这里数据统计的不准"。
+    ### bug ②（2026-10-05 当晚用户又报"越来越不对"）：**复制记录**
 
-    ## 修法：**带上"这条在原始列表里的位置"**
+    修 ① 时我给键尾加了 ``_nth``。但**旧记录没有这个字段**，
+    ``str(None or "")`` 是空串 → 旧键尾 ``|``、新键尾 ``|0`` →
+    **两个键不一样** → 同一条被当成两条存进去::
 
-    ``_seq`` 是接口返回顺序里的下标（见 :meth:`GachaHistory.merge`）。
-    同一批拉取里，位置一定不同 → 两条都能留下来。
+        旧的 629 条 + 新的 790 条 = **1419 条**（库里真被翻了一倍）
 
-    ⚠ 但**跨批次**不能用 ``_seq`` 比 —— 两次拉取的列表长度不同、
-    同一抽的下标会变。所以键里**不用** ``_seq`` 本身，而是用
-    :func:`_occurrence` 算出的"同秒同名的第几次"（见它的说明）。
+    → **修法：``_nth`` 为 0 时不加到键尾**。这样::
+
+        旧记录（无 _nth）      → ``p|n|t|r``      ✓
+        新的 _nth=0           → ``p|n|t|r``      ✓ 同一个键，正确去重
+        新的 _nth=1（真孪生）  → ``p|n|t|r|1``    ✓ 不同的键，两条都留
+
+    ⚠ **向后兼容是这里的关键**：老数据没有 ``_nth``，
+    新逻辑必须把它和 ``_nth=0`` 认成同一条。
 
     ⚠ 传进来不是 dict（``None`` / 字符串）时不抛异常 —— 这条被
     ``tests/test_gacha_store.py`` 钉着。去重是**批量**跑的，为一条脏数据
@@ -97,8 +104,31 @@ def record_key(record: dict) -> str:
     when = str(record.get("time") or "")
     rid = str(record.get("resourceId") or "")
     #: ★ 同秒同名的"第几次" —— 十连里两个同名武器靠它区分
-    nth = str(record.get("_nth") or "")
-    return f"{pool}|{name}|{when}|{rid}|{nth}"
+    #:
+    #: ⚠ **0 不加到键尾**（见上面 bug ②）：老数据没这个字段，
+    #: 加了就会和新的 ``_nth=0`` 对不上、把整份历史复制一遍。
+    try:
+        nth = int(record.get("_nth") or 0)
+    except (TypeError, ValueError):
+        nth = 0
+    if nth > 0:
+        return f"{pool}|{name}|{when}|{rid}|{nth}"
+    return f"{pool}|{name}|{when}|{rid}"
+
+
+def _identity_without_nth(record: dict) -> str:
+    """身份（**不含** ``_nth``）—— 清理重复时按它分组。
+
+    ⚠ 跟 :func:`record_key` 的区别：这里故意**丢掉** ``_nth``，
+    这样"同一条的两个版本"（一个有 ``_nth`` 一个没有）会分到同一组。
+    """
+    if not isinstance(record, dict):
+        return f"|junk|{record!r}"
+    pool = str(record.get("pool_type") or record.get("cardPoolType") or "")
+    name = str(record.get("name") or "")
+    when = str(record.get("time") or "")
+    rid = str(record.get("resourceId") or "")
+    return f"{pool}|{name}|{when}|{rid}"
 
 
 def _occurrence(record: dict, seen: dict[tuple, int]) -> int:
@@ -179,34 +209,137 @@ class GachaHistory:
         ⚠ ``_nth`` **每次拉取都重算**（不能沿用旧的）：两次拉取的列表
         长度不同，但"同秒同名的第几次"都是从 0 数起，所以**稳定**——
         同一抽在两次拉取里算出的序号一致，去重仍然正确、不会重复入库。
+
+        ## ⚠⚠ ``_nth`` 怎么存（这是修"复制记录"那个 bug 的关键）
+
+        ``_nth=0`` 的**不写进 record** —— 让老的（无 ``_nth``）和新的
+        （第一次出现）算出**同一个键**。否则整份历史会被复制一遍
+        （实测 629 → 1419）。见 :func:`record_key` 的 bug ②。
         """
         stamp = at or _now()
         added = 0
         seen: dict[tuple, int] = {}
-        for raw in incoming:
+        for seq, raw in enumerate(incoming):
             if not isinstance(raw, dict):
                 continue
             record = dict(raw)
             record["pool_type"] = pool_type
             record["pool"] = pool_name
-            #: ★ 标上"同秒同名的第几次" —— 见方法文档
-            record["_nth"] = _occurrence(record, seen)
+            #: ★★ ``_seq`` = 这条在**接口返回列表**里的下标
+            #:
+            #: ## ⚠⚠ 为什么必须有它（2026-10-05 第三次修这个统计）
+            #:
+            #: 接口把**一次十连的 10 条放在同一秒**，而且**列表是有序的**。
+            #: 抽数的段边界（"这个金花了几抽"）**依赖同秒内的先后**。
+            #:
+            #: 但原来只存了 ``time``（精确到秒）→ 同秒的 10 条**顺序全丢**，
+            #: 后来 ``sorted(time)`` 排出来是**任意顺序** → 五星在十连里的
+            #: 位置错了 → 每段差 2~3 抽（实测对不上用户截图）。
+            #:
+            #: ``_seq`` 把接口的顺序留下来，排序时用它做**第二关键字**。
+            record["_seq"] = seq
+            #: 同秒同名的"第几次" —— 只用来算身份键（见 :func:`record_key`）
+            nth = _occurrence(record, seen)
+            if nth > 0:
+                record["_nth"] = nth
+            else:
+                #: ⚠ 0 就**不写这个字段** —— 老数据没有它，
+                #: 写了会算出不同的键、把历史复制一遍
+                record.pop("_nth", None)
             key = record_key(record)
             if key in self.records:
+                #: ★ 已存在也应**刷新 _seq**：这次拉取的列表可能更完整
+                #: （顺序更可信），老记录里的 _seq 可能是上一批的错值。
+                if seq < int(self.records[key].get("_seq") or 0) or \
+                        "_seq" not in self.records[key]:
+                    self.records[key]["_seq"] = seq
                 continue
             record.setdefault("_first_seen", stamp)
             self.records[key] = record
             added += 1
         return added
 
+    def dedupe_legacy_keys(self) -> int:
+        """★ 清理"旧键 + 新键"并存造成的重复，返回删掉的条数。
+
+        ## 为什么需要它（2026-10-05 我修 bug 时又引入的）
+
+        修"吞记录"时给身份键加了 ``_nth``，但**旧记录没这个字段** ——
+        结果同一条在库里存了两份（实测 629 → **1419**，用户的五星数
+        也从 18 变成 36）。
+
+        新键规则（:func:`record_key`）已经让 ``_nth=0`` 和"没有 _nth"
+        算出同一个键，但**已经存进去的重复不会自己消失** ——
+        这个方法负责把它们合并掉。
+
+        ## ⚠⚠ 做法：**按新规则重新算键**，同键的只留一条
+
+        第一版我按"不含 ``_nth`` 的身份"分组、留 ``_first_seen`` 最早的 ——
+        **删过头了**（790 条被删回 629）：因为"真孪生"（``_nth=1``）
+        和"第一条"（``_nth=0``）的**身份是相同的**（只差 ``_nth``），
+        分组时被塞进同一组，然后当成重复删掉了。
+
+        → 正确做法：对每条**用新的 :func:`record_key` 重算键**，按新键归并。
+        这样::
+
+            老的（无 _nth）    → ``p|n|t|r``      ┐ 同键 → 只留一条
+            新的 _nth=0        → ``p|n|t|r``      ┘
+            新的 _nth=1        → ``p|n|t|r|1``    ← 不同键，**留下来**
+
+        同键时优先留**带 ``_nth`` 的那条**：它来自"记录完整"的那一批
+        （新拉的那次），而且字段更全。
+        """
+        rebuilt: dict[str, dict] = {}
+        removed = 0
+        for _old_key, rec in self.records.items():
+            new_key = record_key(rec)
+            if new_key not in rebuilt:
+                rebuilt[new_key] = rec
+                continue
+            removed += 1
+            #: 同键 → 留带 _nth 的那条（记录完整的那一批）
+            if "_nth" in rec and "_nth" not in rebuilt[new_key]:
+                rebuilt[new_key] = rec
+
+        if removed:
+            self.records = rebuilt
+        return removed
+
     def add_snapshot(self, snapshot: PullSnapshot) -> None:
         self.snapshots.insert(0, snapshot)      # 最新的在前
         del self.snapshots[MAX_SNAPSHOTS:]
 
     def all_records(self) -> list[dict]:
-        """按时间**倒序**（最新在前）—— 和接口给的方向一致，方便直接喂 Pull。"""
-        return sorted(self.records.values(),
-                      key=lambda r: str(r.get("time") or ""), reverse=True)
+        """按时间**倒序**（最新在前）—— 和接口给的方向一致，方便直接喂 Pull。
+
+        ## ⚠⚠ 同一秒内必须按 ``_seq`` 排（2026-10-05 第三次修这个统计）
+
+        接口把**一次十连的 10 条放在同一秒**，且**列表有序**。
+        抽数的段边界（"这个金花了几抽"）依赖**同秒内的先后**。
+
+        只按 ``time`` 排的话，同一秒的 10 条是**任意顺序** →
+        五星在十连里的位置错 → 每段差 2~3 抽
+        （实测：我 23/26/25 抽，用户截图 25/24/28）。
+
+        → ``_seq``（接口列表下标）做**第二关键字**：
+        同秒按接口原顺序排。
+
+        ⚠ ``time`` 相同才看 ``_seq``。跨秒的 ``_seq`` 没有比较意义
+        （每次拉取的列表长度不同），所以**必须先按时间分组**。
+        """
+        def _sort_key(r: dict):
+            when = str(r.get("time") or "")
+            #: 同一秒内用 _seq 兜底；没有 _seq 的老数据给个大数（排后面，
+            #: 但不能是 0 —— 0 是"接口里第一条"）
+            try:
+                seq = int(r.get("_seq") or 0)
+            except (TypeError, ValueError):
+                seq = 0
+            return (when, seq)
+
+        #: 时间倒序（最新在前）；同一秒内 _seq **也倒序**才符合接口方向
+        #: （接口最新在前，_seq=0 是最新的那条）
+        return sorted(self.records.values(), key=_sort_key, reverse=True)
 
     def __len__(self) -> int:
         return len(self.records)
@@ -257,7 +390,17 @@ class GachaHistoryStore:
             return GachaHistory()
         if not isinstance(raw, dict):
             return GachaHistory()
-        return GachaHistory.from_dict(raw)
+        history = GachaHistory.from_dict(raw)
+
+        #: ★ **自愈**：把"旧键 + 新键"并存造成的重复清掉（见
+        #: :meth:`GachaHistory.dedupe_legacy_keys` 的说明）。
+        #: ⚠ 只在真的删了东西时才回写 —— 免得每次读都写盘。
+        removed = history.dedupe_legacy_keys()
+        if removed:
+            logger.info("抽卡历史里有 %d 条重复（旧版去重键的遗留），已清理",
+                        removed)
+            self.save(history)
+        return history
 
     def save(self, history: GachaHistory) -> None:
         path = self.path
