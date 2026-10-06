@@ -67,6 +67,49 @@ LIBRARY_KEY = "WuwaLibraryInterface"
 UPDATE_BADGE_COLOR = "#E8A33D"
 
 
+def _in_test_mode() -> bool:
+    """当前是不是在跑测试 —— **自动检测**，不靠每个测试文件自觉。
+
+    ## ⚠⚠ 为什么要自动检测（2026-10-05 实测踩过）
+
+    自动检查更新会在窗口建好后 **3 秒**去起一个**真网络线程**。
+    测试里建一堆 ``MainWindow`` 的话：
+
+      * 每个窗口都挂一个后台线程 + 真去连 GitHub
+      * 整仓测试从 **~20 分钟变成 ~51 分钟**（实测）
+      * 而且线程跟 GC 抢弱引用字典，偶发
+        ``RuntimeError: dictionary changed size during iteration``
+
+    一开始我加了个 ``MYTOOLS_NO_AUTO_UPDATE`` 环境变量，
+    **但得每个测试文件自己记着设** —— 结果 7 个建窗口的测试文件里
+    只有 1 个设了（其余 6 个继续拖慢）。
+
+    → 改成**自动认**：``sys.argv[0]`` 是测试脚本、或者进程里跑着
+    unittest/pytest，就不自动检查。这样**谁都不用记着**，也不会漏。
+    """
+    import os
+    import sys
+
+    #: ① 显式关掉（测试想验自动检查时把它 pop 掉再调）
+    if os.environ.get("MYTOOLS_NO_AUTO_UPDATE"):
+        return True
+
+    #: ② 命令行入口是个测试脚本（`python tests/test_xxx.py`）
+    argv0 = str(sys.argv[0] if sys.argv else "").replace("\\", "/").lower()
+    if "/tests/" in argv0 or "pytest" in argv0 or "unittest" in argv0:
+        return True
+
+    #: ③ 进程里跑着 unittest / pytest（`python -m unittest discover`）
+    if "pytest" in sys.modules or "unittest" in sys.argv[0:1]:
+        return True
+    main_mod = sys.modules.get("__main__")
+    if getattr(main_mod, "__file__", None):
+        main_file = str(main_mod.__file__).replace("\\", "/").lower()
+        if "/tests/" in main_file:
+            return True
+    return False
+
+
 class ToolInterfaceHost(QWidget):
     """工具界面的延迟宿主：第一次真正显示时才创建面板。
 
@@ -292,11 +335,7 @@ class MainWindow(FluentWindow):
         """
         if getattr(self, "_skip_auto_update", False):
             return
-        #: ⚠ 也认环境变量 —— 测试文件不用每个都去改窗口属性
-        #: （``tests/test_updater.py`` 和整仓测试都靠它）
-        import os
-
-        if os.environ.get("MYTOOLS_NO_AUTO_UPDATE"):
+        if _in_test_mode():
             return
 
         from PySide6.QtCore import QTimer

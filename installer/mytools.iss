@@ -1,4 +1,4 @@
-﻿; WutheringWavesTools（鸣潮工具箱）—— Inno Setup 脚本
+; WutheringWavesTools（鸣潮工具箱）—— Inno Setup 脚本
 ;   由 package.ps1 调用：
 ;   ISCC.exe /Qp /DMyVersion=0.1.0 /DMyStage=<PyInstaller 输出目录> /DMyOutDir=<输出目录> installer\mytools.iss
 ;
@@ -36,6 +36,24 @@ UninstallDisplayIcon={app}\WutheringWavesTools.exe
 ArchitecturesInstallIn64BitMode=x64compatible
 ; 打包产物有上千个文件（Qt / onnxruntime / OCR 模型），关了"显示文件"页省得刷屏
 DisableFinishedPage=no
+
+; ── 自动更新相关（2026-10-05）─────────────────────────────────────────
+;
+; CloseApplications：检测到旧版还在跑时，**问用户**要不要自动关掉它、
+;   装完再重启。
+;
+;   ⚠ 它的**默认值就是 yes** —— 这里显式写出来是为了"别改它"这件事
+;     有据可查（我一度以为没写就会报"文件正在使用"，查了官方文档才发现
+;     默认就开着：https://jrsoftware.org/is6help/topic_setup_closeapplications.htm）。
+;
+;   ⚠ 用 **yes 不要 force**：force 会**强杀**进程，
+;     而本程序退出时要收尾（停引擎任务、清理托盘），强杀会让
+;     ok-ww 引擎留在半死不活的状态。
+;
+; RestartApplications：装完把刚才关掉的程序**自动拉起来**。
+;   配合下面 [Run] 的 postinstall 一起用 —— 用户装完就能看到新版界面。
+CloseApplications=yes
+RestartApplications=yes
 
 [Languages]
 ; Inno 自带语言里没有简体中文，装了中文语言文件就自动用，否则退回英文界面

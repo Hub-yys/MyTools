@@ -302,10 +302,23 @@ class UpdateCard(QWidget):
         self.status.setText(msg)
 
     def install(self) -> None:
-        """启动安装包并退出本程序。
+        """启动安装包，然后**干净地退出**本程序。
 
-        ⚠ Windows 上正在运行的 exe 是**锁着**的 —— 不退出的话
-        Inno 覆盖不了文件。所以启动完安装器就 ``quit()``。
+        ## ⚠⚠ 为什么不能只调 ``app.quit()``（这是我修过的一个 bug）
+
+        ``app.quit()`` 只是**退出事件循环** —— 它**不触发**
+        ``MainWindow.closeEvent``。而那个函数负责三件要命的事：
+
+        * **停掉在跑的任务**（否则引擎进程留在半死不活的状态）
+        * **清理系统托盘图标**（否则托盘里残留一个死图标）
+        * 真正关掉窗口
+
+        这在本场景里尤其要命：安装包要**覆盖安装目录里的文件**，
+        引擎/主程序还占着的话，Inno 的 Restart Manager 会检测到
+        "文件正在使用" → 多弹一个"要不要关掉它"的框。
+
+        → 改成走 ``quit_app()``：它置 ``_force_quit`` 再 ``close()``，
+        ``closeEvent`` 看到这个标志就**跳过确认框**、直接做上面三件事。
         """
         if not self._installer:
             return
@@ -319,8 +332,21 @@ class UpdateCard(QWidget):
         from PySide6.QtWidgets import QApplication
 
         app = QApplication.instance()
-        if app is not None:
-            app.quit()
+        if app is None:
+            return
+
+        #: ★ 优先走主窗口的"干净退出"（会收尾托盘 + 停任务）
+        window = None
+        for w in app.topLevelWidgets():
+            if hasattr(w, "quit_app"):
+                window = w
+                break
+        if window is not None:
+            window.quit_app()                  #: 它内部会 close + quit
+            return
+
+        #: 兜底（理论上到不了这儿）：没有主窗口就退回 quit
+        app.quit()
 
 
 def build_update_card(parent=None) -> UpdateCard:

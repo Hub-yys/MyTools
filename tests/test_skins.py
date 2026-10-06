@@ -772,11 +772,40 @@ class TestSkinReallyChangesPixels(unittest.TestCase):
                 for y in range(0, img.height(), 6)
                 for x in range(0, img.width(), 6)]
 
+    @staticmethod
+    def _representative():
+        """挑**有代表性**的几款皮肤 —— 每款 ``apply_skin`` 要 **3 秒**。
+
+        ## ⚠⚠ 为什么要挑（2026-10-05 实测）
+
+        ``apply_skin`` → ``setTheme`` → qfluentwidgets **重算全局 QSS**，
+        实测 **3 秒/次**（库的固有开销，不是我们的代码）。
+
+        全 6 款都跑的话这两条测试就要 **50 秒+**，
+        而整个 ``test_skins.py`` 因此变成 **7 分钟**（整仓测试的最大瓶颈）。
+
+        挑法：**每个模式取第一款**，另外必测默认皮肤 ——
+        浅色/暗色各有一款就足以覆盖"换肤到底有没有生效"这件事
+        （这正是用户报的 bug：浅色全都没效果）。
+        """
+        from src.core import skins
+
+        picked: list[dict] = []
+        seen_modes: set[str] = set()
+        for s in skins.all_skins():
+            if s["id"] == skins.DEFAULT_SKIN or s["mode"] not in seen_modes:
+                picked.append(s)
+                seen_modes.add(s["mode"])
+        return picked
+
     def test_every_skin_looks_different(self):
-        """★★★ 每款皮肤渲染出来的画面**都不一样**。
+        """★★★ **不同模式**的皮肤渲染出来必须不一样。
 
         这一条直接对应用户的话："其他的根本没有效果" ——
         没效果 = 几款皮肤渲染出同一个画面。
+
+        ⚠ 只测代表性那几款（见 :meth:`_representative`）——
+        全跑一遍要 50 秒，是整仓测试最大的瓶颈。
         """
         from src.core import skins
 
@@ -785,7 +814,7 @@ class TestSkinReallyChangesPixels(unittest.TestCase):
         self.app.processEvents()
 
         seen: dict[tuple, str] = {}
-        for s in skins.all_skins():
+        for s in self._representative():
             with self.subTest(skin=s["name"]):
                 skins.apply_skin(s["id"], save=False)
                 sig = tuple(self._sample(win))
@@ -794,13 +823,14 @@ class TestSkinReallyChangesPixels(unittest.TestCase):
                     f"「{s['name']}」和「{seen.get(sig)}」渲染出"
                     f"一模一样的画面 —— 换了个寂寞")
                 seen[sig] = s["name"]
-        win.close()
 
     def test_skin_changes_most_of_the_screen(self):
         """★★★ 换皮肤要改变**大部分**像素（不是只动几个）。
 
         ⚠ 第一版浅色皮肤实测只变 **0.0%** —— 这条就是抓它的。
         阈值取 30%：换渐变能到 60%+，"只换主色"是 0%。
+
+        ⚠ 同样只测代表性那几款（全跑要 50 秒）。
         """
         from src.core import skins
 
@@ -811,7 +841,7 @@ class TestSkinReallyChangesPixels(unittest.TestCase):
         skins.apply_skin(skins.DEFAULT_SKIN, save=False)
         base = self._sample(win)
 
-        for s in skins.all_skins():
+        for s in self._representative():
             if s["id"] == skins.DEFAULT_SKIN:
                 continue
             with self.subTest(skin=s["name"]):
@@ -823,7 +853,53 @@ class TestSkinReallyChangesPixels(unittest.TestCase):
                     pct, 30,
                     f"「{s['name']}」只改了 {pct:.1f}% 的画面 —— "
                     f"用户会说「根本没有效果」（第一版是 0.0%）")
-        win.close()
+
+    def test_qss_differs_for_all_skins(self):
+        """★★★ 补一条**纯字符串**的：每款皮肤的 QSS 都不同，且**页面容器**
+        用的是它自己的**渐变**。
+
+        ## ⚠⚠ 为什么必须有这条（护栏验证时发现的）
+
+        上面两条为了省时间只渲染**代表性那几款**（每款 3 秒）。
+        结果我把 ``build_qss`` 里 ``QStackedWidget`` 的渐变改成
+        "只用卡片色"（就是用户最初报的那个 bug：浅色皮肤完全没效果）时，
+        **那两条测试居然还过** —— 因为被选中的那两款恰好还是不同的。
+
+        → 那两条只够验"渲染通路是通的"，验不了"每款都真的换了"。
+        这条**不渲染**、纯比字符串，能把**全部**皮肤都覆盖到。
+
+        ## ⚠⚠ 断言必须**指名道姓**查 `QStackedWidget`
+
+        第一版我写的是"QSS 里含 ``qlineargradient``" ——
+        **抓不住那个突变**：``build_qss`` 里 ``NavigationPanel`` 那行
+        **也有渐变**，把 ``QStackedWidget`` 那行改掉之后，
+        整体照样"含渐变"（实测 3 处）。
+
+        → 得把 **`QStackedWidget { ... }` 那一段单独抠出来**检查。
+        """
+        import re
+
+        from src.core import skins
+
+        seen: dict[str, str] = {}
+        for s in skins.all_skins():
+            qss = skins.build_qss(s)
+            with self.subTest(skin=s["name"]):
+                #: ① **页面容器**那一段必须用这个皮肤的渐变
+                m = re.search(r"QStackedWidget\s*\{([^}]*)\}", qss)
+                self.assertIsNotNone(m, "QSS 里没有 QStackedWidget 规则")
+                block = m.group(1)
+                self.assertIn(
+                    "qlineargradient", block,
+                    f"「{s['name']}」的页面容器没用渐变（{block.strip()[:60]}）"
+                    f" —— 那就是用户报的「根本没有效果」")
+                for _pos, color in s["bg"]:
+                    self.assertIn(color, block,
+                                  f"「{s['name']}」的页面容器少了渐变色 {color}")
+                #: ② 跟别的皮肤不许重样
+                self.assertNotIn(qss, seen,
+                                 f"「{s['name']}」和「{seen.get(qss)}」的 QSS 一样")
+                seen[qss] = s["name"]
 
 
 class TestSkinPersistence(unittest.TestCase):

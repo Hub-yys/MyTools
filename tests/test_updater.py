@@ -638,6 +638,39 @@ class TestMainWindowAutoCheck(unittest.TestCase):
         ui_state.UiState = self._orig
         self._tmp.cleanup()
 
+    def test_in_test_mode_detection(self):
+        """★★★ 测试模式要**自动认出来**（不靠每个测试文件自觉）。
+
+        ## ⚠⚠ 为什么（2026-10-05 实测）
+
+        自动检查更新会在窗口建好后 **3 秒**起一个**真网络线程**。
+        我一开始加了个 ``MYTOOLS_NO_AUTO_UPDATE`` 环境变量，
+        **但得每个测试文件自己记着设** —— 结果 7 个建 ``MainWindow``
+        的测试文件里只有 1 个设了，其余 6 个照样起线程。
+
+        → 改成自动认。这里验三种情况。
+        """
+        import os
+        import sys
+
+        from src.gui import main_window as MW
+
+        #: ① 显式环境变量
+        orig = os.environ.get("MYTOOLS_NO_AUTO_UPDATE")
+        try:
+            os.environ["MYTOOLS_NO_AUTO_UPDATE"] = "1"
+            self.assertTrue(MW._in_test_mode(), "环境变量没认出来")
+        finally:
+            if orig is None:
+                os.environ.pop("MYTOOLS_NO_AUTO_UPDATE", None)
+            else:
+                os.environ["MYTOOLS_NO_AUTO_UPDATE"] = orig
+
+        #: ② 本测试文件本身就在 tests/ 下 —— 应该被认出来
+        #:    （`python tests/test_updater.py` 时 argv[0] 就是它）
+        self.assertTrue(MW._in_test_mode(),
+                        "在 tests/ 下跑却没认出测试模式")
+
     def test_main_window_has_auto_check_hooks(self):
         from src.gui.main_window import MainWindow
 
@@ -654,13 +687,14 @@ class TestMainWindowAutoCheck(unittest.TestCase):
         已经被用户去掉了（"这个不用显示出来"），
         所以现在改测"**没有任何设置能阻止它查**"。
 
-        ⚠ 本文件头上把自动检查整个关了（见那里的说明），
-        所以这里得**临时打开**才测得到。
+        ⚠⚠ 测试环境下 ``_maybe_auto_check_update()`` 会被
+        ``_in_test_mode()`` **自动拦掉**（那是故意的 —— 见那里的说明）。
+        要验"它真的会去查"，得**临时把测试模式那几个判据也骗过去**。
         """
         import os
 
         from src.core import ui_state
-        from src.gui.main_window import MainWindow
+        from src.gui import main_window as MW
 
         #: 塞个旧值（以前关过）—— 现在也该**照样查**
         ui_state.UiState().set("update_auto_check", False)
@@ -676,13 +710,16 @@ class TestMainWindowAutoCheck(unittest.TestCase):
         #: 还成普通函数的话，别的测试再调它就带上 self，报奇怪的错
         orig = QtCore.QTimer.__dict__["singleShot"]
         orig_env = os.environ.pop("MYTOOLS_NO_AUTO_UPDATE", None)
+        orig_detect = MW._in_test_mode
         try:
-            w = MainWindow()
-            w._skip_auto_update = False      #: 清掉窗口上的保险
+            MW._in_test_mode = lambda: False      #: 骗过"测试模式"判定
+            w = MW.MainWindow()
+            w._skip_auto_update = False
             QtCore.QTimer.singleShot = staticmethod(_fake_single_shot)
             w._maybe_auto_check_update()
         finally:
             QtCore.QTimer.singleShot = orig
+            MW._in_test_mode = orig_detect
             if orig_env is not None:
                 os.environ["MYTOOLS_NO_AUTO_UPDATE"] = orig_env
 
@@ -873,6 +910,153 @@ class TestThemeColorGcRace(unittest.TestCase):
             qfluentwidgets.setThemeColor = real
             if orig is not None:
                 skins.setThemeColor = orig
+
+
+class TestInstallQuitPath(unittest.TestCase):
+    """★★★ 装更新前要**干净地退出**（不能裸 ``app.quit()``）。
+
+    ## ⚠⚠ 这是我修过的一个真 bug
+
+    ``install()`` 原来在启动安装包之后只调 ``app.quit()`` ——
+    那只是**退出事件循环**，**不触发** ``MainWindow.closeEvent``。
+    而那个函数负责三件要命的事：
+
+      * **停掉在跑的任务**（否则 ok-ww 引擎留在半死不活的状态）
+      * **清理系统托盘图标**（否则托盘残留一个死图标）
+      * 真正关掉窗口
+
+    在本场景里尤其要命：安装包要**覆盖安装目录的文件**，
+    引擎还占着的话，Inno 的 Restart Manager 会检测到"文件正在使用"，
+    多弹一个"要不要关掉它"的框。
+
+    → 必须走 ``quit_app()``（它置 ``_force_quit`` 再 ``close()``，
+    ``closeEvent`` 看到标志就跳过确认框、直接收尾）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_install_quits_through_quit_app(self):
+        """★★★ ``install()`` 要调 ``quit_app()``，**不是**裸 ``app.quit()``。"""
+        from PySide6.QtWidgets import QApplication
+
+        import src.core.updater as U
+        from src.gui.update_card import build_update_page
+
+        page = build_update_page()
+        card = page.card
+        card._installer = "fake-installer.exe"
+
+        class _FakeWindow:
+            def __init__(self):
+                self.quit_called = False
+
+            def quit_app(self):
+                self.quit_called = True
+
+        fake = _FakeWindow()
+        orig_launch = U.launch_installer
+        orig_tops = QApplication.topLevelWidgets
+        U.launch_installer = lambda _p: None
+        QApplication.topLevelWidgets = staticmethod(lambda: [fake])
+        try:
+            card.install()
+        finally:
+            U.launch_installer = orig_launch
+            QApplication.topLevelWidgets = orig_tops
+
+        self.assertTrue(fake.quit_called,
+                        "install() 没走 quit_app() —— 托盘和任务都不收尾，"
+                        "装包时可能撞上「文件正在使用」")
+
+    def test_install_survives_missing_launcher(self):
+        """★ 启动安装包失败 → 显示错误，**别退出**（用户还能重试）。"""
+        import src.core.updater as U
+        from src.gui.update_card import build_update_page
+
+        page = build_update_page()
+        card = page.card
+        card._installer = "nope.exe"
+
+        def _boom(_p):
+            raise RuntimeError("找不到文件")
+
+        orig = U.launch_installer
+        U.launch_installer = _boom
+        try:
+            card.install()                     #: 不该抛出来
+        finally:
+            U.launch_installer = orig
+        self.assertIn("失败", card.status.text())
+
+    def test_install_without_path_is_noop(self):
+        """★ 没下载好就不该动（别拿空路径去 startfile）。"""
+        import src.core.updater as U
+        from src.gui.update_card import build_update_page
+
+        page = build_update_page()
+        card = page.card
+        card._installer = ""
+
+        hits: list[str] = []
+        orig = U.launch_installer
+        U.launch_installer = lambda p: hits.append(str(p))
+        try:
+            card.install()
+        finally:
+            U.launch_installer = orig
+        self.assertEqual(hits, [], "没有安装包却去启动了")
+
+
+class TestInstallerAutoUpdateFlags(unittest.TestCase):
+    """★★ 安装包脚本（``installer/mytools.iss``）的自动更新相关配置。
+
+    ## ⚠⚠ 我一度**说错过**这件事
+
+    我 grep 了 ``.iss`` 没找到 ``CloseApplications``，就断言
+    "没写这个指令 → 装包时会报文件正在使用"。
+
+    **查了官方文档才发现它默认就是 ``yes``**：https://jrsoftware.org/is6help/topic_setup_closeapplications.htm
+
+    → 现在**显式**写出来，并在注释里说明"别改成 force"。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.path = Path(ROOT) / "installer" / "mytools.iss"
+
+    def test_iss_exists(self):
+        self.assertTrue(self.path.exists(), "找不到 installer/mytools.iss")
+
+    def test_close_applications_is_yes_not_force(self):
+        """★★★ 必须是 ``yes``，**不能是 ``force``**。
+
+        ⚠ ``force`` 会**强杀**进程 —— 而本程序退出时要收尾
+        （停 ok-ww 引擎任务、清理托盘），强杀会把它留在半死不活的状态。
+        """
+        text = self.path.read_text(encoding="utf-8-sig")
+        self.assertIn("CloseApplications=yes", text,
+                      "没显式写 CloseApplications=yes（默认虽是 yes，"
+                      "但显式写下来才不会被人顺手改掉）")
+        self.assertNotIn("CloseApplications=force", text,
+                         "用了 force —— 会强杀进程，引擎收不了尾")
+
+    def test_restart_applications_enabled(self):
+        """★ 装完要自动把程序拉起来（配合 postinstall）。"""
+        text = self.path.read_text(encoding="utf-8-sig")
+        self.assertIn("RestartApplications=yes", text,
+                      "装完没自动重启 —— 用户会以为程序没了")
+
+    def test_run_section_has_postinstall(self):
+        """★ ``[Run]`` 里要有装完启动的项（不然重启不会发生）。"""
+        text = self.path.read_text(encoding="utf-8-sig")
+        run_idx = text.find("[Run]")
+        self.assertGreater(run_idx, 0, "没有 [Run] 段")
+        self.assertIn("postinstall", text[run_idx:],
+                      "[Run] 里没有 postinstall —— 装完不会自动启动")
 
 
 class TestPublishScript(unittest.TestCase):
