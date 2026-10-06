@@ -720,6 +720,136 @@ class TestSkinApply(unittest.TestCase):
         self.assertIn("qlineargradient", self.app.styleSheet())
 
 
+class TestWindowGetsQss(unittest.TestCase):
+    """★★★ **顶层窗口必须拿到 QSS** —— 这是"白缝"的根因。
+
+    ## ⚠⚠ 用户报过**两次**同一个症状
+
+        "另外这个白色的缝隙是什么"          （2026-10-05）
+        "这个白缝怎么又出现了"              （2026-10-06）
+
+    第一次是 ``NavResizer`` 不透明；第二次是**我为了提速把
+    ``w.setStyleSheet(qss)`` 删了**，理由写的是"app 级的会继承下来" ——
+    那个理由是**错的**。
+
+    项目里原本就写着::
+
+        ⚠ 还要**逐个顶层窗口再设一遍** —— 主窗口有自己的调色板，
+        只设 app 级会被它**盖掉**（实测 app 级 74.4%，window 级 99.1%）
+
+    ## 还有第二个坑：缓存漏掉"后来才建的窗口"
+
+    ``MainWindow.__init__`` 里就调了 ``apply_current_skin()`` ——
+    **那时新窗口还没 show()**，不在可见窗口列表里。于是::
+
+        apply #1（建窗口过程中）→ target 空 → 只刷了 app 级，记下缓存
+        apply #2（窗口 show 后）→ QSS 相同 → **直接 return**
+                                 → 新窗口永远没被刷过 → 白缝
+
+    → 缓存要**连窗口一起比**（``_PAINTED_WINDOWS``）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _app()
+
+    def test_main_window_gets_qss(self):
+        """★★★ 主窗口自己的 ``styleSheet()`` 要有**渐变**。
+
+        ⚠ 只断言"app 级有 QSS"是**抓不住**的 —— app 级一直是好的，
+        坏的是窗口级。
+        """
+        from src.core import skins
+        from src.gui.main_window import MainWindow
+
+        skins.apply_skin("deepglass", save=False)
+        w = MainWindow()
+        w.resize(1000, 700)
+        w.show()
+        for _ in range(4):
+            self.app.processEvents()
+        #: ★ 再刷一次 —— 模拟"窗口显示后"那次（这才是用户看到的状态）
+        skins.apply_current_skin()
+        for _ in range(3):
+            self.app.processEvents()
+
+        css = w.styleSheet()
+        self.assertIn("qlineargradient", css,
+                      f"主窗口没有渐变 QSS（长度 {len(css)}）—— "
+                      f"app 级会被窗口自己的调色板盖掉，就会出现白缝")
+
+    def test_new_window_after_cache_is_painted(self):
+        """★★★ 缓存**不能漏掉后来才建的窗口**。
+
+        ## 为什么单独测这个
+
+        ``_PAINTED_QSS`` 缓存本意是"同一个皮肤别刷两次"（省那 1.4 秒）。
+        但它**只看 QSS 字符串**，于是::
+
+            建窗口 A → 刷过、记缓存（此时 A 还没 show）
+            建窗口 B → QSS 没变 → **直接 return** → B 从来没被刷过
+
+        → 缓存要连"刷过哪些窗口"一起比。
+        """
+        from PySide6.QtWidgets import QWidget
+
+        from src.core import skins
+
+        skins.apply_skin("deepglass", save=False)
+        #: 先把缓存灌满（用一个先建好的窗口）
+        first = QWidget()
+        first.resize(300, 200)
+        first.show()
+        self.app.processEvents()
+        skins.apply_current_skin()
+        self.app.processEvents()
+
+        #: 再建一个**新的**窗口，然后只 apply 一次
+        second = QWidget()
+        second.resize(300, 200)
+        second.show()
+        self.app.processEvents()
+        skins.apply_current_skin()
+        self.app.processEvents()
+
+        self.assertIn("qlineargradient", second.styleSheet(),
+                      "后建的窗口没被刷到 —— 缓存把它跳过了（会露白）")
+
+    def test_repeat_apply_same_skin_is_skipped(self):
+        """★★ 但**同一个皮肤 + 同一批窗口**重复 apply 仍然要跳过。
+
+        ⚠ 这是当初加缓存的理由（``setTheme`` 一次 1.4 秒）。
+        别为了修白缝把提速整个丢掉。
+        """
+        from PySide6.QtWidgets import QWidget
+
+        from src.core import skins
+
+        skins.apply_skin("deepglass", save=False)
+        w = QWidget()
+        w.resize(300, 200)
+        w.show()
+        self.app.processEvents()
+        skins.apply_current_skin()
+        self.app.processEvents()
+
+        calls: list[str] = []
+        orig = skins._paint_palette
+
+        def _spy(app, skin):
+            calls.append(skin["id"])
+            return orig(app, skin)
+
+        skins._paint_palette = _spy
+        try:
+            skins.apply_current_skin()          #: 同皮肤 + 同窗口 → 该跳过
+        finally:
+            skins._paint_palette = orig
+
+        self.assertEqual(calls, [],
+                         "重复 apply 没有跳过 —— 又回到每次都卡 1.4 秒")
+
+
 class TestSkinReallyChangesPixels(unittest.TestCase):
     """★★★ **真的换肤了** —— 渲染后逐点采样比对。
 

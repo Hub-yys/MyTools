@@ -370,7 +370,22 @@ def _paint(skin: dict) -> None:
     一个 ``MainWindow`` 就有 **2570 个 widget**（工具页 + 卡片 + 列表）。
     测试里建几十个窗口不关 → 累积上万 widget → 越跑越慢。
 
-    ## 两道优化
+    ## ⚠⚠⚠ window 级 QSS **不能省**（我为了提速删过一次，白缝就回来了）
+
+    2026-10-05 我为提速把 ``w.setStyleSheet(qss)`` 删了，理由写的是
+    "app 级的会继承下来" —— **那个理由是错的**。
+
+    项目里原本就写着（我删的时候没看）::
+
+        ⚠ 还要**逐个顶层窗口再设一遍** —— 主窗口有自己的调色板，
+        只设 app 级会被它**盖掉**（实测 app 级 74.4%，window 级 99.1%）
+
+    删掉之后的实测后果：``MainWindow.styleSheet()`` **长度 37**
+    （只剩我自己设的 navResizer 那条）、**没有渐变** →
+    主窗口用回自己的调色板 → **顶部和侧栏出现白缝**
+    （用户 2026-10-06 截图又圈出来了："这个白缝怎么又出现了"）。
+
+    ## ✓ 正确做法：window 级保留，用别的方式省时间
 
     **① app 级 QSS 只在"皮肤真的变了"时设**
 
@@ -379,9 +394,8 @@ def _paint(skin: dict) -> None:
     只设 window 级的话，新弹的**对话框**拿不到配色
     （实测裸 ``QDialog`` 里的 label ``styleSheet()`` 是空的）。
 
-    → 折中：**app 级保留**（保证对话框也对），但
-    ① 同一个皮肤重复 apply 时**直接跳过**（用户连点两次不该卡两次）；
-    ② 只对 ``isVisible()`` 的窗口做那几个"必须单独设"的活。
+    → **两个都设**（先 app 后 window，window 的优先级更高、正好覆盖），
+    但同一个皮肤重复 apply 时**整体跳过** —— 用户连点两次不该卡两次。
 
     **② 自带 styleSheet 的控件仍然单独设** —— 那是**必须**的：
     ``NavigationPanel``（584 字符）/ ``FluentTitleBar``（1990 字符）
@@ -393,31 +407,55 @@ def _paint(skin: dict) -> None:
     if app is None:
         return
 
-    global _PAINTED_QSS
+    global _PAINTED_QSS, _PAINTED_WINDOWS
     qss = build_qss(skin)
 
-    #: ★ 同一个皮肤重复 apply → 不必再刷（app 级那 1.4 秒省掉）
-    if qss == _PAINTED_QSS:
+    #: ⚠ 只处理**看得见**的窗口（测试里建了没显示的不用管）
+    targets: list = []
+    for w in app.topLevelWidgets():
+        try:
+            if w.isVisible():
+                targets.append(w)
+        except (RuntimeError, AttributeError):
+            continue
+
+    #: ★★ 缓存判断要**连窗口一起看**（2026-10-06 修）
+    #:
+    #: ## ⚠⚠ 只比 QSS 是不够的 —— 会漏掉"后来才建的窗口"
+    #:
+    #: 实测的坑：``MainWindow.__init__`` 里就调了 ``apply_current_skin()``，
+    #: **那时新窗口还没 show()**、不在 ``targets`` 里。于是::
+    #:
+    #:     apply #1（建窗口过程中）→ 刷了 app 级，targets 是**空的**
+    #:                              → 记下 _PAINTED_QSS
+    #:     apply #2（窗口显示后）  → qss 相同 → **直接 return**
+    #:                              → 新窗口从来没被刷过 → 白缝
+    #:
+    #: 所以缓存要记"**刷过哪些窗口**"，有新窗口就补刷。
+    if qss == _PAINTED_QSS and set(map(id, targets)) <= _PAINTED_WINDOWS:
         return
 
     app.setStyleSheet(qss)
     _paint_palette(app, skin)
 
-    for w in app.topLevelWidgets():
-        #: ⚠ 只处理**看得见**的窗口（测试里建了没显示的不用管）
+    for w in targets:
+        #: ★★★ **必须**再给窗口设一遍 —— 主窗口有自己的调色板，
+        #: 只设 app 级会被它**盖掉**（实测 app 级 74.4%，window 级 99.1%）。
+        #:
+        #: ⚠⚠ 我为了提速删过这一行，结果**顶部和侧栏的白缝就回来了**
+        #: （用户 2026-10-06："这个白缝怎么又出现了"）。
+        #: 见函数文档里的"window 级 QSS 不能省"。
         try:
-            if not w.isVisible():
-                continue
-        except (RuntimeError, AttributeError):
+            w.setStyleSheet(qss)
+        except (RuntimeError, AttributeError):   #: 已销毁的窗口
             continue
-        #: ⚠ **不**再 ``w.setStyleSheet(qss)`` —— app 级的会继承下来，
-        #: 逐个再设一遍纯属重复（而且随窗口数线性变慢）
         _paint_nav_panel(w, skin)       #: 自带 styleSheet，必须单独设
         _paint_title_bar(w, skin)       #: 同上
         _paint_pages(w)                 #: 页面那几层要显式透明
 
-    #: ★ 记下"已经刷过这份 QSS"—— 下次同一个皮肤直接跳过（见函数文档）
+    #: ★ 记下"已经刷过这份 QSS + 这些窗口"—— 下次同一个皮肤 + 同样窗口才跳过
     _PAINTED_QSS = qss
+    _PAINTED_WINDOWS = set(map(id, targets))
 
 
 #: ★ 上一次**真正刷上去**的 QSS（用来跳过重复刷）
@@ -425,6 +463,21 @@ def _paint(skin: dict) -> None:
 #: 用户连点两次同一款皮肤、或者测试里反复 apply 默认皮肤时，
 #: 那 1.4 秒的 ``app.setStyleSheet`` 完全可以省掉。
 _PAINTED_QSS: str = ""
+
+#: ★ 上一次刷过的**窗口 id 集合**（``_PAINTED_QSS`` 的配套）。
+#:
+#: ## ⚠⚠ 为什么光有 QSS 缓存不够（2026-10-06 的"白缝又回来了"）
+#:
+#: ``MainWindow.__init__`` 里就调了 ``apply_current_skin()`` ——
+#: **那时新窗口还没 show()**，不在可见窗口列表里。于是::
+#:
+#:     apply #1（建窗口过程中）→ target 是**空的**，只刷了 app 级
+#:                              → 记下 _PAINTED_QSS
+#:     apply #2（窗口 show 之后）→ QSS 相同 → **直接 return**
+#:                              → 新窗口永远没被刷过 → 顶部/侧栏白缝
+#:
+#: 所以缓存必须**连窗口一起比**：有新窗口就补刷。
+_PAINTED_WINDOWS: set[int] = set()
 
 
 def _paint_palette(app, skin: dict) -> None:
