@@ -368,6 +368,51 @@ class GachaHistory:
             added += 1
         return added
 
+    def repair(self) -> int:
+        """把历史遗留问题一次修干净，返回**改动条数**（0 = 不用动）。
+
+        ## 现在修两件事
+
+        1. **重复**：旧版去重键留下的"同一条存两份"
+           （见 :meth:`dedupe_legacy_keys`，实测 629 → 1419）；
+        2. **身份键过期**：记录改了 ``playerId`` / ``_nth`` 之后，
+           dict 的键还是旧的字符串，得按 :func:`record_key` 重算
+           （见 :meth:`rekey_all`）。
+
+        ⚠ 这个方法**会改内存**，落盘由调用方决定
+        （``GachaHistoryStore.load_and_repair``）—— 这样测试能单独验逻辑，
+        不会碰真实文件。
+        """
+        return self.dedupe_legacy_keys() + self.rekey_all()
+
+    def rekey_all(self) -> int:
+        """按当前字段**重算所有身份键**，返回需要挪位置的条数。
+
+        ## 为什么需要它
+
+        ``records`` 是 ``{身份键: 记录}``。但记录里的 ``playerId`` /
+        ``_nth`` 变了之后（认领老数据、或者修 ``_nth`` 规则），
+        **键还是旧的** —— 下次 ``merge`` 就会算出"新键不在库里"，
+        把同一条**再存一份**。
+
+        → 按 :func:`record_key` 重算一遍，键变了就把记录挪到新键下。
+
+        ⚠ 两条撞到同一个新键时**只留一条**（它们本来就是同一条，
+        只是键算出来重了）。
+        """
+        rebuilt: dict[str, dict] = {}
+        moved = 0
+        for old_key, rec in self.records.items():
+            new_key = record_key(rec)
+            if new_key != old_key:
+                moved += 1
+            if new_key in rebuilt:
+                continue                    #: 撞车 → 丢掉多余的
+            rebuilt[new_key] = rec
+        if moved:
+            self.records = rebuilt
+        return moved
+
     def dedupe_legacy_keys(self) -> int:
         """★ 清理"旧键 + 新键"并存造成的重复，返回删掉的条数。
 
@@ -457,19 +502,17 @@ class GachaHistory:
             return 0
 
         claimed = 0
-        for old_key, rec in list(self.records.items()):
+        for rec in self.records.values():
             if rec.get("playerId"):
                 continue
             rec["playerId"] = who
-            new_key = record_key(rec)
-            if new_key == old_key:
-                continue
-            #: ⚠ 换键时要**重新挂到 dict 上**（键变了，位置也得变）
-            self.records.pop(old_key, None)
-            if new_key in self.records:
-                continue                        #: 已有同一条 → 丢弃多余的
-            self.records[new_key] = rec
             claimed += 1
+        if claimed:
+            #: ⚠ 认领改了 ``playerId`` → **身份键必须重算**
+            #: （键的第一段就是账号）。不重算的话下次 merge 会算出
+            #: "新键不在库里"，把同一条**再存一份** —— 就是我修过的
+            #: "复制记录"那个 bug 的翻版。
+            self.rekey_all()
         return claimed
 
     def add_snapshot(self, snapshot: PullSnapshot) -> None:
@@ -580,6 +623,25 @@ class GachaHistoryStore:
         return self._path if self._path is not None else DEFAULT_STORE_PATH
 
     def load(self) -> GachaHistory:
+        """读历史 —— **纯读，绝不写盘**。
+
+        ## ⚠⚠ 这里修过一个"读的时候偷偷写盘"的坑（2026-10-06）
+
+        原来的 ``load()`` 里做了**自愈**：发现重复就 ``save()`` 一次。
+        功能上没错，但副作用很隐蔽 —— 后果实测到了::
+
+            我跑 tests/smoke_gui.py（它会真的建 GachaWidget）
+            → GachaWidget 打开时 _render_from_history() → load()
+            → 自愈触发 → **偷偷把用户的 data/gacha_history.json 改了**
+            （用户的 1131 条老数据被写上了 playerId）
+
+        用户看到的是"我没点过分析，数据怎么变了"。
+
+        → **读就是读**：迁移/自愈挪到**写路径**（:meth:`merge` 之后由
+        调用方 ``save``），那条路上用户本来就在改数据，不突兀。
+
+        要"读顺便修一下"的话显式调 :meth:`load_and_repair`。
+        """
         path = self.path
         if not path.exists():
             return GachaHistory()
@@ -590,15 +652,16 @@ class GachaHistoryStore:
             return GachaHistory()
         if not isinstance(raw, dict):
             return GachaHistory()
-        history = GachaHistory.from_dict(raw)
+        return GachaHistory.from_dict(raw)
 
-        #: ★ **自愈**：把"旧键 + 新键"并存造成的重复清掉（见
-        #: :meth:`GachaHistory.dedupe_legacy_keys` 的说明）。
-        #: ⚠ 只在真的删了东西时才回写 —— 免得每次读都写盘。
-        removed = history.dedupe_legacy_keys()
-        if removed:
-            logger.info("抽卡历史里有 %d 条重复（旧版去重键的遗留），已清理",
-                        removed)
+    def load_and_repair(self) -> GachaHistory:
+        """读 + **把历史遗留问题修掉并落盘**（会写）。
+
+        ⚠ 只在**明确要改数据**的地方调（比如用户点了「分析」）。
+        普通的读界面走 :meth:`load`，别用这个 —— 见那里的说明。
+        """
+        history = self.load()
+        if history.repair():
             self.save(history)
         return history
 

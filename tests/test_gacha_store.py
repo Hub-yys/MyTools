@@ -359,6 +359,88 @@ class TestSnapshots(unittest.TestCase):
         self.assertIn("新增 12", text)
 
 
+class TestLoadIsPureRead(unittest.TestCase):
+    """★★★ ``load()`` **绝不写盘** —— 只有明确的写路径才改数据。
+
+    ## ⚠⚠ 这是实测踩出来的（2026-10-06）
+
+    原来的 ``load()`` 里做了**自愈**：发现重复就 ``save()``。
+    功能上没错，但副作用很隐蔽 —— 实测后果::
+
+        跑 tests/smoke_gui.py（会真的建 GachaWidget）
+        → 打开页面 → _render_from_history() → load()
+        → 自愈触发 → **偷偷改了用户的 data/gacha_history.json**
+        （用户 1131 条老数据被写上了 playerId）
+
+    用户看到的是"我没点过分析，数据怎么变了"。
+
+    → 现在：``load`` 纯读；``load_and_repair`` 才写。
+    """
+
+    def _store_with_stale_key(self, tmp):
+        """建一个"键过期"的历史（模拟老版本的库）。"""
+        path = pathlib.Path(tmp) / "h.json"
+        hist = gacha_store.GachaHistory()
+        #: ⚠ 故意用**过期的键** —— 记录本身没问题，但键不是 record_key 算的
+        hist.records["STALE|1|心|t1|1"] = {
+            "name": "心", "time": "t1", "resourceId": 1,
+            "qualityLevel": 5, "pool_type": "1", "pool": "P",
+        }
+        store = gacha_store.GachaHistoryStore(path)
+        store.save(hist)
+        return store, path
+
+    def test_load_does_not_write(self):
+        """★★★ 读一次，文件**一个字节都不能变**。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            store, path = self._store_with_stale_key(tmp)
+            before = path.read_text(encoding="utf-8")
+            mtime = path.stat().st_mtime_ns
+
+            store.load()
+
+            self.assertEqual(path.read_text(encoding="utf-8"), before,
+                             "load() 把文件改了 —— 打开界面就会改用户数据")
+            self.assertEqual(path.stat().st_mtime_ns, mtime,
+                             "load() 写了盘（时间戳变了）")
+
+    def test_load_and_repair_does_write(self):
+        """★★ 明确要修的时候才会写（用户点「分析」走这条）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            store, path = self._store_with_stale_key(tmp)
+            before = path.read_text(encoding="utf-8")
+
+            history = store.load_and_repair()
+
+            self.assertNotEqual(path.read_text(encoding="utf-8"), before,
+                                "load_and_repair() 没把修复落盘")
+            #: 键应该被重算成带账号前缀的
+            self.assertIn("|1|心|t1|1", list(history.records)[0])
+
+    def test_repair_is_idempotent(self):
+        """★ 修两次结果一样（第二次没有可改的 → 0）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            store, _path = self._store_with_stale_key(tmp)
+            first = store.load_and_repair().repair()
+            second = store.load_and_repair().repair()
+            self.assertEqual(first, 0, "第一次已经修过了，不该再有改动")
+            self.assertEqual(second, 0)
+
+    def test_repair_returns_zero_on_healthy_data(self):
+        """★ 健康的库上 ``repair()`` 不该动任何东西。"""
+        history = gacha_store.GachaHistory()
+        history.merge([rec("心", 5, "t1", 1)], pool_type="1",
+                      pool_name="P", at="now", player_id="111")
+        self.assertEqual(history.repair(), 0)
+
+    def test_load_missing_file_still_returns_empty(self):
+        """★ 文件不存在 → 空历史，不报错（原行为不能破）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            store = gacha_store.GachaHistoryStore(
+                pathlib.Path(tmp) / "nope.json")
+            self.assertEqual(len(store.load()), 0)
+
+
 class TestStore(unittest.TestCase):
     """持久化：重启不丢。"""
 
@@ -483,6 +565,40 @@ class TestMultiAccount(unittest.TestCase):
         self.assertEqual(claimed, 1)
         self.assertEqual(self.history.player_count("111"), 1)
         self.assertNotIn(gacha_store._LEGACY_PLAYER, self.history.players())
+
+    def test_legacy_claim_rekeys_records(self):
+        """★★★ 认领之后**身份键必须重算**。
+
+        ## ⚠⚠ 这条是护栏验证时发现"没测到"才补的
+
+        我把 ``claim_legacy`` 里那行 ``self.rekey_all()`` 去掉后，
+        **测试照样全过** —— 说明原来根本没有测试覆盖这件事。
+
+        ## 为什么必须重算
+
+        ``records`` 是 ``{身份键: 记录}``，而键的**第一段就是账号**。
+        认领改了 ``playerId`` 却不动键的话，下次 ``merge`` 会算出
+        "新键不在库里" → 把同一条**再存一份** ——
+        正是我修过的"复制记录"那个 bug 的翻版::
+
+            认领前:  __legacy__|1|心|t1|1  →  {键: 记录}
+            认领后:  111|1|心|t1|1         →  键得跟着变
+
+        做法：直接**断言键里带上了新账号**，再用"再 merge 同一条
+        会不会新增"来验端到端。
+        """
+        self._merge([rec("心", 5, "t1", 1)], "")
+        self.history.claim_legacy("111")
+
+        keys = list(self.history.records)
+        self.assertEqual(keys, ["111|1|心|t1|1"],
+                         f"认领后键没重算（{keys}）")
+
+        #: 端到端：同一条再 merge 一次**不能**新增
+        added = self._merge([rec("心", 5, "t1", 1)], "111")
+        self.assertEqual(added, 0,
+                         "认领后键没重算 → 同一条被当成新的又存了一份")
+        self.assertEqual(len(self.history), 1)
 
     def test_legacy_claim_skipped_when_account_has_data(self):
         """★★★ 这个号**已经有自己的数据**时不认领。

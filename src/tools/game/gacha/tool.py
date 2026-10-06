@@ -179,7 +179,11 @@ class FetchThread(QThread):
         # 合并进历史（按身份去重），再落盘
         try:
             store = self._store or gacha_store.GachaHistoryStore()
-            history = store.load()
+            #: ⚠ 这里用 ``load_and_repair``（**会写**）而不是 ``load`` ——
+            #: 用户点「分析」本来就是在改数据，顺便把历史遗留问题修掉
+            #: 不突兀。**读界面**那条路（``_render_from_history``）
+            #: 必须用纯 ``load``，否则打开页面就会偷偷改用户的文件。
+            history = store.load_and_repair()
             before = len(history)
             #: ★ 这次拉的是**哪个账号** —— 多账号隔离靠它
             #: （用户 2026-10-06："我要是换个账户了呢"）
