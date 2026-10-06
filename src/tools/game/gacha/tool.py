@@ -104,6 +104,19 @@ CARD_SIZE = 64
 #: 卡片墙最多几列（再多一行就长得离谱了，没必要）
 MAX_CARD_COLUMNS = 12
 
+#: ★★ 卡池选项卡（用户 2026-10-06）
+#:
+#:     "这里切换选项卡，展示不同的卡池，选项卡并排展示如
+#:      角色活动唤取，武器活动唤取卡池"
+#:
+#: ⚠ 选中样式**沿用「查询角色练度」那套** —— 用户 2026-10-05 对角色格子
+#: 明确要求过"点到那个，哪个下方加一个黄色高亮的粗线"。
+#: 这里用**同一个黄**，保持整套界面的视觉语言一致。
+SELECT_BORDER = "#f5b301"      # 选中那条粗线的黄（跟练度页同一个色）
+SELECT_BAR_H = 4               # 粗线高度（px）
+TAB_ON_FG = "#1a1a1a"          # 选中的文字色（亮）
+TAB_OFF_FG = "#8A8F98"         # 未选中的文字色（灰）
+
 
 class GrabLinkThread(QThread):
     """后台从游戏日志里读抽卡链接。
@@ -244,6 +257,76 @@ class _BigStat(QWidget):
         self.value_label.setText(value)
         self.caption_label.setText(caption)
         self._apply_value_style(color)
+
+
+class _PoolTab(QWidget):
+    """一个卡池选项卡（**并排**的那一排，选中项下方一条黄粗线）。
+
+    ## 用户 2026-10-06（截图圈出「角色活动唤取」那行）
+
+        "这里切换选项卡，展示不同的卡池，选项卡并排展示如
+         角色活动唤取，武器活动唤取卡池"
+
+    原来是**每个池子一张卡片竖着堆**（4 个池就是 4 张大卡，要滚很久）。
+    现在改成**一排选项卡**：点哪个，下面只显示那个池的逐条抽数。
+
+    ## ⚠ 选中样式沿用「查询角色练度」那套（用户定过的）
+
+    用户 2026-10-05 对角色格子明确要求过：
+
+        "点到那个，哪个下方加一个黄色高亮的粗线"
+
+    → 这里保持**同一个视觉语言**：选中 = 文字变亮 + 下方一条黄粗线，
+    **不是**整块黄底（那是我第一版做错的）。
+    """
+
+    clicked = Signal(str)          #: 卡池编号
+
+    def __init__(self, pool_type: str, text: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName(f"poolTab_{pool_type}")
+        self._type = pool_type
+        self._selected = False
+        self._text = text
+
+        #: ⚠ 让样式表能作用在这个自定义控件上（QWidget 默认不画背景）
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        box = QVBoxLayout(self)
+        box.setContentsMargins(12, 6, 12, 6)
+        box.setSpacing(4)
+
+        self.label = BodyLabel(text, self)
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        box.addWidget(self.label)
+
+        #: ★ 下方那条粗线 —— 选中时**黄**，未选中时透明（占位保持高度一致）
+        self.bar = QWidget(self)
+        self.bar.setFixedHeight(SELECT_BAR_H)
+        box.addWidget(self.bar)
+
+        self._apply()
+
+    def set_selected(self, on: bool) -> None:
+        self._selected = bool(on)
+        self._apply()
+
+    def _apply(self) -> None:
+        #: ⚠ 颜色写死成常量（跟练度页同一套），不走主题色 ——
+        #: 用户要的"黄色"是他认得的那个黄（``#f5b301``）。
+        if self._selected:
+            self.label.setStyleSheet(
+                f"color: {TAB_ON_FG}; font-weight: 700;")
+            self.bar.setStyleSheet(f"background: {SELECT_BORDER};")
+        else:
+            self.label.setStyleSheet(f"color: {TAB_OFF_FG};")
+            self.bar.setStyleSheet("background: transparent;")
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt 回调
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._type)
+        super().mouseReleaseEvent(event)
 
 
 class _SpanBar(QWidget):
@@ -435,6 +518,27 @@ class GachaWidget(ScrollArea):
         # ---- 分卡池明细 ----
         self.pools_title = StrongBodyLabel("分卡池记录", view)
         self.root.addWidget(self.pools_title)
+
+        #: ★★ 卡池**选项卡**（并排；点哪个显示哪个）
+        #:
+        #: 用户 2026-10-06："这里切换选项卡，展示不同的卡池，
+        #: 选项卡并排展示如 角色活动唤取，武器活动唤取卡池"
+        #:
+        #: ⚠ 原来每个池一张大卡片**竖着堆**（4 个池要滚很久）。
+        #: 现在改成这一排 + 下面只渲染选中的那个池。
+        self.pool_tabs_host = QWidget(view)
+        self.pool_tabs_row = QHBoxLayout(self.pool_tabs_host)
+        self.pool_tabs_row.setContentsMargins(0, 0, 0, 0)
+        self.pool_tabs_row.setSpacing(8)
+        self.root.addWidget(self.pool_tabs_host)
+
+        #: 选项卡 → 控件（切池子时只改选中态，不重建）
+        self._pool_tabs: dict[str, _PoolTab] = {}
+        #: 当前选中的卡池编号（空 = 还没选）
+        self._selected_pool = ""
+        #: 这次渲染的全部卡池（切选项卡时从这里取）
+        self._pools: dict[str, object] = {}
+
         self.pools_host = QWidget(view)
         self.pools_box = QVBoxLayout(self.pools_host)
         self.pools_box.setContentsMargins(0, 0, 0, 0)
@@ -748,11 +852,58 @@ class GachaWidget(ScrollArea):
         )
         self._render_cards(report)
 
-        # ---- 分卡池 ----
-        for pool in report.active_pools():
-            self.pools_box.addWidget(self._pool_block(pool))
-        if not report.active_pools():
+        # ---- 分卡池（选项卡）----
+        self._build_pool_tabs(report)
+
+    def _build_pool_tabs(self, report) -> None:
+        """建那一排卡池选项卡，然后渲染**选中的那个**池。
+
+        ## 用户 2026-10-06
+
+            "这里切换选项卡，展示不同的卡池，选项卡并排展示如
+             角色活动唤取，武器活动唤取卡池"
+
+        ## ⚠ 只显示**抽过的**池
+
+        ``report.active_pools()`` 已经过滤掉了没记录的池（7 个池全列出来
+        会有 4 个是空的，那一排按钮就显得很废）。
+        """
+        self._clear_layout(self.pool_tabs_row)
+        self._pool_tabs = {}
+        self._pools = {}
+
+        pools = report.active_pools()
+        for pool in pools:
+            self._pools[str(pool.pool_type)] = pool
+
+        if not pools:
             self._show_empty_hint()
+            return
+
+        for pool in pools:
+            tab = _PoolTab(str(pool.pool_type), pool.name,
+                           self.pool_tabs_host)
+            tab.clicked.connect(self.select_pool)
+            self.pool_tabs_row.addWidget(tab)
+            self._pool_tabs[str(pool.pool_type)] = tab
+        self.pool_tabs_row.addStretch(1)
+
+        #: 保持用户之前选的池（重新分析后不要跳回第一个）；
+        #: 那个池没了（比如这次没抽）就退回第一个。
+        keep = self._selected_pool if self._selected_pool in self._pools else ""
+        self.select_pool(keep or str(pools[0].pool_type))
+
+    def select_pool(self, pool_type: str) -> None:
+        """切到某个卡池：更新选项卡选中态 + 只渲染那个池的明细。"""
+        if pool_type not in self._pools:
+            return
+        self._selected_pool = pool_type
+
+        for ptype, tab in self._pool_tabs.items():
+            tab.set_selected(ptype == pool_type)
+
+        self._clear_layout(self.pools_box)
+        self.pools_box.addWidget(self._pool_block(self._pools[pool_type]))
 
     def _render_cards(self, report) -> None:
         """五星卡片墙：**图片** + 右上角"抽到几次"角标（工坊那个视觉）。
@@ -885,18 +1036,20 @@ class GachaWidget(ScrollArea):
             [头像] ███████████████ 81抽                 (歪)
 
         条的**长度**按抽数走、**颜色**按欧非分级（绿→黄→红）。
+
+        ## ⚠ 池名不再重复显示（2026-10-06 改成选项卡之后）
+
+        上面那排选项卡已经写着池名了，这里再来一个就是重复。
+        概要那几个数字（总抽/五星/出货率/垫抽）留着 —— 那是选项卡上没有的。
         """
         card = CardWidget(self.pools_host)
         box = QVBoxLayout(card)
         box.setContentsMargins(16, 12, 16, 12)
         box.setSpacing(4)
 
-        # 标题行：池名 + 概要 + 当前垫抽
+        # 标题行：概要 + 当前垫抽
         head = QHBoxLayout()
         head.setSpacing(14)
-        title = BodyLabel(pool.name, card)
-        title.setFixedWidth(170)
-        head.addWidget(title)
 
         parts = [f"{pool.total} 抽", f"五星 {pool.five_count}",
                  f"出货率 {pool.rate():.1f}%"]

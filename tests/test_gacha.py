@@ -672,8 +672,152 @@ class TestWidgetRender(unittest.TestCase):
 
         self.assertEqual(widget.stat_total.value_label.text(), "3")
         self.assertEqual(widget.stat_fives.value_label.text(), "2")
-        # 抽过的池子各一块
-        self.assertEqual(widget.pools_box.count(), 2)
+        #: ★ 2026-10-06 改成选项卡后：**只渲染选中的那个池**的明细
+        #: （原来两块竖着堆，用户要求"选项卡并排展示"）
+        self.assertEqual(widget.pools_box.count(), 1)
+        #: ⚠ ``make_pool`` 的 pool_type 是空串（它只关心抽数），
+        #: 两个空 type 的池会撞成一个 key —— 所以这里是 1 不是 2。
+        #: 要验"多个选项卡"用 :func:`five_pool`（它带 pool_type）。
+        self.assertEqual(len(widget._pool_tabs), 1)
+
+    def test_pool_tabs_are_side_by_side(self):
+        """★★★ 卡池**选项卡并排展示**（用户 2026-10-06）。
+
+        用户（截图圈出「角色活动唤取」那行）::
+
+            "这里切换选项卡，展示不同的卡池，选项卡并排展示如
+             角色活动唤取，武器活动唤取卡池"
+
+        ⚠ 原来是**每个池一张大卡片竖着堆** —— 4 个池要滚很久。
+
+        ⚠⚠ 必须用 :func:`five_pool`（带 ``pool_type``）——
+        ``make_pool`` 三个池的 type 都是空串，会撞成一个选项卡。
+        """
+        widget = self._widget()
+        report = gacha.GachaReport(pools=[
+            five_pool([("心", 3)], name="角色活动唤取", pool_type="1"),
+            five_pool([("剑", 3)], name="武器活动唤取", pool_type="2"),
+            five_pool([("凌阳", 3)], name="角色常驻唤取", pool_type="3"),
+        ])
+        widget.render(report)
+        self.app.processEvents()
+
+        self.assertEqual(len(widget._pool_tabs), 3, "选项卡数量不对")
+        #: 全部在**同一行**（并排）→ 纵向位置一致
+        tops = {t.mapTo(widget, t.rect().topLeft()).y()
+                for t in widget._pool_tabs.values()}
+        self.assertEqual(len(tops), 1,
+                         f"选项卡没并排（纵向位置有 {len(tops)} 种：{tops}）")
+        #: 横向依次排开
+        lefts = sorted(t.mapTo(widget, t.rect().topLeft()).x()
+                       for t in widget._pool_tabs.values())
+        self.assertEqual(len(set(lefts)), 3, "选项卡横向位置重叠了")
+
+    def test_clicking_tab_switches_detail(self):
+        """★★★ 点选项卡 → 明细换成那个池。"""
+        widget = self._widget()
+        report = gacha.GachaReport(pools=[
+            #: 角色池：2 抽 1 金
+            five_pool([("心", 1)], name="角色活动唤取", pool_type="1"),
+            #: 武器池：4 抽 1 金
+            five_pool([("剑", 3)], name="武器活动唤取", pool_type="2"),
+        ])
+        widget.render(report)
+        self.app.processEvents()
+
+        widget.select_pool("2")
+        self.app.processEvents()
+        self.assertEqual(widget._selected_pool, "2")
+        self.assertEqual(widget.pools_box.count(), 1, "明细块数不对")
+
+        #: 明细里的概要要跟着换
+        card = widget.pools_box.itemAt(0).widget()
+        from qfluentwidgets import CaptionLabel
+
+        texts = [c.text() for c in card.findChildren(CaptionLabel)]
+        self.assertIn("4 抽", texts,
+                      f"明细没切到武器池（{texts[:6]}）")
+
+    def test_selected_tab_has_yellow_bar(self):
+        """★★★ 选中的选项卡**下方一条黄粗线**（用户定过的样式）。
+
+        用户 2026-10-05 对角色格子要求过::
+
+            "点到那个，哪个下方加一个黄色高亮的粗线"
+
+        ⚠ 这里要**沿用同一个视觉语言** —— 不是整块黄底（那是我做错过的）。
+
+        ⚠⚠ 必须查**选中态**：未选中时那条线是 ``transparent`` ——
+        只断言"存在 background"的话两条路都过，等于没测。
+        """
+        from src.tools.game.gacha import tool as ui
+
+        widget = self._widget()
+        report = gacha.GachaReport(pools=[
+            five_pool([("心", 3)], name="角色活动唤取", pool_type="1"),
+            five_pool([("剑", 3)], name="武器活动唤取", pool_type="2"),
+        ])
+        widget.render(report)
+        widget.select_pool("1")
+        self.app.processEvents()
+
+        on = widget._pool_tabs["1"]
+        off = widget._pool_tabs["2"]
+
+        self.assertIn(ui.SELECT_BORDER, on.bar.styleSheet(),
+                      "选中的选项卡没有黄色粗线")
+        self.assertNotIn(ui.SELECT_BORDER, off.bar.styleSheet(),
+                         "没选中的选项卡也有黄线")
+        self.assertIn("transparent", off.bar.styleSheet(),
+                      "没选中的那条线应该是透明的（占位对齐）")
+
+    def test_tab_switching_keeps_selection_after_rerender(self):
+        """★★ 重新分析（render）后**保持当前选的池**，不要跳回第一个。
+
+        ⚠ 用户看的是武器池，重新拉一次数据就跳回角色池会很难受。
+        """
+        widget = self._widget()
+        report = gacha.GachaReport(pools=[
+            five_pool([("心", 3)], name="角色活动唤取", pool_type="1"),
+            five_pool([("剑", 3)], name="武器活动唤取", pool_type="2"),
+        ])
+        widget.render(report)
+        widget.select_pool("2")
+        self.app.processEvents()
+
+        widget.render(report)          #: 再渲染一次（模拟重新分析）
+        self.app.processEvents()
+        self.assertEqual(widget._selected_pool, "2",
+                         "重新渲染后跳回第一个池了")
+
+    def test_tab_falls_back_when_pool_disappears(self):
+        """★ 之前选的池这次没数据了 → 退回第一个（不能卡在空状态）。"""
+        widget = self._widget()
+        report = gacha.GachaReport(pools=[
+            five_pool([("心", 3)], name="角色活动唤取", pool_type="1"),
+            five_pool([("剑", 3)], name="武器活动唤取", pool_type="2"),
+        ])
+        widget.render(report)
+        widget.select_pool("2")
+        self.app.processEvents()
+
+        #: 新报告里**没有**武器池了
+        widget.render(gacha.GachaReport(pools=[
+            five_pool([("心", 3)], name="角色活动唤取", pool_type="1"),
+        ]))
+        self.app.processEvents()
+        self.assertEqual(widget._selected_pool, "1")
+        self.assertEqual(widget.pools_box.count(), 1)
+
+    def test_empty_pools_are_not_tabbed(self):
+        """★ 没抽过的池**不出现**在选项卡里（7 个池全列很废）。"""
+        widget = self._widget()
+        widget.render(gacha.GachaReport(pools=[
+            five_pool([("心", 3)], name="角色活动唤取", pool_type="1"),
+        ]))
+        self.app.processEvents()
+        self.assertEqual(len(widget._pool_tabs), 1,
+                         "没抽过的池也建了选项卡")
 
     def test_overview_shows_all_five_metrics(self):
         """★ 工坊那五个指标都要有：总抽 / 平均出金 / 不歪率 / 每UP角色 / 每UP武器。"""
