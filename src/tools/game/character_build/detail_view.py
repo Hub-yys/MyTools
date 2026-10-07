@@ -74,6 +74,46 @@ ITEM_ICON = 56
 #: 命中大数字的直径
 HIT_BADGE = 64
 
+
+def text_color() -> str:
+    """★ **当前皮肤的正文色** —— 所有文字都该用它。
+
+    ## ⚠⚠ 为什么要有这个函数（用户 2026-10-06 连报两次）
+
+        "这里又出现了深色皮肤 深色字体 看不见"
+        "这里字压根看不见" / "这里也是很丑"
+
+    根因反复是同一个：**``setStyleSheet`` 里没写 ``color``** ——
+    于是文字继承到一个在深色玻璃底上几乎看不见的色。
+
+    另外还有个更隐蔽的写法错误::
+
+        color: inherit      ← **QSS 不支持 `inherit`**！
+                              会被当成无效值**整条丢掉**，
+                              结果和"没写"一样
+
+    → 统一走这个函数取色，别再各写各的。
+
+    ⚠ 读不到皮肤时兜底 ``#3d4148``（深灰）—— 保证**至少不是隐形**。
+    """
+    from ....core import skins
+
+    try:
+        return skins.active_skin()["text"]
+    except (KeyError, TypeError, AttributeError):
+        return "#3d4148"
+
+
+def dim_color() -> str:
+    """次要文字色（说明行、单位那种）。"""
+    from ....core import skins
+
+    try:
+        return skins.active_skin()["dim"]
+    except (KeyError, TypeError, AttributeError):
+        return "#8a8f98"
+
+
 #: 主属性文字色
 MAIN_FG = "#8a6d1a"
 #: ★ 声骸**主属性**的底色 —— 用户 2026-10-04："主属性就不用高亮了"
@@ -288,6 +328,21 @@ def _prop_grid(props, parent, *, cols: int = 2,
     grid.setHorizontalSpacing(12)
     grid.setVerticalSpacing(2)
 
+    #: ★★ 属性名 / 数值都要**显式给颜色**（用户 2026-10-06："这里也是很丑"）
+    #:
+    #: ⚠⚠ 原来两处都有问题：
+    #:   · ``name`` 只设了 ``font-size`` —— **没颜色**，深色底上几乎看不见
+    #:   · ``val`` 用了 ``color: inherit`` —— **QSS 不支持 `inherit`**，
+    #:     会被当成无效值丢掉，于是也继承到一个看不见的色
+    #:
+    #: → 名字用皮肤正文色；数值**加粗 + 也用正文色**（比名字亮一点靠字重）。
+    from ....core import skins
+
+    try:
+        text_fg = skins.active_skin()["text"]
+    except (KeyError, TypeError):
+        text_fg = "#3d4148"
+
     for i, p in enumerate(props or []):
         cell = QWidget(host)
         bg = MAIN_BG if highlight else "transparent"
@@ -302,14 +357,16 @@ def _prop_grid(props, parent, *, cols: int = 2,
         _add_icon(row, p.get("iconUrl"), PROP_ICON, cell)
 
         name = QLabel(str(p.get("attributeName") or "?"), cell)
-        name.setStyleSheet("font-size: 12px;")
+        name.setStyleSheet(f"font-size: 12px; color: {text_fg};")
         row.addWidget(name)
         row.addStretch(1)
 
         val = QLabel(str(p.get("attributeValue") or ""), cell)
+        #: ⚠ 高亮格用 ``MAIN_FG``（官方那种金棕），否则用皮肤正文色 ——
+        #: **不能写 ``inherit``**（QSS 不认，会被丢掉）
         val.setStyleSheet(
             f"font-size: 12px; font-weight: bold;"
-            f"color: {MAIN_FG if highlight else 'inherit'};")
+            f"color: {MAIN_FG if highlight else text_fg};")
         row.addWidget(val)
 
         grid.addWidget(cell, i // cols, i % cols)
@@ -345,13 +402,24 @@ def _hit_badge(hits: dict, total: int, parent) -> QWidget:
     grid.setHorizontalSpacing(16)
     grid.setVerticalSpacing(2)
     items = sorted(hits.items(), key=lambda kv: -kv[1])
+    #: ★★ 词条名用**皮肤正文色**（用户 2026-10-06："这里字压根看不见"）
+    #:
+    #: ⚠ 原来这行只设了 ``font-size`` —— **没设颜色**，于是继承到一个
+    #: 在深色底上几乎看不见的色。跟我前面犯的错是同一类：
+    #: **文字色必须显式给，而且要从皮肤取**。
+    from ....core import skins
+
+    try:
+        name_fg = skins.active_skin()["text"]
+    except (KeyError, TypeError):
+        name_fg = "#3d4148"
     for i, (name, n) in enumerate(items):
         cell = QWidget(grid_host)
         line = QHBoxLayout(cell)
         line.setContentsMargins(0, 0, 0, 0)
         line.setSpacing(4)
         lab = QLabel(f"{name}", cell)
-        lab.setStyleSheet("font-size: 12px;")
+        lab.setStyleSheet(f"font-size: 12px; color: {name_fg};")
         line.addWidget(lab)
         num = QLabel(str(n), cell)
         num.setStyleSheet(
@@ -395,12 +463,13 @@ def _phantom_card(item, parent, icon_index=None) -> QWidget:
     info.setSpacing(0)
     name = QLabel(str(prop.get("name") or "?"), card)
     name.setWordWrap(True)
-    name.setStyleSheet("font-size: 12px; font-weight: bold;")
+    name.setStyleSheet(f"font-size: 12px; font-weight: bold;"
+                        f"color: {text_color()};")
     info.addWidget(name)
 
     cost = QLabel(f"COST {item.get('cost')}　"
                   f"+{item.get('level')}　[{fet.get('name') or '?'}]", card)
-    cost.setStyleSheet("font-size: 11px; color: #666;")
+    cost.setStyleSheet(f"font-size: 11px; color: {dim_color()};")
     info.addWidget(cost)
     head.addLayout(info, 1)
     box.addLayout(head)
@@ -444,13 +513,14 @@ def _phantom_card(item, parent, icon_index=None) -> QWidget:
                       fallback=icon_index.get(
                           str(s.get("attributeName") or ""), ""))
             nm = QLabel(str(s.get("attributeName") or "?"), line)
-            nm.setStyleSheet("font-size: 11px;")
+            nm.setStyleSheet(f"font-size: 11px;"
+                             f"color: {text_color()};")
             row.addWidget(nm)
             row.addStretch(1)
             vv = QLabel(str(s.get("attributeValue") or ""), line)
             vv.setStyleSheet(
                 f"font-size: 11px; font-weight: bold;"
-                f"color: {MAIN_FG if hit else 'inherit'};")
+                f"color: {MAIN_FG if hit else text_color()};")
             row.addWidget(vv)
             sub_box.addWidget(line)
         box.addWidget(sub_host)
@@ -513,7 +583,7 @@ def _weapon_block(wd: dict, parent) -> QWidget:
     line = QLabel(f"Lv.{wd.get('level', '?')}　"
                   f"谐振{wd.get('resonLevel', '?')}阶　"
                   f"★{w.get('weaponStarLevel', '?')}", host)
-    line.setStyleSheet("font-size: 12px; color: #666;")
+    line.setStyleSheet(f"font-size: 12px; color: {dim_color()};")
     info.addWidget(line)
     head.addLayout(info, 1)
     box.addLayout(head)
@@ -542,14 +612,15 @@ def _expand_area(parent, title: str, text: str) -> QWidget:
 
     head = QLabel(title, area)
     head.setWordWrap(True)
-    head.setStyleSheet("font-size: 12px; font-weight: bold;")
+    head.setStyleSheet(f"font-size: 12px; font-weight: bold;"
+                       f"color: {text_color()};")
     box.addWidget(head)
 
     body = QLabel(text, area)
     body.setWordWrap(True)
     body.setTextInteractionFlags(
         Qt.TextInteractionFlag.TextSelectableByMouse)
-    body.setStyleSheet("font-size: 12px;")
+    body.setStyleSheet(f"font-size: 12px; color: {text_color()};")
     box.addWidget(body)
 
     area.setVisible(False)                     # ★ 初始不展示
@@ -593,14 +664,15 @@ def _expand_panel(parent) -> tuple[QWidget, QLabel, QLabel]:
 
     title = QLabel(panel)
     title.setWordWrap(True)
-    title.setStyleSheet("font-size: 13px; font-weight: bold;")
+    title.setStyleSheet(f"font-size: 13px; font-weight: bold;"
+                        f"color: {text_color()};")
     box.addWidget(title)
 
     body = QLabel(panel)
     body.setWordWrap(True)
     body.setTextInteractionFlags(
         Qt.TextInteractionFlag.TextSelectableByMouse)
-    body.setStyleSheet("font-size: 12px;")
+    body.setStyleSheet(f"font-size: 12px; color: {text_color()};")
     box.addWidget(body)
 
     panel.setVisible(False)                    # ★ 初始不展示
@@ -689,7 +761,8 @@ def _standard_block(standard, current: dict, parent) -> QWidget:
     #: 表头
     for col, text in enumerate(("属性", "当前数值", "推荐数值")):
         head = QLabel(text, host)
-        head.setStyleSheet("font-size: 12px; font-weight: bold; color: #666;")
+        head.setStyleSheet(f"font-size: 12px; font-weight: bold;"
+                           f"color: {dim_color()};")
         if col:
             head.setAlignment(Qt.AlignmentFlag.AlignRight
                               | Qt.AlignmentFlag.AlignVCenter)
@@ -718,17 +791,21 @@ def _standard_block(standard, current: dict, parent) -> QWidget:
         _add_icon(row, a.get("icon_url"), PROP_ICON, cell)
 
         nm = QLabel(name, cell)
+        #: ⚠ 达标时也要给颜色（原来是"红字 or 啥都不设"）——
+        #: 不设的话深色皮肤上正常项的文字会隐形（我的静态扫描抓到的）
         nm.setStyleSheet(
-            f"font-size: 12px;"
-            f"{f' color: {BAD_FG}; font-weight: bold;' if not ok else ''}")
+            f"font-size: 12px; color: "
+            + (f"{BAD_FG}; font-weight: bold;" if not ok
+               else f"{text_color()};"))
         row.addWidget(nm)
         row.addStretch(1)
 
         #: ── 当前值
         cur = QLabel(f"{have:g}{unit}" if not missing else "—", cell)
+        #: ⚠ 达标时也要给颜色（同 nm —— 不然深色皮肤上隐形）
         cur.setStyleSheet(
-            f"font-size: 12px; font-weight: bold;"
-            f"{f' color: {BAD_FG};' if not ok else ''}")
+            f"font-size: 12px; font-weight: bold; color: "
+            + (f"{BAD_FG};" if not ok else f"{text_color()};"))
         row.addWidget(cur)
 
         #: ── 推荐值
@@ -955,14 +1032,17 @@ class CharacterTile(QWidget):
         nm = QLabel(str(role.get("roleName") or "?"), self)
         nm.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         #: 未达标 → 名字标红（和"选中"无关 —— 选中靠下方那条黄线表示）
+        #:
+        #: ⚠ 达标时也要给颜色（同前面几处 —— 不然深色皮肤上名字隐形）
         nm.setStyleSheet(
-            f"font-size: 12px;"
-            f"{f' color: {BAD_FG}; font-weight: bold;' if flagged else ''}")
+            f"font-size: 12px; color: "
+            + (f"{BAD_FG}; font-weight: bold;" if flagged
+               else f"{text_color()};"))
         box.addWidget(nm)
 
         lv = QLabel(f"Lv.{role.get('level', '?')}", self)
         lv.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        lv.setStyleSheet("font-size: 11px; color: #888;")
+        lv.setStyleSheet(f"font-size: 11px; color: {dim_color()};")
         box.addWidget(lv)
 
         # ★★ 选中的格子 → **黄色高亮**（用户 2026-10-05：

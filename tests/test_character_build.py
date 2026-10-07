@@ -1542,6 +1542,228 @@ class TestNoStyleCascade(unittest.TestCase):
         self.assertIn("{", css, "没有 {{ }} 包裹，选择器不生效")
 
 
+class TestTextIsAlwaysColored(unittest.TestCase):
+    """★★★ 详情页里**每个带文字的标签都要显式给 ``color``**。
+
+    ## ⚠⚠ 用户 2026-10-06 连报两次
+
+        "这里又出现了深色皮肤 深色字体 看不见"
+        "这里字压根看不见" / "这里也是很丑"
+
+    根因反复是同一类：``setStyleSheet`` 里**没写 ``color``** ——
+    于是文字继承到一个在深色玻璃底上几乎看不见的色。
+
+    还有个更隐蔽的写法错误::
+
+        color: inherit      ← **QSS 不支持 `inherit`**！
+                              会被当成无效值**整条丢掉**，
+                              结果和"没写"一样
+
+    ## 这条测试做什么
+
+    **静态扫描**（跟 :class:`TestNoStyleCascade` 一个套路）——
+    别只修用户报的那两处，把同类一次找齐。
+    """
+
+    @staticmethod
+    def _literals(src: str):
+        """把每次 ``setStyleSheet(...)`` 的**拼接字面量**拼起来。
+
+        ⚠⚠ 窗口要**开够大**（护栏验证时发现的问题）::
+
+            原来只取 ``tail[:180]`` —— 多行 f-string 的**后半截**
+            （正是 ``color: {dim_color()};`` 那一段）落在窗口外，
+            于是"写死 #888"的突变**扫不到**，护栏失效。
+
+        → 取到**这一条语句结束**为止（遇到下一个 ``setStyleSheet`` 或
+        超过 1200 字符就停）。
+        """
+        import re
+
+        for m in re.finditer(r"setStyleSheet\(\s*", src):
+            #: 到下一次 setStyleSheet 为止（或 1200 字符封顶）
+            nxt = src.find("setStyleSheet(", m.end())
+            end = min(nxt if nxt > 0 else len(src), m.end() + 1200)
+            tail = src[m.end():end]
+            lits = re.findall(r'f?["\']([^"\']*)["\']', tail)
+            if not lits:
+                continue
+            yield src[:m.start()].count("\n") + 1, " ".join(lits)
+
+    def test_no_font_size_without_color(self):
+        """★★★ 设了字号却**没设颜色** = 深色皮肤上会隐形。"""
+        src = (ROOT / "src" / "tools" / "game" / "character_build"
+               / "detail_view.py").read_text(encoding="utf-8")
+        bad: list[tuple[int, str]] = []
+        for line, css in self._literals(src):
+            if "font-size" in css and "color" not in css:
+                bad.append((line, css[:70]))
+        self.assertEqual(
+            bad, [],
+            "这些 setStyleSheet 设了 font-size 却没设 color —— "
+            f"深色皮肤上文字会隐形：{bad}")
+
+    def test_no_css_inherit_keyword(self):
+        """★★★ **QSS 不支持 ``inherit``** —— 写了等于没写。
+
+        ⚠ 这是最容易骗过眼睛的写法：看着"我明明设了颜色"，
+        实际 Qt 把整条规则丢掉，颜色还是继承来的那个。
+        """
+        src = (ROOT / "src" / "tools" / "game" / "character_build"
+               / "detail_view.py").read_text(encoding="utf-8")
+        bad: list[tuple[int, str]] = []
+        for line, css in self._literals(src):
+            if "inherit" in css:
+                bad.append((line, css[:70]))
+        self.assertEqual(
+            bad, [],
+            f"这些样式用了 QSS 不支持的 `inherit`（会被丢掉）：{bad}")
+
+    def test_no_hardcoded_dark_gray_text(self):
+        """★★★ 文字色**不许写死中性灰**（``#666`` / ``#888`` 这类）。
+
+        ⚠ 它们在浅色底上还行，**深色皮肤上就读不清了** ——
+        用户 2026-10-06 报的"这里字压根看不见"就是这个。
+
+        ## ⚠⚠ 阈值取多少（护栏验证时调过）
+
+        第一版我取 ``lum < 110`` —— **抓不住 ``#888``**（它的亮度是
+        **136**）。而用户看到的正是 ``#888`` 那种太淡的字::
+
+            #666 → lum 102
+            #888 → lum 136   ← 第一版漏了它
+
+        → 阈值提到 **200**：中性灰只要不是**接近白**的，一律要求走皮肤色。
+
+        ⚠ 只查**中性灰**（三通道接近）—— 有彩色的色（比如官方那种
+        金棕 ``#8a6d1a``、达标绿、未达标红）是**有意的设计色**，不在此列。
+        """
+        import re
+
+        src = (ROOT / "src" / "tools" / "game" / "character_build"
+               / "detail_view.py").read_text(encoding="utf-8")
+        bad: list[tuple[int, str]] = []
+        for line, css in self._literals(src):
+            for m in re.finditer(r"color:\s*(#[0-9a-fA-F]{3,6})\b", css):
+                hexv = m.group(1).lstrip("#")
+                if len(hexv) == 3:
+                    hexv = "".join(c * 2 for c in hexv)
+                if len(hexv) != 6:
+                    continue
+                r, g, b = (int(hexv[i:i + 2], 16) for i in (0, 2, 4))
+                lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                is_gray = max(r, g, b) - min(r, g, b) < 24
+                #: 中性灰 且 不够亮 → 深色皮肤上会糊
+                if is_gray and lum < 200:
+                    bad.append((line, css[:70]))
+                    break
+        self.assertEqual(
+            bad, [],
+            f"这些文字色写死了中性灰 —— 深色皮肤上读不清：{bad}")
+
+    def test_helpers_read_from_skin(self):
+        """★★ ``text_color()`` / ``dim_color()`` 要真的从皮肤取色。"""
+        from src.core import skins
+        from src.tools.game.character_build import detail_view as dv
+
+        skins.apply_skin("deepglass", save=False)
+        self.assertEqual(dv.text_color(), skins.active_skin()["text"])
+        self.assertEqual(dv.dim_color(), skins.active_skin()["dim"])
+
+        #: ★ 浅色皮肤下也得对（别只对一个皮肤正确）
+        skins.apply_skin("mist", save=False)
+        self.assertEqual(dv.text_color(), skins.active_skin()["text"])
+        self.assertNotEqual(dv.text_color(), dv.dim_color())
+
+
+class TestScrollbarIsStyled(unittest.TestCase):
+    """★★★ 滚动条**不许是原生外观**（用户 2026-10-06："这个滑轮组件很丑"）。
+
+    ## ⚠⚠ 这里踩过一个语法坑
+
+    我第一版写成::
+
+        QScrollBar::vertical::handle { ... }     ← **错**！Qt 不认
+        QScrollBar::handle:vertical { ... }      ← 对
+
+    Qt 的语法是 ``::子控件:方向``，**方向伪状态要放在子控件后面**。
+    写反了整条规则被丢掉 —— 界面上还是那个原生滚动条（一条都没生效）。
+    """
+
+    def test_qss_has_scrollbar_rules(self):
+        from src.core import skins
+
+        qss = skins.build_qss(skins.skin_by_id("deepglass"))
+        for sel in ("QScrollBar:vertical", "QScrollBar::handle:vertical",
+                    "QScrollBar::handle:horizontal",
+                    "QScrollBar::add-line:vertical",
+                    "QScrollBar::sub-line:horizontal",
+                    "QScrollBar::corner"):
+            self.assertIn(sel, qss, f"滚动条 QSS 少了 {sel}")
+
+    def test_no_reversed_selector_order(self):
+        """★★★ 选择器**方向不能写反**（我犯过的错）。"""
+        from src.core import skins
+
+        qss = skins.build_qss(skins.skin_by_id("deepglass"))
+        self.assertNotIn(
+            "QScrollBar::vertical::", qss,
+            "用了 `QScrollBar::vertical::xxx` —— Qt 不认，整条规则会被丢掉")
+        self.assertNotIn("QScrollBar::horizontal::", qss,
+                         "用了 `QScrollBar::horizontal::xxx` —— Qt 不认")
+
+    def test_arrows_are_removed(self):
+        """★ 两端的箭头按钮要去掉（原生那个最丑的部分）。"""
+        from src.core import skins
+
+        qss = skins.build_qss(skins.skin_by_id("darkglass")
+                              if skins.skin_by_id("darkglass")
+                              else skins.skin_by_id("deepglass"))
+        self.assertIn("add-line", qss)
+        #: 宽度设 0 才是"去掉"的标准做法（display:none 有时不生效）
+        self.assertRegex(qss, r"add-line:vertical[^}]*width:\s*0",
+                         "箭头按钮没设成 0 宽 —— 还会显示")
+
+    def test_scrollbar_follows_skin(self):
+        """★★★ 滑块颜色**跟着皮肤走**（别又写死）。
+
+        ## ⚠⚠ 断言必须**只看滚动条那一段**（护栏验证时改的）
+
+        第一版我写的是 ``assertIn(skin['border'], qss)`` —— **太宽**：
+        ``skin['border']`` 在 ``CardWidget`` 那行也出现，所以把滑块
+        写死成 ``#cccccc`` 之后**照样通过**（护栏失效）。
+
+        → 把 QSS 里 ``QScrollBar`` 之后那段**单独抠出来**再断言。
+        """
+        from src.core import skins
+
+        for sid in ("mist", "deepglass"):
+            with self.subTest(skin=sid):
+                skin = skins.skin_by_id(sid)
+                qss = skins.build_qss(skin)
+                #: 只取滚动条那一段
+                idx = qss.find("QScrollBar")
+                self.assertGreater(idx, 0, "QSS 里没有滚动条规则")
+                seg = qss[idx:]
+                border = skin.get("border") or ""
+                if border:
+                    self.assertIn(border, seg,
+                                  f"「{skin['name']}」的滑块没用皮肤边框色"
+                                  f"（滚动条段：{seg[:80]}）")
+
+    def test_scrollbar_is_thinner_than_default(self):
+        """★ 宽度要**比原生细**（原生约 15px，太粗）。"""
+        import re
+
+        from src.core import skins
+
+        qss = skins.build_qss(skins.skin_by_id("deepglass"))
+        m = re.search(r"QScrollBar:vertical\s*\{[^}]*width:\s*(\d+)px", qss)
+        self.assertIsNotNone(m, "没设纵向滚动条宽度")
+        self.assertLess(int(m.group(1)), 12,
+                        f"滚动条 {m.group(1)}px 太粗（原生约 15px）")
+
+
 class TestExcludedRoles(unittest.TestCase):
     """★★ **漂泊者（主角）彻底不显示**。
 

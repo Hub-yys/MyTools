@@ -213,6 +213,14 @@ def build_qss(skin: dict) -> str:
     ``CardWidget`` 是 qfluentwidgets 的卡片基类 —— 半透明填充 +
     浅色细边 = 玻璃面板。
 
+    ``QScrollBar`` 是**滚动条** —— 用户 2026-10-06::
+
+        "这个滑轮组件很丑"
+
+    ⚠ 默认的 ``QScrollBar`` 是**系统原生外观**（灰底 + 方头 + 两端的
+    小箭头按钮），跟玻璃主题完全不搭。这里统一刷成：
+    透明轨道 + 圆角滑块 + **没有箭头按钮**。
+
     ⚠ 别用笼统的 ``QWidget { background: ... }`` —— 那会把**所有**
     子控件（图标、标签底）一起涂了，层次全糊（实测过）。
     """
@@ -225,7 +233,69 @@ def build_qss(skin: dict) -> str:
         f" {{ background: transparent; }}"
         f" FluentTitleBar {{ background: {grad}; }}"
         f" CardWidget {{ {card_qss(skin)} }}"
+        + scrollbar_qss(skin)
     )
+
+
+def scrollbar_qss(skin: dict) -> str:
+    """★ 滚动条样式 —— 透明轨道 + 圆角滑块 + 去掉箭头按钮。
+
+    ## 为什么需要（用户 2026-10-06）
+
+        "这个滑轮组件很丑"
+
+    Qt 默认的滚动条是**系统原生外观**：灰色方槽、两端的三角箭头按钮、
+    方角滑块 —— 放在玻璃主题里非常突兀（用户截图圈了两处：
+    角色列表下面那条横向的、详情区右边那条纵向的）。
+
+    ## 做法
+
+      · 轨道透明（让玻璃透出来）
+      · 滑块用皮肤的边框色 + 圆角，hover 时亮一点
+      · **宽/高设成 8px**（默认 ~15px，太粗）
+      · 两端的 ``add-line`` / ``sub-line`` 按钮**宽高设 0** ——
+        这是"去掉箭头"的标准做法（光 ``display:none`` 有时不生效）
+
+    ⚠ 滑块颜色从**皮肤**取（``border`` 那个 rgba），不写死 ——
+    否则又是"深色皮肤配深色滑块"看不见（我犯过好几次的错）。
+    """
+    #: 滑块：皮肤边框色（本来就是"玻璃上的细线"那个色）
+    knob = skin.get("border") or "rgba(127, 127, 127, 0.45)"
+    #: hover / 按下时亮一点 —— 用一个更实的灰，深浅底上都看得见
+    knob_hover = "rgba(127, 127, 127, 0.75)"
+
+    #: ⚠⚠⚠ **选择器顺序不能写反**（我第一版就写错了）
+    #:
+    #: Qt 的语法是 ``::子控件:方向``::
+    #:
+    #:     QScrollBar::handle:vertical     ← 对
+    #:     QScrollBar::vertical::handle    ← **错**，Qt 不认，整条规则被丢掉
+    #:
+    #: 我第一版写成后者，**样式一条都没生效** —— 界面上还是原生滚动条
+    #: （那正是用户说"很丑"的东西）。方向伪状态要放在**子控件后面**。
+    parts = []
+    for orient, size in (("vertical", "width"), ("horizontal", "height")):
+        parts.append(
+            f" QScrollBar:{orient} {{"
+            f" background: transparent; {size}: 8px; margin: 0;"
+            f" border: none; }}"
+            f" QScrollBar::handle:{orient} {{"
+            f" background: {knob}; border-radius: 4px;"
+            f" min-{size}: 24px; }}"
+            f" QScrollBar::handle:{orient}:hover {{"
+            f" background: {knob_hover}; }}"
+            f" QScrollBar::add-line:{orient},"
+            f" QScrollBar::sub-line:{orient} {{"
+            f" {size}: 0; background: transparent; border: none; }}"
+            f" QScrollBar::add-page:{orient},"
+            f" QScrollBar::sub-page:{orient} {{"
+            f" background: transparent; }}"
+            f" QScrollBar::groove:{orient} {{"
+            f" background: transparent; {size}: 8px; }}"
+        )
+    #: 转角（横竖交叉那块）—— 不设的话会露出一个原生小方块
+    parts.append(" QScrollBar::corner { background: transparent; }")
+    return "".join(parts)
 
 
 def page_transparent_qss() -> str:
