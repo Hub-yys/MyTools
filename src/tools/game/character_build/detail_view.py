@@ -530,9 +530,13 @@ def _phantom_card(item, parent, icon_index=None) -> QWidget:
     # 不写选择器的话，这个「白底 + 边框」会套到卡片里**每个子控件**上，
     # 图标就被涂成空方框（用户 2026-10-04 报的那个问题）。
     card.setObjectName("phantomCard")
+    #: ⚠⚠ 底色/边框**跟着皮肤取**（用户 2026-10-06 第二次报："这里还是白色"）
+    #:
+    #: 原来写死 ``background: white`` —— 深色皮肤下整块发白。
+    #: 我上一轮只改了 ``_section`` 的卡片，**漏了这个**（声骸卡片）。
     card.setStyleSheet(
-        "#phantomCard { background: white;"
-        " border: 1px solid rgba(0,0,0,0.10); border-radius: 6px; }")
+        f"#phantomCard {{ background: {solid_card_color()};"
+        f" border: 1px solid {section_border()}; border-radius: 6px; }}")
     box = QVBoxLayout(card)
     box.setContentsMargins(8, 6, 8, 6)
     box.setSpacing(4)

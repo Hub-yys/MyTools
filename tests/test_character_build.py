@@ -1597,10 +1597,57 @@ class TestColorsFollowSkin(unittest.TestCase):
 
     @staticmethod
     def _lum(c) -> float:
+        """颜色的亮度。
+
+        ## ⚠⚠ 必须处理 ``rgba(...)``（这里踩过"偶发失败"）
+
+        ``QColor("rgba(255,255,255,0.055)")`` **解析不出来** ——
+        它返回 ``#000000`` 且 ``isValid()=False``（我修过一次的坑）。
+
+        于是"皮肤没切过去、代码走了带 ``rgba`` 的兜底分支"时，
+        这个函数把它当**纯黑**算 → 对比度算错 → 测试报"看不清"，
+        但**代码其实没问题**（2026-10-06 就因为这个偶发失败过一次）。
+
+        → 用 :func:`skins.parse_color` **先把 alpha 合成掉**再算亮度。
+        """
         from PySide6.QtGui import QColor
 
-        c = QColor(c)
-        return 0.2126 * c.red() + 0.7152 * c.green() + 0.0722 * c.blue()
+        from src.core import skins
+
+        text = str(c or "")
+        parsed = skins.parse_color(text)
+        if parsed is not None:
+            r, g, b, a = parsed
+            if a < 1.0:
+                #: 半透明 → 当作叠在**白底**上看（最坏情况）
+                r = round(r * a + 255 * (1 - a))
+                g = round(g * a + 255 * (1 - a))
+                b = round(b * a + 255 * (1 - a))
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+        col = QColor(text)
+        return 0.2126 * col.red() + 0.7152 * col.green() + 0.0722 * col.blue()
+
+    def test_lum_handles_rgba(self):
+        """★★★ 亮度函数要能处理 ``rgba(...)``。
+
+        ## ⚠⚠ 这是"偶发失败"的真根因（2026-10-06）
+
+        ``QColor("rgba(255,255,255,0.055)")`` **解析不出来** ——
+        返回 ``#000000``（当纯黑）。于是皮肤没切过去、代码走了
+        带 ``rgba`` 的兜底分支时，对比度算成全黑 → 报"看不清"。
+
+        ⚠ 这个坑在**生产代码**里也踩过（``Base`` 被设成 ``#000000``）。
+        """
+        #: 半透明白压在白底上 ≈ 白
+        self.assertGreater(self._lum("rgba(255,255,255,0.9)"), 240,
+                           "rgba 被当成黑色算了")
+        #: 半透明黑压在白底上 ≈ 中灰
+        mid = self._lum("rgba(0,0,0,0.5)")
+        self.assertGreater(mid, 100, "rgba 被当成黑色算了")
+        self.assertLess(mid, 160, "半透明没按 alpha 合成")
+        #: 纯 hex 仍然对
+        self.assertLess(self._lum("#000000"), 5)
+        self.assertGreater(self._lum("#ffffff"), 250)
 
     def test_section_bg_follows_skin(self):
         """★★★ 卡片底色**不能再是纯白** —— 深色皮肤下要变深。"""
@@ -1632,8 +1679,11 @@ class TestColorsFollowSkin(unittest.TestCase):
         仍可能抛）。失败时 ``active_skin()`` 还是上一个皮肤 ——
         于是这款的 ``text`` 和底色对不上，测试报"看不清"，但**不是代码错**。
 
-        → 断言里带上**实际拿到的颜色**，失败时能一眼看出是"真的对比度不够"
-        还是"皮肤没切过去"。
+        → ① 皮肤没切过去就跳过这一款；
+          ② 断言里带上**实际拿到的颜色**，失败时一眼看出是"真的对比度不够"
+             还是"皮肤没切过去"；
+          ③ 顺带验底色**必须是能解析的颜色**（不是取不到值的）——
+             那也说明皮肤没生效。
         """
         from src.core import skins
         from src.tools.game.character_build import detail_view as dv
@@ -1650,9 +1700,14 @@ class TestColorsFollowSkin(unittest.TestCase):
             #: 皮肤没切过去 → 这款跳过（是环境问题，不是配色问题）
             if active.get("id") != sid:
                 continue
-            for label, bg in (("卡片底", dv.section_bg()),
-                              ("表格行", dv.solid_card_color()),
-                              ("命中行", dv.hit_row_color())):
+            for label, bggetter in (("卡片底", dv.section_bg),
+                                    ("表格行", dv.solid_card_color),
+                                    ("命中行", dv.hit_row_color)):
+                bg = bggetter()
+                #: ③ 底色要是个**真颜色**（那几个函数不该吐 rgba）
+                self.assertIsNotNone(
+                    skins.parse_color(bg),
+                    f"{skin['name']}/{label} 的底色解析不出来：{bg!r}")
                 diff = abs(self._lum(bg) - self._lum(txt))
                 if diff <= 80:
                     bad.append(f"{skin['name']}({sid})/{label} "
@@ -1691,6 +1746,59 @@ class TestColorsFollowSkin(unittest.TestCase):
         css = card.styleSheet()
         self.assertNotIn("#ffffff", css.lower(),
                          f"深色皮肤下卡片还是白底（{css[:70]}）")
+
+    def test_no_hardcoded_white_backgrounds(self):
+        """★★★ 全项目：**不许再写死白底**。
+
+        ## ⚠⚠ 用户 2026-10-06 报了**三次**同类问题
+
+            "这里字还是不好看见，然后换了皮肤 这里应该也要换色"
+            "这里还是白色"      ← 声骸卡片 ``background: white``
+
+        我修 ``_section`` 的时候**漏了** ``_phantom_card`` ——
+        同一个文件里两处写死的白底，我只改了看得见的那处。
+
+        → 这条**扫全项目**，别再靠"用户指哪我改哪"。
+        """
+        import pathlib
+        import re
+
+        root = pathlib.Path(__file__).resolve().parent.parent / "src"
+        #: 写死的浅色底（深色皮肤下会发白）
+        pat = re.compile(
+            r"background:\s*(white|#fff\b|#ffffff\b|#f7f7f7\b|#fafafa\b"
+            r"|#f5f5f5\b|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))", re.I)
+        offenders = []
+        for f in root.rglob("*.py"):
+            for i, line in enumerate(f.read_text(encoding="utf-8")
+                                     .splitlines(), 1):
+                s = line.strip()
+                if s.startswith("#"):
+                    continue
+                if pat.search(line):
+                    offenders.append(f"{f.name}:{i} {s[:60]}")
+        self.assertEqual(
+            offenders, [],
+            f"这些地方写死了白底 —— 深色皮肤下会发白：{offenders}")
+
+    def test_phantom_card_follows_skin(self):
+        """★★★ 声骸卡片底要跟皮肤（用户："这里还是白色"）。"""
+        from src.core import skins
+        from src.tools.game.character_build import detail_view as dv
+
+        item = {"cost": 3, "level": 25, "phantomProp": {"name": "x"},
+                "mainProps": [], "subProps": []}
+
+        skins.apply_skin("mist", save=False)
+        light = dv._phantom_card(item, None).styleSheet()
+
+        skins.apply_skin("deepglass", save=False)
+        dark = dv._phantom_card(item, None).styleSheet()
+
+        self.assertNotEqual(light, dark,
+                            "深浅皮肤的声骸卡片样式一样 —— 还是写死的")
+        self.assertNotIn("white", dark.lower(),
+                         f"深色皮肤的声骸卡片还是白底（{dark[:70]}）")
 
     def test_skin_change_repaints_detail_view(self):
         """★★★ **换肤后详情页自动重取色**（不用手动调）。

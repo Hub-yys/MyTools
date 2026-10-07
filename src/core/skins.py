@@ -312,9 +312,28 @@ def apply_skin(skin_id: str, *, save: bool = True) -> bool:
 
     from qfluentwidgets import setTheme, setThemeColor, Theme
 
-    setTheme(Theme.DARK if skin["mode"] == "dark" else Theme.LIGHT,
-             save=False)
-    _set_theme_color(setThemeColor, skin["primary"])
+    #: ★★ 换肤是**尽力而为**的 —— 主题库抛异常不该让整个界面崩掉
+    #:
+    #: ## ⚠⚠ 为什么加这个 try（2026-10-06 排查一次"偶发失败"）
+
+    #: ``setTheme`` / ``setThemeColor`` 是 qfluentwidgets 的代码，
+    #: 它们内部遍历**弱引用字典**，撞上 GC 会抛
+    #: ``RuntimeError: dictionary changed size during iteration``。
+    #: :func:`_set_theme_color` 会重试，但::
+    #:
+    #:   · 重试 3 次仍失败 → 记日志、继续（这条已经是容错的了）
+    #:   · **别的** RuntimeError → 它 ``raise`` → 冒到 ``apply_skin`` 外面
+    #:
+    #: 后者会让调用方（测试 / 换肤按钮）直接炸，而且**界面停在半路**：
+    #: ``setTheme`` 生效了、QSS 没刷 —— 正是"浅底浅字"那个症状。
+    #:
+    #: → 这里兜住：记日志、**继续往下刷 QSS**（至少配色是一致的）。
+    try:
+        setTheme(Theme.DARK if skin["mode"] == "dark" else Theme.LIGHT,
+                 save=False)
+        _set_theme_color(setThemeColor, skin["primary"])
+    except Exception:  # noqa: BLE001 - 主题库的锅不该拖垮界面
+        logger.warning("切换主题基调失败（继续刷配色）", exc_info=True)
 
     #: ★★★ 记住"**当前真正在用的**皮肤"—— 见 :func:`active_skin` 的说明。
     #: 必须在 ``_paint`` 之前设，否则 QSS 和明暗模式会对不上。
