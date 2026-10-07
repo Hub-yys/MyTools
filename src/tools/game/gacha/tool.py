@@ -114,8 +114,14 @@ MAX_CARD_COLUMNS = 12
 #: 这里用**同一个黄**，保持整套界面的视觉语言一致。
 SELECT_BORDER = "#f5b301"      # 选中那条粗线的黄（跟练度页同一个色）
 SELECT_BAR_H = 4               # 粗线高度（px）
-TAB_ON_FG = "#1a1a1a"          # 选中的文字色（亮）
-TAB_OFF_FG = "#8A8F98"         # 未选中的文字色（灰）
+#:
+#: ⚠⚠⚠ **文字色不能写死**（用户 2026-10-06："深色皮肤 深色字体 看不见"）
+#:
+#: 我第一版把选中色写成 ``#1a1a1a``（深灰）—— 浅色皮肤上没问题，
+#: **深色皮肤上就完全看不见了**。同一个错误我在皮肤系统里犯过好几次，
+#: 教训就是：**文字色一律从当前皮肤取**，绝不写死。
+TAB_ON_ALPHA = 1.0             # 选中：不透明（用皮肤正文色）
+TAB_OFF_ALPHA = 0.55           # 未选中：淡一点（用皮肤次要色）
 
 
 class GrabLinkThread(QThread):
@@ -251,10 +257,24 @@ class _BigStat(QWidget):
         box.addWidget(self.caption_label)
 
     def _apply_value_style(self, color: str | None) -> None:
-        """大数字的样式。字号走 stylesheet（比 setFont 稳）。"""
-        tint = color or "#1a1a1a"
+        """大数字的样式。字号走 stylesheet（比 setFont 稳）。
+
+        ## ⚠⚠ 兜底色**不能写死**（用户 2026-10-06 报的同类问题）
+
+        原来兜底是 ``#1a1a1a``（深灰）—— 深色皮肤上那五个大数字
+        （总抽卡数 / 平均出金 / …）就是**深字压深底**，看不见。
+
+        → 兜底改成从**当前皮肤**取 ``text`` 色。
+        """
+        if not color:
+            from ....core import skins
+
+            try:
+                color = skins.active_skin()["text"]
+            except (KeyError, TypeError):
+                color = "#1a1a1a"           #: 皮肤读不到时的最后兜底
         self.value_label.setStyleSheet(
-            f"color: {tint}; font-size: 30px; font-weight: 700;"
+            f"color: {color}; font-size: 30px; font-weight: 700;"
             " background: transparent;")
 
     def set(self, value: str, caption: str = "", color: str | None = None):
@@ -316,16 +336,54 @@ class _PoolTab(QWidget):
         self._selected = bool(on)
         self._apply()
 
+    def showEvent(self, event):  # noqa: N802 - Qt 回调
+        """★ 每次显示时**重取一次皮肤色** —— 换肤后自动跟上。
+
+        ## 为什么需要这个
+
+        ``skins._paint`` 只负责"把 QSS 挂到窗口/页面"，
+        **不会回调自定义控件**（它不知道有哪些）。所以换肤之后，
+        这个选项卡还留着**上一个皮肤**的文字色 —— 表现就是
+        用户 2026-10-06 看到的"深色皮肤 深色字体 看不见"。
+
+        → 在 ``showEvent`` 里重取。窗口重建 / 页面切回来都会触发，
+        成本只有两次 ``setStyleSheet``（可忽略）。
+
+        ⚠ 光在 ``__init__`` 里取一次是不够的 —— 那时皮肤可能还没应用。
+        """
+        self._apply()
+        super().showEvent(event)
+
     def _apply(self) -> None:
-        #: ⚠ 颜色写死成常量（跟练度页同一套），不走主题色 ——
-        #: 用户要的"黄色"是他认得的那个黄（``#f5b301``）。
-        if self._selected:
-            self.label.setStyleSheet(
-                f"color: {TAB_ON_FG}; font-weight: 700;")
-            self.bar.setStyleSheet(f"background: {SELECT_BORDER};")
-        else:
-            self.label.setStyleSheet(f"color: {TAB_OFF_FG};")
-            self.bar.setStyleSheet("background: transparent;")
+        """按**当前皮肤**取文字色 —— 深色皮肤用浅字、浅色皮肤用深字。
+
+        ## ⚠⚠⚠ 这里犯过一个错误（用户 2026-10-06）
+
+            "这里又出现了深色皮肤 深色字体 看不见"
+
+        我第一版把选中色写成常量 ``#1a1a1a``（深灰）—— 浅色皮肤上没问题，
+        **深色皮肤上就完全看不见**。
+
+        → 改成从 :func:`skins.active_skin` 取（它有 ``text`` / ``dim``），
+        这样六款皮肤都自动适配。
+
+        ⚠ 那条**黄线**（``SELECT_BORDER``）是例外，写死没问题 ——
+        它是"选中标记"不是文字，在深浅底上都看得见（用户指定的色）。
+        """
+        from ....core import skins
+
+        try:
+            skin = skins.active_skin()
+            if self._selected:
+                self.label.setStyleSheet(
+                    f"color: {skin['text']}; font-weight: 700;")
+                self.bar.setStyleSheet(f"background: {SELECT_BORDER};")
+            else:
+                self.label.setStyleSheet(f"color: {skin['dim']};")
+                self.bar.setStyleSheet("background: transparent;")
+        except (KeyError, TypeError):
+            #: 皮肤字段缺失（理论上不会）→ 退回 Qt 默认色，别崩
+            self.label.setStyleSheet("")
 
     def mouseReleaseEvent(self, event):  # noqa: N802 - Qt 回调
         if event.button() == Qt.MouseButton.LeftButton:
@@ -908,6 +966,27 @@ class GachaWidget(ScrollArea):
 
         self._clear_layout(self.pools_box)
         self.pools_box.addWidget(self._pool_block(self._pools[pool_type]))
+
+    def refresh_skin_colors(self) -> None:
+        """★ 换肤后重取一次配色（选项卡文字 + 顶部大数字）。
+
+        ## 为什么需要它
+
+        ``skins._paint`` 只把 QSS 挂到**窗口 / 页面**那一层，
+        **不会回调自定义控件** —— 它不知道有哪些。
+
+        所以换肤之后，这个页面里那些"自己设 ``setStyleSheet`` 的控件"
+        （选项卡标签、``_BigStat`` 的大数字）还留着**上一个皮肤**的色 ——
+        表现就是用户 2026-10-06 看到的"深色皮肤 深色字体 看不见"。
+
+        ⚠ 选项卡自己在 ``showEvent`` 里也会重取（页面切回来时能自愈），
+        但大数字没有那个时机，所以这里统一刷一遍。
+        """
+        for tab in self._pool_tabs.values():
+            tab._apply()                     # noqa: SLF001 - 同模块内的刷新
+        for stat in (self.stat_total, self.stat_avg, self.stat_fives,
+                     self.stat_not_up, self.stat_up_char, self.stat_up_weapon):
+            stat._apply_value_style(None)    # noqa: SLF001 - 重取皮肤色
 
     def _render_cards(self, report) -> None:
         """五星卡片墙：**图片** + 右上角"抽到几次"角标（工坊那个视觉）。

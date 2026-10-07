@@ -809,6 +809,68 @@ class TestWidgetRender(unittest.TestCase):
         self.assertEqual(widget._selected_pool, "1")
         self.assertEqual(widget.pools_box.count(), 1)
 
+    def test_tab_text_follows_skin(self):
+        """★★★ 选项卡文字色**跟着皮肤走**，不写死。
+
+        ## ⚠⚠ 用户 2026-10-06
+
+            "这里又出现了深色皮肤 深色字体 看不见"
+
+        我第一版把选中色写成常量 ``#1a1a1a``（深灰）——
+        浅色皮肤上没问题，**深色皮肤上完全看不见**。
+
+        → 改成从 ``skins.active_skin()`` 的 ``text`` / ``dim`` 取。
+
+        ⚠ 断言要**同时验两个皮肤**（浅 + 暗）—— 只测一个的话，
+        写死的颜色在那一个上可能正好是对的（这就是我漏掉它的原因）。
+        """
+        from src.core import skins
+
+        widget = self._widget()
+        report = gacha.GachaReport(pools=[
+            five_pool([("心", 3)], name="角色活动唤取", pool_type="1"),
+            five_pool([("剑", 3)], name="武器活动唤取", pool_type="2"),
+        ])
+        widget.render(report)
+        widget.select_pool("1")
+        self.app.processEvents()
+
+        for sid in ("mist", "deepglass"):
+            with self.subTest(skin=sid):
+                skins.apply_skin(sid, save=False)
+                skin = skins.active_skin()
+                widget.refresh_skin_colors()
+                self.app.processEvents()
+
+                on = widget._pool_tabs["1"].label.styleSheet()
+                off = widget._pool_tabs["2"].label.styleSheet()
+                self.assertIn(skin["text"], on,
+                              f"「{skin['name']}」选中的文字没用皮肤正文色"
+                              f"（{on}）")
+                self.assertIn(skin["dim"], off,
+                              f"「{skin['name']}」未选中的文字没用皮肤次要色"
+                              f"（{off}）")
+
+    def test_big_stat_numbers_follow_skin(self):
+        """★★★ 顶部那几个**大数字**也要跟着皮肤走。
+
+        ⚠ 同一个 bug 的另一处：``_BigStat`` 的兜底色原本写死
+        ``#1a1a1a`` —— 深色皮肤上"总抽卡数 1131"这种大数字看不见。
+        """
+        from src.core import skins
+
+        widget = self._widget()
+        for sid in ("mist", "deepglass"):
+            with self.subTest(skin=sid):
+                skins.apply_skin(sid, save=False)
+                skin = skins.active_skin()
+                widget.stat_total.set("1131", "总抽卡数")
+                self.app.processEvents()
+                css = widget.stat_total.value_label.styleSheet()
+                self.assertIn(skin["text"], css,
+                              f"「{skin['name']}」的大数字没用皮肤正文色"
+                              f"（{css}）")
+
     def test_empty_pools_are_not_tabbed(self):
         """★ 没抽过的池**不出现**在选项卡里（7 个池全列很废）。"""
         widget = self._widget()
