@@ -59,7 +59,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from qfluentwidgets import BodyLabel, CaptionLabel, StrongBodyLabel
+from qfluentwidgets import BodyLabel, StrongBodyLabel
 
 from ....core import icon_cache
 

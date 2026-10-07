@@ -298,21 +298,6 @@ def scrollbar_qss(skin: dict) -> str:
     return "".join(parts)
 
 
-def page_transparent_qss() -> str:
-    """★ 给**工具页 / 页面**用的透明样式。
-
-    ## 为什么单独一份（用户截图："这里也是白色，跟现有配色完全不符"）
-
-    工具页的宿主（``ToolInterfaceHost``）和工具面板本身都是**裸
-    ``QWidget``** —— 它们不透明，于是在玻璃背景上盖了一块**纯白**。
-
-    ⚠ 只在**页面这一层**设透明是安全的（它没有别的子控件要靠它取色）——
-    这也是为什么不能用笼统的 ``QWidget { background: transparent }``
-    （那会把卡片、图标底全弄没）。
-    """
-    return "background: transparent;"
-
-
 def apply_skin(skin_id: str, *, save: bool = True) -> bool:
     """应用一个皮肤（立刻生效）。返回是否成功。
 

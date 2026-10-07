@@ -47,7 +47,7 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)

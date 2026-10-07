@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import QEvent, QSize, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QPainter, QPixmap
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -659,12 +659,26 @@ class GachaWidget(ScrollArea):
         if not len(history):
             return False
 
-        #: ★ 最近一次拉取是哪个账号 —— 就用它来筛
-        who = str(history.snapshots[0].player_id if history.snapshots else "")
-        rows = history.all_records(who)
-        if not rows:
-            #: 快照里的账号没有数据（比如老快照没 player_id）→ 退回"全部"
-            rows = history.all_records()
+        #: ★★★ 取**最近一次"认得出账号"的**拉取 —— 用它来筛
+        #:
+        #: ## ⚠⚠ 这里修过一个真 bug（2026-10-06 自查发现）
+        #:
+        #: 原来写的是 ``history.snapshots[0].player_id`` —— 但列表**第一条
+        #: 可能是"未知账号"**（升级前的旧快照没有 ``player_id``）::
+        #:
+        #:     snapshots[0].player_id == ""  →  all_records("") == 不过滤
+        #:                                   →  **所有账号的数据混在一起**
+        #:
+        #: 而且 ``if not rows:`` 那个兜底**救不了**：不过滤时 rows 一定非空，
+        #: 所以那个分支根本进不去（写了等于没写）。
+        #:
+        #: → 改成**跳过空账号**，取最近一个有账号的。
+        who = ""
+        for snap in history.snapshots:
+            if snap.player_id:
+                who = str(snap.player_id)
+                break
+        rows = history.all_records(who) if who else history.all_records()
         report = gacha.report_from_records(rows, player_id=who)
         if not report.total:
             return False

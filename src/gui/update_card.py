@@ -38,7 +38,6 @@ import logging
 
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,

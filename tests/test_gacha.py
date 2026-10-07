@@ -968,6 +968,87 @@ class TestWidgetRender(unittest.TestCase):
         self.assertFalse(meta.coming_soon)
 
 
+class TestHistoryPickAccount(unittest.TestCase):
+    """★★★ 渲染历史时要**跳过"未知账号"的快照**去认账号。
+
+    ## ⚠⚠ 这里修过一个真 bug（2026-10-06 自查发现）
+
+    原来写的是 ``history.snapshots[0].player_id`` —— 但列表**第一条
+    可能是"未知账号"**（升级前的旧快照没有 ``player_id``）::
+
+        snapshots[0].player_id == ""  →  all_records("") == 不过滤
+                                      →  **所有账号的数据混在一起**
+
+    ⚠ 而且那个 ``if not rows:`` 兜底**救不了**：不过滤时 rows 一定非空，
+    所以那个分支根本进不去（写了等于没写）。
+
+    ## 复现（实测）
+
+    ::
+
+        snapshots[0].player_id = ''
+        旧写法：who=''     拿到 10 条  → 混了两个账号
+        新写法：who='111'  拿到  5 条  → 只看 111
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_skips_unknown_snapshot_for_account(self):
+        """★★★ 最新快照是"未知账号"时，要**往前找**一个有账号的。"""
+        import pathlib
+        import tempfile
+
+        from PySide6.QtWidgets import QWidget
+
+        import src.tools.game.gacha.tool as tool_mod
+        from src.core import gacha_store
+
+        path = pathlib.Path(tempfile.mkdtemp()) / "h.json"
+        store = gacha_store.GachaHistoryStore(path)
+        history = gacha_store.GachaHistory()
+        #: 两个账号各 5 条
+        for w in ("111", "222"):
+            history.merge(
+                [{"name": f"{w}-{i}", "qualityLevel": 3,
+                  "time": f"2026-01-0{i} 10:00:00", "resourceId": i,
+                  "resourceType": "角色"} for i in range(1, 6)],
+                pool_type="1", pool_name="P", player_id=w)
+        #: ⚠ add_snapshot 是 insert(0) —— **最后**加的那条在最前
+        history.add_snapshot(gacha_store.PullSnapshot(
+            at="t_new", total=5, added=5, player_id="111"))
+        history.add_snapshot(gacha_store.PullSnapshot(
+            at="t_old", total=10, added=10, player_id=""))
+        store.save(history)
+        #: 确认前提成立（第一条真是空的）
+        self.assertEqual(store.load().snapshots[0].player_id, "",
+                         "测试前提不成立 —— 最新快照该是未知账号")
+
+        original = tool_mod.GachaWidget._get_store
+        tool_mod.GachaWidget._get_store = lambda self: store
+        try:
+            holder = QWidget()
+            holder.resize(1200, 900)
+            self._holders = getattr(self, "_holders", [])
+            self._holders.append(holder)
+            widget = tool_mod.GachaWidget()
+            widget.setParent(holder)
+            widget.resize(1200, 900)
+            holder.show()
+            for _ in range(3):
+                self.app.processEvents()
+            total = widget.stat_total.value_label.text()
+        finally:
+            tool_mod.GachaWidget._get_store = original
+
+        self.assertEqual(total, "5",
+                         f"总抽数是 {total} —— 该是 5（只看 111）；"
+                         f"10 就是两个账号混在一起了")
+
+
 class TestHistoryRendersOnOpen(unittest.TestCase):
     """★ 打开页面就要显示**已累积的历史**。
 
