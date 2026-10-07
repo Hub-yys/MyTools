@@ -114,17 +114,122 @@ def dim_color() -> str:
         return "#8a8f98"
 
 
-#: 主属性文字色
+def solid_card_color() -> str:
+    """★ **实心**的卡片底色（当前皮肤）—— 用来当"表格行"的底。
+
+    ## ⚠⚠⚠ 这里犯过一个错误（用户 2026-10-06）
+
+        "这里字还是不好看见，然后换了皮肤 这里应该也要换色"
+
+    ## 量出来的问题
+
+    属性表格那些行用的是**写死的浅色底**::
+
+        SUB_BG      = "#f7f7f7"    ← 浅灰
+        SUB_HIT_BG  = "#fdf3d0"    ← 淡黄
+
+    浅色皮肤没事；**深色皮肤下字是浅的（``#E8ECF5``）、底也是浅的**::
+
+        深空玻璃  text=#E8ECF5  底=#f7f7f7   亮度差 **11**  ★看不见
+        星云玻璃  text=#EDE9FE  底=#fdf3d0   亮度差  **7**  ★看不见
+
+    → 底色也要**跟着皮肤走**：用皮肤的 ``card``，但那是半透明
+    （``rgba(255,255,255,0.055)``）—— 表格行**需要实心**才看得出分块，
+    所以要把它**合成到皮肤的背景色上**，算出一个不透明的等价色。
+
+    ⚠ 六款皮肤各算各的，不写死。
+    """
+    from ....core import skins
+
+    try:
+        skin = skins.active_skin()
+    except (KeyError, TypeError, AttributeError):
+        return "#f7f7f7"
+    return _solid(skin["card"], skin["bg"][0][1], skin["mode"] == "dark")
+
+
+def hit_row_color() -> str:
+    """★ 命中行的高亮底色（当前皮肤）—— 也是**实心**的。
+
+    ⚠ 跟 :func:`solid_card_color` 的区别：这个要**偏金黄**，
+    好让"命中的词条"一眼看出来（用户 2026-10-04："命中的词条黄色高亮就行"）。
+
+    → 做法：拿皮肤的背景色往**金色**方向调一点，深浅底上都看得见。
+    """
+    from ....core import skins
+
+    try:
+        skin = skins.active_skin()
+    except (KeyError, TypeError, AttributeError):
+        return "#fdf3d0"
+    base = skin["bg"][0][1]
+    #: 深色皮肤 → 压在深底上的暗金；浅色 → 淡黄
+    return _blend(base, "#c8a02c" if skin["mode"] == "dark" else "#f5d76e",
+                  0.22 if skin["mode"] == "dark" else 0.35)
+
+
+def _rgba(text: str) -> tuple[int, int, int, float] | None:
+    """解析 ``rgba(r, g, b, a)`` / ``#rrggbb`` → ``(r, g, b, a)``。"""
+    import re
+
+    t = str(text or "").strip()
+    m = re.match(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\)",
+                 t)
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                float(m.group(4)) if m.group(4) else 1.0)
+    m = re.match(r"#([0-9a-fA-F]{6})$", t)
+    if m:
+        h = m.group(1)
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 1.0)
+    return None
+
+
+def _blend(base: str, top: str, alpha: float) -> str:
+    """把 ``top`` 按 ``alpha`` 叠到 ``base`` 上，返回不透明的 ``#rrggbb``。"""
+    b = _rgba(base)
+    t = _rgba(top)
+    if not b or not t:
+        return base if b else "#f7f7f7"
+    r = round(b[0] * (1 - alpha) + t[0] * alpha)
+    g = round(b[1] * (1 - alpha) + t[1] * alpha)
+    bl = round(b[2] * (1 - alpha) + t[2] * alpha)
+    return f"#{max(0, min(255, r)):02x}{max(0, min(255, g)):02x}" \
+           f"{max(0, min(255, bl)):02x}"
+
+
+def _solid(card: str, base: str, dark: bool) -> str:
+    """把半透明的 ``card`` **合成到**背景 ``base`` 上，得到实心色。
+
+    ⚠ 表格行要实心才看得出分块（半透明叠在渐变上会「糊成一片」）。
+    """
+    c = _rgba(card)
+    if not c:
+        return base if _rgba(base) else ("#22283d" if dark else "#f7f7f7")
+    r = round(c[0] * c[3] + _rgba(base)[0] * (1 - c[3])) if _rgba(base) \
+        else c[0]
+    g = round(c[1] * c[3] + _rgba(base)[1] * (1 - c[3])) if _rgba(base) \
+        else c[1]
+    b = round(c[2] * c[3] + _rgba(base)[2] * (1 - c[3])) if _rgba(base) \
+        else c[2]
+    #: 深色皮肤下卡片常常几乎透明 → 合成后跟背景一样，行就看不出分块。
+    #: 那就**往白里提一点**（深底上提亮 = 可见）。
+    if dark and abs(r - _rgba(base)[0]) < 6:
+        r, g, b = r + 14, g + 14, b + 18
+    return f"#{max(0, min(255, r)):02x}{max(0, min(255, g)):02x}" \
+           f"{max(0, min(255, b)):02x}"
+
+
+#: 主属性文字色（**规则**：高亮格用这个金棕，正常格用皮肤正文色）
 MAIN_FG = "#8a6d1a"
-#: ★ 声骸**主属性**的底色 —— 用户 2026-10-04："主属性就不用高亮了"
+#: 旧名保留 —— 见 :func:`solid_card_color` / :func:`hit_row_color`
 #:
-#: ⚠ 原来主属性也铺淡黄底，结果和"命中的副词条"撞色，分不清哪个是哪个。
-#: 现在只有命中的副词条才黄底。
+#: ⚠ 这两个原来是**写死的浅色常量**，深色皮肤下"浅字压浅底"看不见。
+#: 现在改成函数（跟着皮肤算），这里保留名字是为了**老测试不用改**：
+#: 它们只用来比对"两个值不一样"，函数对象同样能比。
+SUB_BG = solid_card_color
+SUB_HIT_BG = hit_row_color
 MAIN_BG = "transparent"
-#: 副词条底色（未命中）
-SUB_BG = "#f7f7f7"
-#: ★ 副词条底色（**命中** —— 用户："命中的词条黄色高亮就行"）
-SUB_HIT_BG = "#fdf3d0"
 #: 命中 / 未命中的标记色
 HIT_FG = "#c8a02c"
 MISS_FG = "#9aa0a6"
@@ -244,15 +349,54 @@ def _build_icon_index(detail: dict) -> dict[str, str]:
 #: ★ 区块卡片的样式（用户："这些都分别做成一个卡片，别放在一起"）
 #:
 #: 官方参考图里每一块都是**独立的卡片**：
-#: 深色标题栏 + 浅色内容区 + 圆角 + 细边框。
-SECTION_BG = "#ffffff"
-#: 标题栏底色（官方那种深灰）
+#: 深色标题栏 + 内容区 + 圆角 + 细边框。
+#:
+#: ## ⚠⚠⚠ 这里原来是**写死的纯白**（用户 2026-10-06）
+#:
+#:     "这里字还是不好看见，然后换了皮肤 这里应该也要换色"
+#:
+#: ``SECTION_BG = "#ffffff"`` —— 整个卡片纯白。浅色皮肤没问题，
+#: **深色皮肤下就是"白底 + 浅字"**，整块都看不清（用户截图里那两大块）。
+#:
+#: → 改成**跟着皮肤算**（:func:`section_bg`）。
+#: 标题栏深灰底色是**有意的**（官方那种深色标题条），深浅皮肤下都合适，
+#: 所以保留 —— 但文字色跟着走。
+SECTION_BG = "#ffffff"          #: 旧名保留（见 :func:`section_bg`）
+#: 标题栏底色（官方那种深灰 —— **有意保留**，深浅底上都合适）
 SECTION_HEAD_BG = "#3d4148"
-#: 标题栏文字色
+#: 标题栏文字色（深灰底上永远用浅字，所以这个也保留）
 SECTION_HEAD_FG = "#f2f3f5"
 #: 卡片边框 / 圆角
 SECTION_BORDER = "rgba(0,0,0,0.14)"
 SECTION_RADIUS = 8
+
+
+def section_bg() -> str:
+    """★ 区块卡片的**内容区底色** —— 跟着当前皮肤走。
+
+    ## ⚠ 为什么不用皮肤的 ``card``（半透明）
+
+    卡片要**实心**才压得住下面那层渐变（半透明叠在渐变上，
+    内容区的分块就"糊"了）。所以拿 :func:`solid_card_color` 的实心色。
+
+    ⚠ 深色皮肤下这个色比背景**略亮一点** —— 那正是"浮起来的卡片"的样子。
+    """
+    return solid_card_color()
+
+
+def section_border() -> str:
+    """★ 卡片边框 —— 深色皮肤下用**浅色细边**（玻璃高光那种）。
+
+    ⚠ 原来写死 ``rgba(0,0,0,0.14)``（黑边）—— 深色底上黑边等于没有，
+    卡片边界就看不出来了。
+    """
+    from ....core import skins
+
+    try:
+        dark = skins.active_skin()["mode"] == "dark"
+    except (KeyError, TypeError, AttributeError):
+        dark = False
+    return "rgba(255,255,255,0.16)" if dark else "rgba(0,0,0,0.14)"
 
 
 def _section(title: str, parent=None) -> tuple[QWidget, QVBoxLayout]:
@@ -281,10 +425,11 @@ def _section(title: str, parent=None) -> tuple[QWidget, QVBoxLayout]:
     #
     # 写成 ``#sectionCard { ... }`` 就只作用于这个卡片本身。
     card.setObjectName("sectionCard")
+    #: ⚠ 底色/边框都**跟着皮肤取**（原来写死白底 —— 深色皮肤下看不见）
     card.setStyleSheet(
         f"#sectionCard {{"
-        f" background: {SECTION_BG};"
-        f" border: 1px solid {SECTION_BORDER};"
+        f" background: {section_bg()};"
+        f" border: 1px solid {section_border()};"
         f" border-radius: {SECTION_RADIUS}px; }}")
     outer = QVBoxLayout(card)
     outer.setContentsMargins(0, 0, 0, 0)
@@ -502,7 +647,7 @@ def _phantom_card(item, parent, icon_index=None) -> QWidget:
             line.setObjectName("subLine")
             line.setStyleSheet(
                 f"#subLine {{ background: "
-                f"{SUB_HIT_BG if hit else SUB_BG};"
+                f"{SUB_HIT_BG() if hit else SUB_BG()};"
                 f" border-radius: 3px; }}")
             row = QHBoxLayout(line)
             row.setContentsMargins(4, 1, 4, 1)
@@ -782,7 +927,7 @@ def _standard_block(standard, current: dict, parent) -> QWidget:
         cell = QWidget(host)
         cell.setObjectName("stdRow")
         cell.setStyleSheet(
-            f"#stdRow {{ background: {SUB_HIT_BG if not ok else ''};"
+            f"#stdRow {{ background: {SUB_HIT_BG() if not ok else ''};"
             f" border-radius: 3px; }}")
         row = QHBoxLayout(cell)
         row.setContentsMargins(4, 2, 4, 2)
@@ -1130,6 +1275,9 @@ class EchoDetailView(QScrollArea):
         self._box.addWidget(self._body)
         self._box.addStretch(1)
 
+        #: ★ 记住上次画的是谁 —— 换肤时要**重画**（见 ``refresh_skin_colors``）
+        self._last: tuple | None = None
+
     def clear(self) -> None:
         while self._body_box.count():
             item = self._body_box.takeAt(0)
@@ -1138,6 +1286,26 @@ class EchoDetailView(QScrollArea):
                 w.setParent(None)
                 w.deleteLater()
         self._title.setText("（选一个共鸣者看详情）")
+
+    def refresh_skin_colors(self) -> None:
+        """★ 换肤后**重画** —— 这里所有颜色都是建控件时算出来的。
+
+        ## 为什么必须重画（用户 2026-10-06）
+
+            "这里字还是不好看见，然后换了皮肤 这里应该也要换色"
+
+        这个详情页的颜色**不是 QSS 写的**，是建每个 ``QLabel`` 时
+        用 ``text_color()`` / ``section_bg()`` **算出来塞进 setStyleSheet 的**。
+
+        → 换肤不会自动更新它们（``skins._paint`` 只挂窗口级 QSS）。
+        → 最省事又最可靠的办法：拿**上次的入参重画一遍**。
+
+        ⚠ 由 ``skins._notify_custom_widgets`` 自动调用（不用手动注册）。
+        """
+        if self._last is None:
+            return
+        detail, issues, standard = self._last
+        self.show_detail(detail, issues, standard)
 
     def show_detail(self, detail: dict, issues=None,
                     standard=None) -> None:
@@ -1155,6 +1323,11 @@ class EchoDetailView(QScrollArea):
             f"{name}　Lv{role.get('level', '?')}　"
             f"{role.get('attributeName', '')}　"
             f"{role.get('weaponTypeName', '')}")
+
+        #: ★★ 记住入参 —— 换肤时要拿它**重画**（见 ``refresh_skin_colors``）
+        #:
+        #: ⚠ 放在最前面：下面任何一步提前 return 也不影响重画能力。
+        self._last = (detail, issues, standard)
 
         if issues:
             warn = BodyLabel("⚠ " + "；".join(issues), self._body)

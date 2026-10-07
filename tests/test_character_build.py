@@ -950,15 +950,20 @@ class TestDetailView(unittest.TestCase):
                          f"还有 ✓/· 标记 —— 用户要求去掉（找到 {marks}）")
 
         #: ★ 2. 命中行必须有黄底
+        #:
+        #: ⚠ ``SUB_HIT_BG`` 从**常量变成了函数**（2026-10-06：底色要跟皮肤走，
+        #: 见 ``TestColorsFollowSkin``）—— 这里得**调一下**拿到颜色字符串。
+        hit_color = DV.SUB_HIT_BG()
         hit_rows = [w for w in view.findChildren(QWidget)
-                    if DV.SUB_HIT_BG in (w.styleSheet() or "")]
+                    if hit_color in (w.styleSheet() or "")]
         self.assertTrue(hit_rows, "命中的副词条没黄色高亮")
 
         #: ★ 3. 未命中的行**不能**用黄底（否则等于没区分）
+        plain_color = DV.SUB_BG()
         for w in view.findChildren(QWidget):
             css = w.styleSheet() or ""
-            if DV.SUB_BG in css:
-                self.assertNotIn(DV.SUB_HIT_BG, css)
+            if plain_color in css:
+                self.assertNotIn(hit_color, css)
 
     def test_each_section_is_its_own_card(self):
         """★★ 每一块都要是**独立卡片**（深色标题栏 + 内容区）。
@@ -987,10 +992,14 @@ class TestDetailView(unittest.TestCase):
                                 f"「{want}」没有独立卡片（找到 {heads}）")
 
         #: ★ 卡片容器本身要有边框 / 圆角
+        #:
+        #: ⚠ 边框色现在**跟着皮肤走**（``section_border()``），
+        #: 所以不能拿旧的 ``SECTION_BORDER`` 常量去比 —— 会一个都找不到
+        #: （2026-10-06 加了深色适配后我这里挂过一次）。
         cards = [w for w in view.findChildren(QWidget)
-                 if DV.SECTION_BORDER in (w.styleSheet() or "")]
+                 if DV.section_border() in (w.styleSheet() or "")]
         self.assertGreaterEqual(len(cards), 8,
-                                f"卡片数不对（{{len(cards)}} 个）—— "
+                                f"卡片数不对（{len(cards)} 个）—— "
                                 f"区块又被堆在一起了")
 
     def test_section_header_is_dark(self):
@@ -1019,7 +1028,8 @@ class TestDetailView(unittest.TestCase):
         """
         from src.tools.game.character_build import detail_view as DV
 
-        self.assertNotEqual(DV.MAIN_BG, DV.SUB_HIT_BG,
+        #: ⚠ ``SUB_HIT_BG`` 现在是**函数**（跟着皮肤算）—— 调一下再比
+        self.assertNotEqual(DV.MAIN_BG, DV.SUB_HIT_BG(),
                             "主属性和命中副词条还是同一个颜色 —— 分不清")
 
     def test_no_empty_icon_boxes(self):
@@ -1135,10 +1145,17 @@ class TestDetailView(unittest.TestCase):
 
     def test_hit_rows_actually_differ_from_miss_rows(self):
         """★ 命中 / 未命中的底色必须是**两个不同的颜色**。"""
+        from src.core import skins
         from src.tools.game.character_build import detail_view as DV
 
-        self.assertNotEqual(DV.SUB_HIT_BG, DV.SUB_BG,
-                            "命中色和未命中色一样 —— 等于没高亮")
+        #: ⚠ 两个都是**函数**了（跟着皮肤算）—— 调一下再比。
+        #: ⚠ 而且要在**两个皮肤下都验** —— 万一某款上算成一样就白高亮了。
+        for sid in ("mist", "deepglass"):
+            with self.subTest(skin=sid):
+                skins.apply_skin(sid, save=False)
+                self.assertNotEqual(DV.SUB_HIT_BG(), DV.SUB_BG(),
+                                    f"「{sid}」下命中色和未命中色一样 —— "
+                                    f"等于没高亮")
 
     def test_shows_issues(self):
         from src.tools.game.character_build.detail_view import EchoDetailView
@@ -1540,6 +1557,213 @@ class TestNoStyleCascade(unittest.TestCase):
         self.assertIn("#", css,
                       f"卡片样式没写选择器（{css[:60]}）—— 会级联到图标上")
         self.assertIn("{", css, "没有 {{ }} 包裹，选择器不生效")
+
+
+class TestColorsFollowSkin(unittest.TestCase):
+    """★★★ 详情页的**底色和文字色全部跟着皮肤**。
+
+    ## ⚠⚠ 用户 2026-10-06 报了**两次**同类问题
+
+        "这里字还是不好看见，然后换了皮肤 这里应该也要换色"
+
+    ## 第一层：底色是写死的
+
+    我只改了字色，**底色还是写死的**::
+
+        SECTION_BG  = "#ffffff"    ← 整个卡片纯白
+        SUB_BG      = "#f7f7f7"    ← 表格行浅灰
+        SUB_HIT_BG  = "#fdf3d0"    ← 命中行淡黄
+
+    深色皮肤下"浅字压浅底" —— 实测亮度差::
+
+        深空玻璃  text=#E8ECF5  底=#f7f7f7   差 **11**  ★看不见
+        星云玻璃  text=#EDE9FE  底=#fdf3d0   差  **7**  ★看不见
+
+    ## 第二层：换肤后不更新
+
+    这些颜色是**建控件时算出来塞进 setStyleSheet 的**，
+    ``skins._paint`` 只挂窗口级 QSS → 换肤不会更新它们。
+
+    → 加了**通用回调**：``skins._notify_custom_widgets`` 沿控件树找
+    ``refresh_skin_colors()`` 并调用（不用注册）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+
+        cls.app = QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def _lum(c) -> float:
+        from PySide6.QtGui import QColor
+
+        c = QColor(c)
+        return 0.2126 * c.red() + 0.7152 * c.green() + 0.0722 * c.blue()
+
+    def test_section_bg_follows_skin(self):
+        """★★★ 卡片底色**不能再是纯白** —— 深色皮肤下要变深。"""
+        from src.core import skins
+        from src.tools.game.character_build import detail_view as dv
+
+        skins.apply_skin("mist", save=False)
+        light_bg = dv.section_bg()
+
+        skins.apply_skin("deepglass", save=False)
+        dark_bg = dv.section_bg()
+
+        self.assertNotEqual(light_bg, dark_bg,
+                            "深浅皮肤的卡片底色一样 —— 说明还是写死的")
+        self.assertLess(self._lum(dark_bg), self._lum(light_bg),
+                        f"深色皮肤的卡片底({dark_bg})不比浅色的({light_bg})深")
+        self.assertNotEqual(dark_bg.lower(), "#ffffff",
+                            "深色皮肤下卡片底还是纯白")
+
+    def test_all_six_skins_have_readable_contrast(self):
+        """★★★ **六款皮肤**下，卡片底/表格行/命中行的对比度都要够。
+
+        ⚠ 只测一款是不够的 —— 写死的颜色在某款上可能"正好"没问题
+        （这正是我漏掉它的原因）。
+
+        ⚠⚠ **必须自己把皮肤设好**（整套跑时的顺序问题，2026-10-06 踩过）：
+        ``apply_skin`` 有可能会**失败**（qfluentwidgets 的
+        ``setThemeColor`` 偶发 ``RuntimeError``，代码里有重试但重试完了
+        仍可能抛）。失败时 ``active_skin()`` 还是上一个皮肤 ——
+        于是这款的 ``text`` 和底色对不上，测试报"看不清"，但**不是代码错**。
+
+        → 断言里带上**实际拿到的颜色**，失败时能一眼看出是"真的对比度不够"
+        还是"皮肤没切过去"。
+        """
+        from src.core import skins
+        from src.tools.game.character_build import detail_view as dv
+
+        bad = []
+        for sid in ("mist", "sakura", "deepglass", "nebula", "abyss",
+                    "ember"):
+            skin = skins.skin_by_id(sid)
+            if not skin:
+                continue
+            skins.apply_skin(sid, save=False)
+            active = skins.active_skin()
+            txt = active["text"]
+            #: 皮肤没切过去 → 这款跳过（是环境问题，不是配色问题）
+            if active.get("id") != sid:
+                continue
+            for label, bg in (("卡片底", dv.section_bg()),
+                              ("表格行", dv.solid_card_color()),
+                              ("命中行", dv.hit_row_color())):
+                diff = abs(self._lum(bg) - self._lum(txt))
+                if diff <= 80:
+                    bad.append(f"{skin['name']}({sid})/{label} "
+                               f"bg={bg} text={txt} 差={diff:.0f}")
+        self.assertEqual(bad, [], f"这些组合看不清：{bad}")
+
+    def test_section_border_follows_skin(self):
+        """★★★ 卡片边框也要跟皮肤 —— 深色底上黑边等于没有。
+
+        ⚠⚠ 必须**显式切到深色皮肤**再断言（护栏验证时改的）：
+        默认皮肤是浅色，而浅色的边框本来就是 ``rgba(0,0,0,0.14)`` ——
+        不切皮肤的话"写死黑边"也能过，护栏等于失效。
+        """
+        from src.core import skins
+        from src.tools.game.character_build import detail_view as dv
+
+        skins.apply_skin("mist", save=False)
+        light = dv.section_border()
+
+        skins.apply_skin("deepglass", save=False)
+        dark = dv.section_border()
+
+        self.assertNotEqual(light, dark,
+                            "深浅皮肤的边框色一样 —— 说明没跟皮肤走")
+        #: 深色皮肤下不能还是黑边（黑压在深底上看不出卡片边界）
+        self.assertNotIn("0,0,0", dark.replace(" ", ""),
+                         f"深色皮肤的边框还是黑的（{dark}）")
+
+    def test_section_card_uses_skin_bg(self):
+        """★★★ 真的建一个卡片，看它的 styleSheet 跟皮肤走。"""
+        from src.core import skins
+        from src.tools.game.character_build.detail_view import _section
+
+        skins.apply_skin("deepglass", save=False)
+        card, _box = _section("测试")
+        css = card.styleSheet()
+        self.assertNotIn("#ffffff", css.lower(),
+                         f"深色皮肤下卡片还是白底（{css[:70]}）")
+
+    def test_skin_change_repaints_detail_view(self):
+        """★★★ **换肤后详情页自动重取色**（不用手动调）。
+
+        用户原话："换了皮肤 这里应该也要换色"
+
+        ## ⚠⚠ 断言必须盯**本页自己的**颜色（护栏验证时改的）
+
+        第一版我断言"所有 QLabel 的样式集合变了" —— **抓不住**::
+
+            把 _notify_custom_widgets 那行去掉 → 测试**照样过**
+
+        原因：``StrongBodyLabel``（qfluentwidgets 自己的）会在主题切换时
+        **自己改 styleSheet**（``color: white`` 那种）—— 集合因此变了，
+        但**详情页自己算的那些色一个没更新**（那才是 bug）。
+
+        → 只盯**本页特有的**：``sectionCard`` 的底色（``#sectionCard`` 规则）。
+        """
+        from PySide6.QtWidgets import QLabel, QWidget
+
+        from src.core import skins
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        detail = {
+            "role": {"roleName": "穗穗", "level": 90,
+                     "attributeName": "冷凝", "weaponTypeName": "音感仪"},
+            "roleAttributeList": [{"attributeName": "暴击",
+                                   "attributeValue": "78.4%"}],
+            "phantomData": {"cost": 12, "equipPhantomList": [{
+                "cost": 3, "level": 25,
+                "mainProps": [{"attributeName": "共鸣效率",
+                               "attributeValue": "289.4%"}],
+                "subProps": [{"attributeName": "生命",
+                              "attributeValue": "580"}],
+            }]},
+        }
+        standard = {"attrs": [{"name": "暴击", "value": 0.70,
+                               "recommend": "70.0%", "unit": "%",
+                               "symbol": "≥"}]}
+
+        win = QWidget()
+        win.resize(900, 900)
+        view = EchoDetailView(win)
+        view.resize(900, 900)
+        win.show()
+        skins.apply_skin("mist", save=False)
+        for _ in range(3):
+            self.app.processEvents()
+        view.show_detail(detail, None, standard)
+        for _ in range(4):
+            self.app.processEvents()
+
+        def card_bg() -> set:
+            """本页自己画的卡片底色（**不看 qfluentwidgets 自己的**）。"""
+            out = set()
+            for w in view.findChildren(QWidget):
+                css = w.styleSheet()
+                if "#sectionCard" in css:
+                    out.add(css)
+            return out
+
+        before = card_bg()
+        self.assertTrue(before, "没找到 sectionCard —— 测试前提不成立")
+
+        #: ★ 只调 apply_skin —— **不手动调 refresh**
+        skins.apply_skin("deepglass", save=False)
+        for _ in range(6):
+            self.app.processEvents()
+
+        after = card_bg()
+        self.assertNotEqual(before, after,
+                            "换肤后详情页卡片底色没变 —— 没跟着换色")
+        self.assertFalse(any("#ffffff" in c.lower() for c in after),
+                         f"换肤后还是白底：{after}")
 
 
 class TestTextIsAlwaysColored(unittest.TestCase):

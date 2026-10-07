@@ -507,10 +507,55 @@ def _paint(skin: dict) -> None:
         _paint_nav_panel(w, skin)       #: 自带 styleSheet，必须单独设
         _paint_title_bar(w, skin)       #: 同上
         _paint_pages(w)                 #: 页面那几层要显式透明
+        _notify_custom_widgets(w)       #: ★ 自定义控件自己重取色
 
     #: ★ 记下"已经刷过这份 QSS + 这些窗口"—— 下次同一个皮肤 + 同样窗口才跳过
     _PAINTED_QSS = qss
     _PAINTED_WINDOWS = set(map(id, targets))
+
+
+#: ★★ 换肤时**回调自定义控件**的钩子名
+#:
+#: ## 为什么需要（用户 2026-10-06 连报两次"换了皮肤这里也要换色"）
+#:
+#: ``_paint`` 只把 QSS 挂到**窗口 / 页面**那一层 —— 它**不知道**
+#: 页面里有哪些"自己 ``setStyleSheet`` 的自定义控件"。
+#:
+#: 于是换肤之后，那些控件还留着**上一个皮肤**的颜色::
+#:
+#:     用户："换了皮肤 这里应该也要换色"
+#:
+#: 我第一版在抽卡页里加了个 ``refresh_skin_colors()`` 手动调 —— 但那是
+#: **局部补丁**：别的页面（练度详情）照样不跟随。
+#:
+#: → 改成**通用机制**：任何控件只要定义了同名方法，换肤时自动被调用。
+#: 约定优于配置 —— 不用注册、不用继承。
+SKIN_REFRESH_METHOD = "refresh_skin_colors"
+
+
+def _notify_custom_widgets(window) -> None:
+    """★ 沿控件树找``refresh_skin_colors()`` 并调用（换肤后重取颜色）。
+
+    ⚠ 用 ``findChildren`` 递归 —— 自定义控件可能嵌在好几层里
+    （页面 → 卡片 → 详情视图 → 属性格子）。
+
+    ⚠ 单个控件报错**不能影响整体换肤** —— 记日志继续。
+    """
+    try:
+        from PySide6.QtWidgets import QWidget
+
+        kids = window.findChildren(QWidget)
+    except (RuntimeError, AttributeError, ImportError):
+        return
+    for child in kids:
+        fn = getattr(child, SKIN_REFRESH_METHOD, None)
+        if not callable(fn):
+            continue
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 - 坏一个不该拖垮换肤
+            logger.warning("换肤回调失败：%s", type(child).__name__,
+                           exc_info=True)
 
 
 #: ★ 上一次**真正刷上去**的 QSS（用来跳过重复刷）
