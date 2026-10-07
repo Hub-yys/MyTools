@@ -1046,6 +1046,79 @@ class TestHistoryRendersOnOpen(unittest.TestCase):
         self.assertEqual(widget.pools_box.count(), 1)
         self.assertIn("还没有数据", widget.pools_box.itemAt(0).widget().text())
 
+    def test_unknown_account_snapshots_are_hidden(self):
+        """★★★ 「未知账号」的历史**不显示**（用户 2026-10-06："干掉"）。
+
+        ## 那些是什么
+
+        升级到多账号版本**之前**留下的快照 —— 那时 ``PullSnapshot``
+        还没有 ``player_id`` 字段，读回来是空串，界面显示成「未知账号」。
+
+        ⚠ 里面还夹着错误数据（``total=2018`` 那条是修"复制记录" bug
+        之前拍的）。
+
+        ## 这条怎么测
+
+        造一份历史：**一条带账号 + 两条不带** —— 断言界面上
+        只剩带账号的那条，而且**行的总数**也少了。
+        """
+        import pathlib
+        import tempfile
+
+        from PySide6.QtWidgets import QWidget
+
+        import src.tools.game.gacha.tool as tool_mod
+        from src.core import gacha_store
+
+        path = pathlib.Path(tempfile.mkdtemp()) / "h.json"
+        store = gacha_store.GachaHistoryStore(path)
+        history = gacha_store.GachaHistory()
+        history.merge(self._records(), pool_type="1",
+                      pool_name="角色活动唤取", at="2026-09-30",
+                      player_id="113152489")
+        #: 最新的在前（add_snapshot 是 insert(0)）
+        history.add_snapshot(gacha_store.PullSnapshot(
+            at="2026-09-30 10:00", total=5, added=5,
+            player_id="113152489"))
+        history.add_snapshot(gacha_store.PullSnapshot(
+            at="2026-09-30 09:00", total=2018, added=0, player_id=""))
+        history.add_snapshot(gacha_store.PullSnapshot(
+            at="2026-09-30 08:00", total=887, added=887, player_id=""))
+        store.save(history)
+
+        original = tool_mod.GachaWidget._get_store
+        tool_mod.GachaWidget._get_store = lambda self: store
+        try:
+            holder = QWidget()
+            holder.resize(1200, 900)
+            self._holders = getattr(self, "_holders", [])
+            self._holders.append(holder)
+            widget = tool_mod.GachaWidget()
+            widget.setParent(holder)
+            widget.resize(1200, 900)
+            holder.show()
+            for _ in range(3):
+                self.app.processEvents()
+            widget.reload_history()
+            for _ in range(3):
+                self.app.processEvents()
+
+            texts = []
+            for i in range(widget.history_box.count()):
+                it = widget.history_box.itemAt(i).widget()
+                if it is not None and hasattr(it, "text"):
+                    texts.append(it.text())
+        finally:
+            tool_mod.GachaWidget._get_store = original
+
+        joined = "\n".join(texts)
+        self.assertNotIn("未知账号", joined,
+                         f"界面上还有「未知账号」：{texts}")
+        self.assertNotIn("2018", joined,
+                         f"那个错误数字还在：{texts}")
+        #: 带账号那条要留着（别把好的也一起过滤掉）
+        self.assertIn("152489", joined, f"带账号那条被误删了：{texts}")
+
     def test_history_pools_are_rendered(self):
         widget = self._widget_with(self._records())
         self.assertGreaterEqual(widget.pools_box.count(), 1)

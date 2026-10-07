@@ -665,6 +665,85 @@ class TestMultiAccount(unittest.TestCase):
         self.assertEqual(r2.total, 1, f"账号 222 的总抽数不对（{r2.total}）")
 
 
+class TestDropUnknownSnapshots(unittest.TestCase):
+    """★★★ 「未知账号」的历史快照要能删掉（用户 2026-10-06）。
+
+        用户（截图圈出那三行）::
+
+            "未知账号的干掉"
+
+    ## 那些是什么
+
+    升级到多账号版本**之前**留下的快照 —— 那时 ``PullSnapshot`` 还没有
+    ``player_id`` 字段，读回来是空串，界面显示成「未知账号」。
+
+    ⚠ 里面还夹着**错误数据**：``total=2018`` 那条是修"复制记录" bug
+    之前拍的（当时库里真有 2018 条重复记录）。留着会让用户以为
+    "我曾经抽了 2018 抽"。
+
+    ## ⚠ 为什么不"猜"它属于当前账号
+
+    猜的话就是把 2018 那个错数字认领给用户 —— 比显示「未知账号」更糟。
+    """
+
+    def setUp(self):
+        self.history = gacha_store.GachaHistory()
+
+    def _snap(self, at: str, pid: str, total: int = 10) -> None:
+        self.history.add_snapshot(gacha_store.PullSnapshot(
+            at=at, total=total, five=1, added=1, player_id=pid))
+
+    def test_drops_only_unknown(self):
+        """★★★ 只删"没有账号"的，认得出账号的**一条不动**。
+
+        ⚠ ``add_snapshot`` 是 **insert(0)**（最新的在前）—— 所以
+        按 t1,t2,t3,t4 顺序加进去，列表是 ``[t4, t3, t2, t1]``。
+        用 ``sorted`` 比内容，别被顺序绕进去（我第一次就写错了）。
+        """
+        self._snap("t1", "111")
+        self._snap("t2", "")
+        self._snap("t3", "222")
+        self._snap("t4", "")
+
+        removed = self.history.drop_unknown_snapshots()
+
+        self.assertEqual(removed, 2)
+        self.assertEqual(sorted(s.at for s in self.history.snapshots),
+                         ["t1", "t3"], "删多或删错了")
+        #: 顺带钉住"认得出账号的都还在"
+        self.assertTrue(all(s.player_id for s in self.history.snapshots))
+
+    def test_drop_is_idempotent(self):
+        """★ 删两次，第二次没得删。"""
+        self._snap("t1", "")
+        self.assertEqual(self.history.drop_unknown_snapshots(), 1)
+        self.assertEqual(self.history.drop_unknown_snapshots(), 0)
+
+    def test_drop_keeps_records_intact(self):
+        """★★★ **记录一条都不能少** —— 删的只是"某次拉取累计到多少"
+        那几行流水，不是抽卡记录本身。"""
+        self.history.merge([rec("心", 5, "t1", 1)], pool_type="1",
+                           pool_name="P", at="now", player_id="111")
+        self._snap("t1", "")
+        before = len(self.history)
+
+        self.history.drop_unknown_snapshots()
+
+        self.assertEqual(len(self.history), before, "记录被误删了")
+        self.assertEqual(self.history.player_count("111"), 1)
+
+    def test_repair_includes_drop(self):
+        """★★ ``repair()`` 要把这条也带上（用户点「分析」时自动清）。"""
+        self._snap("t1", "")
+        self.assertGreater(self.history.repair(), 0,
+                           "repair() 没处理未知账号的快照")
+        self.assertEqual(len(self.history.snapshots), 0)
+
+    def test_empty_history_is_safe(self):
+        """★ 空历史不报错。"""
+        self.assertEqual(self.history.drop_unknown_snapshots(), 0)
+
+
 class TestReportFromRecords(unittest.TestCase):
     """★ 累计记录要能**重建出和实时拉取一模一样的报告结构**。"""
 

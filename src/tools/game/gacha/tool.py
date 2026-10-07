@@ -710,7 +710,17 @@ class GachaWidget(ScrollArea):
         except Exception:  # noqa: BLE001 - 历史坏了不该把页面带崩
             history = None
 
-        if history is None or not history.snapshots:
+        #: ★★ 只列**认得出账号**的快照（用户 2026-10-06："未知账号的干掉"）
+        #:
+        #: 那些是升级到多账号版本**之前**留下的 —— 那时还没有 ``player_id``
+        #: 字段，读回来是空串。里面还夹着错误数据（``total=2018`` 那条是
+        #: 我修"复制记录"bug 之前拍的）。
+        #:
+        #: ⚠ 这里**先过滤显示**（纯读，不写盘）—— 用户不用等"下次点分析"
+        #: 才看不到它们；真正的删除在 ``repair()`` 里（写路径）做。
+        known = ([s for s in history.snapshots if s.player_id]
+                 if history is not None else [])
+        if not known:
             hint = CaptionLabel(
                 "还没有历史 —— 点「分析」后会按时间记下来。", self.history_host)
             hint.setTextColor(*MUTED)
@@ -735,7 +745,7 @@ class GachaWidget(ScrollArea):
         note.setWordWrap(True)
         self.history_box.addWidget(note)
 
-        for snapshot in history.snapshots[:20]:      # 只列最近 20 次，够看
+        for snapshot in known[:20]:                  # 只列最近 20 次，够看
             #: ★ 多账号：标出这次是**哪个号**拉的（用户 2026-10-06）
             label = gacha_store.account_label(snapshot.player_id)
             row = CaptionLabel(

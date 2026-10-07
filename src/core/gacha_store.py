@@ -371,19 +371,23 @@ class GachaHistory:
     def repair(self) -> int:
         """把历史遗留问题一次修干净，返回**改动条数**（0 = 不用动）。
 
-        ## 现在修两件事
+        ## 现在修三件事
 
         1. **重复**：旧版去重键留下的"同一条存两份"
            （见 :meth:`dedupe_legacy_keys`，实测 629 → 1419）；
         2. **身份键过期**：记录改了 ``playerId`` / ``_nth`` 之后，
            dict 的键还是旧的字符串，得按 :func:`record_key` 重算
-           （见 :meth:`rekey_all`）。
+           （见 :meth:`rekey_all`）；
+        3. **未知账号的快照**：升级前的旧快照没有 ``player_id``
+           （见 :meth:`drop_unknown_snapshots`，用户 2026-10-06：
+           "未知账号的干掉"）。
 
         ⚠ 这个方法**会改内存**，落盘由调用方决定
         （``GachaHistoryStore.load_and_repair``）—— 这样测试能单独验逻辑，
         不会碰真实文件。
         """
-        return self.dedupe_legacy_keys() + self.rekey_all()
+        return (self.dedupe_legacy_keys() + self.rekey_all()
+                + self.drop_unknown_snapshots())
 
     def rekey_all(self) -> int:
         """按当前字段**重算所有身份键**，返回需要挪位置的条数。
@@ -458,6 +462,32 @@ class GachaHistory:
         if removed:
             self.records = rebuilt
         return removed
+
+    def drop_unknown_snapshots(self) -> int:
+        """★★ 删掉「未知账号」的历史快照，返回删了几条。
+
+        ## 用户 2026-10-06（截图圈出那三行）
+
+            "未知账号的干掉"
+
+        ## 这些是什么
+
+        它们是**升级到多账号版本之前**留下的快照 —— 那时 ``PullSnapshot``
+        还没有 ``player_id`` 字段，读回来就是空串，界面显示成「未知账号」。
+
+        ⚠ 其中还夹着**错误数据**：``total=2018`` 那条是我修"复制记录"
+        bug 之前拍的快照（当时库里真有 2018 条重复记录）。留着会让用户
+        以为"我曾经抽了 2018 抽"。
+
+        ## ⚠ 为什么不"猜"它属于当前账号
+
+        猜的话就是把 2018 那个错数字认领给用户 —— 比显示「未知账号」更糟。
+        **直接删掉**：记录（``records``）本身一条不少，只是少了几行
+        "某次拉取时累计到多少"的流水。
+        """
+        before = len(self.snapshots)
+        self.snapshots = [s for s in self.snapshots if s.player_id]
+        return before - len(self.snapshots)
 
     # ---------------------------------------------------------------- 多账号
     def players(self) -> list[str]:
