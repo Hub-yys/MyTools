@@ -693,9 +693,13 @@ def _expand_area(parent, title: str, text: str) -> QWidget:
     area = QWidget(parent)
     area.setObjectName("expandArea")
     #: ⚠ 样式带选择器（否则会套到里面的子控件上，图标会变空方块）
+    #:
+    #: ⚠⚠ 底色**跟皮肤取** —— 跟 :func:`_expand_panel` 是同一个 bug
+    #: （那边写死 ``#f5f6f8``，这边也是）。
     area.setStyleSheet(
-        "#expandArea { background: #f5f6f8; border-radius: 4px;"
-        " border-left: 3px solid #3d4148; }")
+        f"#expandArea {{ background: {solid_card_color()};"
+        f" border-radius: 4px;"
+        f" border-left: 3px solid {section_border()}; }}")
     box = QVBoxLayout(area)
     box.setContentsMargins(10, 6, 8, 6)
     box.setSpacing(3)
@@ -745,9 +749,20 @@ def _expand_panel(parent) -> tuple[QWidget, QLabel, QLabel]:
     panel = QWidget(parent)
     panel.setObjectName("expandPanel")
     #: ⚠ 样式必须带选择器（不带会级联到子控件 —— 之前踩过）
+    #:
+    #: ⚠⚠ 底色**跟皮肤取**（用户 2026-10-06 第三次报"这里还没改呢"）
+    #:
+    #: 原来写死 ``#f5f6f8``（浅灰）—— 深色皮肤下整块发白、字看不见。
+    #: 我前两轮扫"写死的白底"时**漏了它**：我的正则只列了
+    #: ``white|#fff|#ffffff|#f7f7f7|#fafafa|#f5f5f5`` 几个具体色值，
+    #: 而这个是 ``#f5f6f8``。
+    #:
+    #: → 扫描方式已经改成"**按亮度判断**"（见
+    #: ``tests/test_character_build.TestNoHardcodedLightBackground``）。
     panel.setStyleSheet(
-        "#expandPanel { background: #f5f6f8; border-radius: 4px;"
-        " border-left: 3px solid #3d4148; }")
+        f"#expandPanel {{ background: {solid_card_color()};"
+        f" border-radius: 4px;"
+        f" border-left: 3px solid {section_border()}; }}")
     box = QVBoxLayout(panel)
     box.setContentsMargins(12, 8, 10, 8)
     box.setSpacing(4)

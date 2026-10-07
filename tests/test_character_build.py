@@ -1649,6 +1649,56 @@ class TestColorsFollowSkin(unittest.TestCase):
         self.assertLess(self._lum("#000000"), 5)
         self.assertGreater(self._lum("#ffffff"), 250)
 
+    def test_expand_panels_follow_skin(self):
+        """★★★ 技能/共鸣链的**展开面板**底色要跟皮肤。
+
+        ## ⚠⚠ 用户 2026-10-06 第三次报（截图圈出技能/共鸣链两块）
+
+            "这里还没改呢"
+
+        两个函数都写死了 ``#f5f6f8``::
+
+            _expand_panel()   → 技能 / 共鸣链**共用**的那块（用户在用的）
+            _expand_area()    → "每条一个框"那版（暂时没用到，但测试在用）
+
+        ⚠⚠ **为什么光靠亮度扫描不够**（护栏验证时发现的）：
+        扫描只管"太亮"。把它改成写死**深色**（``#3d4148``）就……
+        扫描不报 → **漏掉**。
+
+        ⚠⚠⚠ **而且第一版这条测试也抓不住**（比较对象挑错了）：
+        我比的是**整段 styleSheet** —— 但 ``border-left`` 用的是
+        ``section_border()``，它**还在跟皮肤**，所以两段样式仍然不同
+        → ``assertNotEqual`` 通过 → 写死背景**蒙混过关**。
+
+        → 必须**只比背景色那一段**。
+        """
+        from src.core import skins
+        from src.tools.game.character_build import detail_view as dv
+
+        def bg_of(css: str) -> str:
+            """从样式里抠出 ``background:`` 那个值（不含 border 那些）。"""
+            seg = css.split("background:", 1)[1]
+            return seg.split(";", 1)[0].strip()
+
+        getters = {
+            "_expand_panel": lambda: dv._expand_panel(None)[0].styleSheet(),
+            "_expand_area": lambda: dv._expand_area(None, "t", "x")
+            .styleSheet(),
+        }
+        for name, get in getters.items():
+            with self.subTest(func=name):
+                skins.apply_skin("mist", save=False)
+                light = bg_of(get())
+                skins.apply_skin("deepglass", save=False)
+                dark = bg_of(get())
+
+                self.assertNotEqual(light, dark,
+                                    f"{name} 的**背景色**在深浅皮肤下一样 "
+                                    f"—— 说明是写死的（{light}）")
+                #: 深色皮肤下必须是**深**的（写死深色也别想蒙过去）
+                self.assertLess(self._lum(dark), 120,
+                                f"{name} 深色皮肤下背景不深（{dark}）")
+
     def test_section_bg_follows_skin(self):
         """★★★ 卡片底色**不能再是纯白** —— 深色皮肤下要变深。"""
         from src.core import skins
@@ -1747,39 +1797,58 @@ class TestColorsFollowSkin(unittest.TestCase):
         self.assertNotIn("#ffffff", css.lower(),
                          f"深色皮肤下卡片还是白底（{css[:70]}）")
 
-    def test_no_hardcoded_white_backgrounds(self):
-        """★★★ 全项目：**不许再写死白底**。
+    def test_no_hardcoded_light_backgrounds(self):
+        """★★★ 全项目：**不许再写死浅色底**（按**亮度**判，不列色值表）。
 
-        ## ⚠⚠ 用户 2026-10-06 报了**三次**同类问题
+        ## ⚠⚠ 用户 2026-10-06 报了**四次**同类问题
 
             "这里字还是不好看见，然后换了皮肤 这里应该也要换色"
-            "这里还是白色"      ← 声骸卡片 ``background: white``
+            "这里还是白色"          ← 声骸卡片 background: white
+            "这里还没改呢"          ← 技能/共鸣链展开面板 #f5f6f8
 
-        我修 ``_section`` 的时候**漏了** ``_phantom_card`` ——
-        同一个文件里两处写死的白底，我只改了看得见的那处。
+        ## ⚠⚠⚠ 我前两轮的扫描**方式就是错的**
 
-        → 这条**扫全项目**，别再靠"用户指哪我改哪"。
+        第一版我列了个色值表::
+
+            white|#fff|#ffffff|#f7f7f7|#fafafa|#f5f5f5
+
+        → 漏掉 ``#f5f6f8``（用户截图里那个）。
+
+        **列色值永远列不全。** → 改成**按亮度判断**：
+        把 ``background:`` 后面的颜色解析出来，**亮度 > 200 且不透明**
+        就报错（深色皮肤下那一定是"发白的一块"）。
+
+        ⚠ 例外：**明确标注** ``# noqa: light-bg`` 的行（比如"深色标题栏"
+        那种有意为之的），或者带 ``alpha < 0.5`` 的（半透明叠加另算）。
         """
         import pathlib
         import re
 
+        from src.core import skins
+
         root = pathlib.Path(__file__).resolve().parent.parent / "src"
-        #: 写死的浅色底（深色皮肤下会发白）
-        pat = re.compile(
-            r"background:\s*(white|#fff\b|#ffffff\b|#f7f7f7\b|#fafafa\b"
-            r"|#f5f5f5\b|rgb\(\s*255\s*,\s*255\s*,\s*255\s*\))", re.I)
         offenders = []
         for f in root.rglob("*.py"):
             for i, line in enumerate(f.read_text(encoding="utf-8")
                                      .splitlines(), 1):
                 s = line.strip()
-                if s.startswith("#"):
+                if s.startswith("#") or "noqa: light-bg" in line:
                     continue
-                if pat.search(line):
-                    offenders.append(f"{f.name}:{i} {s[:60]}")
+                for m in re.finditer(
+                        r"background(?:-color)?\s*:\s*([^;\"'}]+)", line):
+                    raw = m.group(1).strip()
+                    parsed = skins.parse_color(raw)
+                    if parsed is None:
+                        continue
+                    r, g, b, a = parsed
+                    if a < 0.5:
+                        continue          #: 半透明另算（叠加后未必亮）
+                    lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                    if lum > 200:
+                        offenders.append(f"{f.name}:{i} {raw} (亮度 {lum:.0f})")
         self.assertEqual(
             offenders, [],
-            f"这些地方写死了白底 —— 深色皮肤下会发白：{offenders}")
+            f"这些地方写死了**浅色底** —— 深色皮肤下会发白：{offenders}")
 
     def test_phantom_card_follows_skin(self):
         """★★★ 声骸卡片底要跟皮肤（用户："这里还是白色"）。"""
