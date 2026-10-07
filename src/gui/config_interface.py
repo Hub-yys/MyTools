@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import (
     FluentIcon,
@@ -27,7 +26,7 @@ from qfluentwidgets import (
     StrongBodyLabel,
 )
 
-from ..core.battle_profile import BattleProfile, BattleProfileStore
+from ..core.battle_profile import BattleProfileStore
 from ..core.echo_profile import EchoProfileStore
 from ..core.loadout import Loadout, LoadoutStore
 from ..core.registry import logger
@@ -45,7 +44,7 @@ from .echo_profile_ui import (
     config_display_name,
 )
 from .loadout_dialog import LoadoutDetailDialog, LoadoutDialog
-from .pickers import avatar_icon, load_icon
+from .pickers import avatar_icon
 
 #: 行内边距 / 元素间距
 ROW_PADDING = 16

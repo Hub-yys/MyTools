@@ -44,14 +44,12 @@ from ..core.game_data import (
     CHARACTERS,
     COST_SECTIONS,
     ECHO_SETS,
-    EchoInfo,
     character_choice_error,
     find_character,
     find_echo_set,
 )
 from ..core.loadout import (
     DEFAULT_QUALITIES,
-    DEFAULT_STATUS,
     QUALITY_CHOICES,
     STATUS_CHOICES,
     EchoPick,

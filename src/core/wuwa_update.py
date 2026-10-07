@@ -42,7 +42,6 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from . import game_data
 from .game_data import DATA_ROOT

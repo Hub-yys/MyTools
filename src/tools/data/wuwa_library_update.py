@@ -19,7 +19,6 @@ from qfluentwidgets import (
     PrimaryPushButton,
     PushButton,
     StrongBodyLabel,
-    SubtitleLabel,
     TitleLabel,
 )
 

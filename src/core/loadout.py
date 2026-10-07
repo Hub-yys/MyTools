@@ -15,9 +15,6 @@ from datetime import datetime
 from pathlib import Path
 
 from .game_data import (
-    COST_1,
-    COST_3,
-    COST_4,
     COST_SECTIONS,
     EchoInfo,
     find_character,

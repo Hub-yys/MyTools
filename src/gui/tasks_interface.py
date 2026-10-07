@@ -34,7 +34,6 @@ from ..core.registry import ToolRegistry, logger
 from ..core.run_report import (
     RoundReport,
     RunReportStore,
-    TotalStats,
     flow_result_from_summary,
 )
 from ..core.task_start import TaskStartError, check_start

@@ -24,54 +24,36 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QGridLayout,
     QHBoxLayout,
     QVBoxLayout,
     QWidget,
 )
 from qfluentwidgets import (
-    BodyLabel,
     CaptionLabel,
     CardWidget,
-    CheckBox,
     FluentIcon,
     InfoBar,
     PrimaryPushButton,
     PushButton,
     ScrollArea,
     StrongBodyLabel,
-    SwitchButton,
 )
 
 from ....core import paths
 from ....core.categories import ToolCategory
 from ....core.echo_profile import KIND as ECHO_PROFILE_KIND
 from ....core.loadout import KIND as LOADOUT_KIND
-from ....gui.widgets import CollapsibleCard, ConfigCard, NumberField, NumberStepper
 from ....core.registry import logger, registry
 from ....core.tool_base import BaseTool
 from ..auto_combat.okww_boot import get_host
 from .settings_editor import EchoSettingsEditor
 from .settings import (
-    DEFAULT_CORE,
     DEFAULT_VALID_COUNT,
     TASK_KEY,
     EchoSettings,
-    valid_count_range,
 )
 from .stats import (
-    ALL_STATS,
-    CRIT,
-    CRIT_DMG,
-    DEFAULT_CRIT_DMG_MIN,
-    DEFAULT_CRIT_MIN,
     format_result_report,
-    MAX_CORE_STATS,
-    MAX_CRIT,
-    MAX_CRIT_DMG,
-    MAX_VALID_COUNT,
-    MIN_VALID_COUNT,
-    OPTIONAL_CHOICES,
     JudgeConfig,
 )
 

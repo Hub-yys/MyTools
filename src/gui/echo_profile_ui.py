@@ -154,7 +154,7 @@ class EchoProfileDialog(MessageBoxBase):
         self._taken = {str(n) for n in taken_chars if str(n) != self._original}
 
         from ..core import game_data  # noqa: PLC0415 - 见类文档（懒导入）
-        from .pickers import FilterComboBox, load_icon  # noqa: PLC0415
+        from .pickers import FilterComboBox  # noqa: PLC0415
 
         from ..tools.game.echo_enhance.settings import (
             EchoSettings,  # noqa: PLC0415 - 见类文档
@@ -362,7 +362,6 @@ class EchoProfileRow(SimpleCardWidget):
     def _build_identity(self) -> QWidget:
         """左列：头像在上，名字在**下面**（和 ``LoadoutRow`` 一致）。"""
         from ..core import game_data  # noqa: PLC0415 - 只在建行时用
-        from .pickers import load_icon  # noqa: PLC0415
 
         box = QWidget(self)
         box.setFixedWidth(ROW_LEFT_WIDTH)

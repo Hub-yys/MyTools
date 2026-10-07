@@ -40,8 +40,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-import numpy as np
-
 from ....core import paths
 from ....core.loadout import normalize_qualities, normalize_status
 from .controller import GameWindow, WindowNotFound

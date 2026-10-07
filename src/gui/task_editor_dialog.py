@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget, QSizePolicy
+from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget, QSizePolicy
 from qfluentwidgets import (
     CaptionLabel,
     InfoBar,
@@ -68,7 +68,6 @@ from .pickers import (
     CHARACTER_BOX_WIDTH,
     FilterComboBox,
     avatar_icon,
-    load_icon,
     pinyin_keys,
 )
 from .widgets import tool_icon_of
@@ -386,7 +385,7 @@ class FlowListWidget(QListWidget):
         count = self.count()
         if count < 2:
             return
-        from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF, QFont
+        from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
         from PySide6.QtCore import QPointF, Qt as _Qt
 
         from qfluentwidgets import isDarkTheme
