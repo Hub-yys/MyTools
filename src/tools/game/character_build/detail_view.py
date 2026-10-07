@@ -145,7 +145,8 @@ def solid_card_color() -> str:
         skin = skins.active_skin()
     except (KeyError, TypeError, AttributeError):
         return "#f7f7f7"
-    return _solid(skin["card"], skin["bg"][0][1], skin["mode"] == "dark")
+    return skins.solid_card_on(skin["card"], skin["bg"][0][1],
+                               skin["mode"] == "dark")
 
 
 def hit_row_color() -> str:
@@ -164,75 +165,16 @@ def hit_row_color() -> str:
         return "#fdf3d0"
     base = skin["bg"][0][1]
     #: 深色皮肤 → 压在深底上的暗金；浅色 → 淡黄
-    return _blend(base, "#c8a02c" if skin["mode"] == "dark" else "#f5d76e",
-                  0.22 if skin["mode"] == "dark" else 0.35)
-
-
-def _rgba(text: str) -> tuple[int, int, int, float] | None:
-    """解析 ``rgba(r, g, b, a)`` / ``#rrggbb`` → ``(r, g, b, a)``。"""
-    import re
-
-    t = str(text or "").strip()
-    m = re.match(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\)",
-                 t)
-    if m:
-        return (int(m.group(1)), int(m.group(2)), int(m.group(3)),
-                float(m.group(4)) if m.group(4) else 1.0)
-    m = re.match(r"#([0-9a-fA-F]{6})$", t)
-    if m:
-        h = m.group(1)
-        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 1.0)
-    return None
-
-
-def _blend(base: str, top: str, alpha: float) -> str:
-    """把 ``top`` 按 ``alpha`` 叠到 ``base`` 上，返回不透明的 ``#rrggbb``。"""
-    b = _rgba(base)
-    t = _rgba(top)
-    if not b or not t:
-        return base if b else "#f7f7f7"
-    r = round(b[0] * (1 - alpha) + t[0] * alpha)
-    g = round(b[1] * (1 - alpha) + t[1] * alpha)
-    bl = round(b[2] * (1 - alpha) + t[2] * alpha)
-    return f"#{max(0, min(255, r)):02x}{max(0, min(255, g)):02x}" \
-           f"{max(0, min(255, bl)):02x}"
-
-
-def _solid(card: str, base: str, dark: bool) -> str:
-    """把半透明的 ``card`` **合成到**背景 ``base`` 上，得到实心色。
-
-    ⚠ 表格行要实心才看得出分块（半透明叠在渐变上会「糊成一片」）。
-    """
-    c = _rgba(card)
-    if not c:
-        return base if _rgba(base) else ("#22283d" if dark else "#f7f7f7")
-    r = round(c[0] * c[3] + _rgba(base)[0] * (1 - c[3])) if _rgba(base) \
-        else c[0]
-    g = round(c[1] * c[3] + _rgba(base)[1] * (1 - c[3])) if _rgba(base) \
-        else c[1]
-    b = round(c[2] * c[3] + _rgba(base)[2] * (1 - c[3])) if _rgba(base) \
-        else c[2]
-    #: 深色皮肤下卡片常常几乎透明 → 合成后跟背景一样，行就看不出分块。
-    #: 那就**往白里提一点**（深底上提亮 = 可见）。
-    if dark and abs(r - _rgba(base)[0]) < 6:
-        r, g, b = r + 14, g + 14, b + 18
-    return f"#{max(0, min(255, r)):02x}{max(0, min(255, g)):02x}" \
-           f"{max(0, min(255, b)):02x}"
+    return skins.blend_color(
+        base, "#c8a02c" if skin["mode"] == "dark" else "#f5d76e",
+        0.22 if skin["mode"] == "dark" else 0.35)
 
 
 #: 主属性文字色（**规则**：高亮格用这个金棕，正常格用皮肤正文色）
 MAIN_FG = "#8a6d1a"
-#: 旧名保留 —— 见 :func:`solid_card_color` / :func:`hit_row_color`
-#:
-#: ⚠ 这两个原来是**写死的浅色常量**，深色皮肤下"浅字压浅底"看不见。
-#: 现在改成函数（跟着皮肤算），这里保留名字是为了**老测试不用改**：
-#: 它们只用来比对"两个值不一样"，函数对象同样能比。
-SUB_BG = solid_card_color
-SUB_HIT_BG = hit_row_color
 MAIN_BG = "transparent"
 #: 命中 / 未命中的标记色
 HIT_FG = "#c8a02c"
-MISS_FG = "#9aa0a6"
 #: 未达标红
 BAD_FG = "#c42b1c"
 
@@ -366,8 +308,7 @@ SECTION_BG = "#ffffff"          #: 旧名保留（见 :func:`section_bg`）
 SECTION_HEAD_BG = "#3d4148"
 #: 标题栏文字色（深灰底上永远用浅字，所以这个也保留）
 SECTION_HEAD_FG = "#f2f3f5"
-#: 卡片边框 / 圆角
-SECTION_BORDER = "rgba(0,0,0,0.14)"
+#: 卡片圆角（边框色见 :func:`section_border` —— 它跟着皮肤走）
 SECTION_RADIUS = 8
 
 
@@ -647,7 +588,7 @@ def _phantom_card(item, parent, icon_index=None) -> QWidget:
             line.setObjectName("subLine")
             line.setStyleSheet(
                 f"#subLine {{ background: "
-                f"{SUB_HIT_BG() if hit else SUB_BG()};"
+                f"{hit_row_color() if hit else solid_card_color()};"
                 f" border-radius: 3px; }}")
             row = QHBoxLayout(line)
             row.setContentsMargins(4, 1, 4, 1)
@@ -927,7 +868,7 @@ def _standard_block(standard, current: dict, parent) -> QWidget:
         cell = QWidget(host)
         cell.setObjectName("stdRow")
         cell.setStyleSheet(
-            f"#stdRow {{ background: {SUB_HIT_BG() if not ok else ''};"
+            f"#stdRow {{ background: {hit_row_color() if not ok else ''};"
             f" border-radius: 3px; }}")
         row = QHBoxLayout(cell)
         row.setContentsMargins(4, 2, 4, 2)

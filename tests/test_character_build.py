@@ -951,15 +951,15 @@ class TestDetailView(unittest.TestCase):
 
         #: ★ 2. 命中行必须有黄底
         #:
-        #: ⚠ ``SUB_HIT_BG`` 从**常量变成了函数**（2026-10-06：底色要跟皮肤走，
-        #: 见 ``TestColorsFollowSkin``）—— 这里得**调一下**拿到颜色字符串。
-        hit_color = DV.SUB_HIT_BG()
+        #: ⚠ 底色现在是**函数**（2026-10-06：要跟皮肤走，
+        #: 见 ``TestColorsFollowSkin``）—— 调一下拿到颜色字符串。
+        hit_color = DV.hit_row_color()
         hit_rows = [w for w in view.findChildren(QWidget)
                     if hit_color in (w.styleSheet() or "")]
         self.assertTrue(hit_rows, "命中的副词条没黄色高亮")
 
         #: ★ 3. 未命中的行**不能**用黄底（否则等于没区分）
-        plain_color = DV.SUB_BG()
+        plain_color = DV.solid_card_color()
         for w in view.findChildren(QWidget):
             css = w.styleSheet() or ""
             if plain_color in css:
@@ -1028,8 +1028,8 @@ class TestDetailView(unittest.TestCase):
         """
         from src.tools.game.character_build import detail_view as DV
 
-        #: ⚠ ``SUB_HIT_BG`` 现在是**函数**（跟着皮肤算）—— 调一下再比
-        self.assertNotEqual(DV.MAIN_BG, DV.SUB_HIT_BG(),
+        #: ⚠ 两个都是**函数**（跟着皮肤算）—— 调一下再比
+        self.assertNotEqual(DV.MAIN_BG, DV.hit_row_color(),
                             "主属性和命中副词条还是同一个颜色 —— 分不清")
 
     def test_no_empty_icon_boxes(self):
@@ -1153,7 +1153,8 @@ class TestDetailView(unittest.TestCase):
         for sid in ("mist", "deepglass"):
             with self.subTest(skin=sid):
                 skins.apply_skin(sid, save=False)
-                self.assertNotEqual(DV.SUB_HIT_BG(), DV.SUB_BG(),
+                self.assertNotEqual(DV.hit_row_color(),
+                                    DV.solid_card_color(),
                                     f"「{sid}」下命中色和未命中色一样 —— "
                                     f"等于没高亮")
 

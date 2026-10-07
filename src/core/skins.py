@@ -655,6 +655,81 @@ def _rgba(text: str) -> tuple[int, int, int, float]:
     return r, g, b, max(0.0, min(1.0, alpha))
 
 
+def parse_color(text: str) -> tuple[int, int, int, float] | None:
+    """★ 解析**任意颜色写法**（``rgba(...)`` / ``rgb(...)`` / ``#rrggbb``）。
+
+    跟 :func:`_rgba` 的区别：
+      · ``_rgba`` 只认 ``rgba()``，认不出就回落成白色（给 Qt 调色板用）；
+      · 这个**两种都认**，认不出返回 ``None``（给"算混色"用 ——
+        那里必须知道"到底解析出来了没有"，不能瞎给个白色）。
+
+    ## ⚠⚠ 这份实现**只能有一份**
+
+    2026-10-06 我在 ``detail_view.py`` 里又写了一遍同样的解析/混色 ——
+    于是同一套颜色数学有**两份实现**（改了这处忘那处）。
+
+    → 现在都走这里：:func:`blend_color` / :func:`solid_card_on` 是公共实现。
+    """
+    import re
+
+    t = str(text or "").strip()
+    m = re.match(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)"
+                 r"\s*(?:,\s*([\d.]+))?\)", t, re.I)
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                float(m.group(4)) if m.group(4) is not None else 1.0)
+    m = re.match(r"#([0-9a-fA-F]{6})$", t)
+    if m:
+        h = m.group(1)
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 1.0)
+    m = re.match(r"#([0-9a-fA-F]{3})$", t)
+    if m:
+        h = "".join(c * 2 for c in m.group(1))
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 1.0)
+    return None
+
+
+def blend_color(base: str, top: str, alpha: float) -> str:
+    """★ 把 ``top`` 按 ``alpha`` 叠到 ``base`` 上，返回不透明的 ``#rrggbb``。
+
+    ⚠ 任一边解析不出来就**原样返回 ``base``**（不瞎算）。
+    """
+    b = parse_color(base)
+    t = parse_color(top)
+    if not b or not t:
+        return base
+    a = max(0.0, min(1.0, alpha))
+    return "#{:02x}{:02x}{:02x}".format(
+        *[max(0, min(255, round(b[i] * (1 - a) + t[i] * a)))
+          for i in range(3)])
+
+
+def solid_card_on(card: str, base: str, dark: bool) -> str:
+    """★ 把半透明的 ``card`` **合成到**背景 ``base`` 上，得到实心色。
+
+    ## 为什么需要
+
+    Qt 的**调色板**不吃 alpha；而且表格行要**实心**才看得出分块
+    （半透明叠在渐变上会「糊成一片」）。
+
+    ⚠ 深色皮肤下卡片常常**几乎全透明**（``rgba(255,255,255,0.055)``）——
+    合成后跟背景一模一样，行就看不出分块了。这时**往亮里提一点**
+    （深底上提亮 = 看得见）。
+    """
+    c = parse_color(card)
+    b = parse_color(base)
+    if not c:
+        return base if b else ("#22283d" if dark else "#f7f7f7")
+    if not b:
+        return "#{:02x}{:02x}{:02x}".format(*[max(0, min(255, x))
+                                               for x in c[:3]])
+    r, g, bl = (round(c[i] * c[3] + b[i] * (1 - c[3])) for i in range(3))
+    if dark and abs(r - b[0]) < 6:
+        r, g, bl = r + 14, g + 14, bl + 18
+    return "#{:02x}{:02x}{:02x}".format(
+        max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, bl)))
+
+
 def _solid_card(skin: dict, bg, dark: bool):
     """把**半透明的卡片色**算成一个**实色**（Qt 调色板不吃 alpha）。
 
@@ -673,15 +748,19 @@ def _solid_card(skin: dict, bg, dark: bool):
 
 
 def _blend(base, top, alpha: float):
-    """把 ``top`` 按 ``alpha`` 混到 ``base`` 上（算个实色）。"""
+    """把 ``top`` 按 ``alpha`` 混到 ``base`` 上（返回 **QColor**）。
+
+    ⚠ 这是 :func:`blend_color` 的 **QColor 版** —— 调色板那边要的是
+    ``QColor`` 对象不是字符串。**混色公式只有一份**
+    （:func:`parse_color` / :func:`blend_color` 那套），这里转一下类型。
+
+    ⚠⚠ 2026-10-06 之前这里是**第二份**独立的混色实现 ——
+    和 ``detail_view`` 里那份各算各的。现在统一了。
+    """
     from PySide6.QtGui import QColor
 
-    a = max(0.0, min(1.0, alpha))
-    return QColor(
-        int(base.red() * (1 - a) + top.red() * a),
-        int(base.green() * (1 - a) + top.green() * a),
-        int(base.blue() * (1 - a) + top.blue() * a),
-    )
+    hexed = blend_color(base.name(), top.name(), alpha)
+    return QColor(hexed)
 
 
 def _paint_title_bar(window, skin: dict) -> None:

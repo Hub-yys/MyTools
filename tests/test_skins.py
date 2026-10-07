@@ -850,6 +850,138 @@ class TestWindowGetsQss(unittest.TestCase):
                          "重复 apply 没有跳过 —— 又回到每次都卡 1.4 秒")
 
 
+class TestColorMathHasOneHome(unittest.TestCase):
+    """★★★ 颜色数学（解析 / 混色）**只能有一份实现**。
+
+    ## ⚠⚠ 这是实际发生的冗余（2026-10-06 自查发现）
+
+    我在 ``detail_view.py`` 里为了"算实心底色"又写了一遍
+    ``_rgba`` / ``_blend`` / ``_solid`` —— 和 ``skins.py`` 里那份
+    **各算各的**。同一套公式两份实现，改了这处忘那处。
+
+    → 统一到 :mod:`src.core.skins`：``parse_color`` / ``blend_color`` /
+    ``solid_card_on``。这条测试盯着**别再分裂**。
+
+    ⚠ 用**静态扫描**（跟 ``TestNoStyleCascade`` 一个套路）——
+    比"跑一遍看结果对不对"更能挡住"复制一份小改改"。
+    """
+
+    @staticmethod
+    def _color_math_defs() -> list[tuple[str, int, str]]:
+        import pathlib
+        import re
+
+        root = pathlib.Path(__file__).resolve().parent.parent / "src"
+        #: 颜色数学的典型特征（函数体里出现这些 = 在算颜色）
+        names = ("_rgba", "parse_color", "blend_color", "_blend", "_solid",
+                 "solid_card_on", "solid_card")
+        found = []
+        for f in root.rglob("*.py"):
+            text = f.read_text(encoding="utf-8")
+            for m in re.finditer(r"^def (\w+)\s*\(", text, re.M):
+                if m.group(1) in names:
+                    line = text[:m.start()].count("\n") + 1
+                    found.append((str(f), line, m.group(1)))
+        return found
+
+    def test_color_math_lives_in_skins_only(self):
+        """★★★ 解析/混色函数**只准定义在** ``src/core/skins.py``。"""
+        import pathlib
+
+        skins_path = str(pathlib.Path("src", "core", "skins.py"))
+        offenders = [(f, ln, nm) for f, ln, nm in self._color_math_defs()
+                     if pathlib.Path(f).name != "skins.py"
+                     or "core" not in pathlib.Path(f).parts]
+        self.assertEqual(
+            offenders, [],
+            f"颜色数学又分裂了（只该在 {skins_path}）：{offenders}")
+
+    def test_parse_color_handles_both_syntaxes(self):
+        """★★ ``parse_color`` 两种写法都要认（``rgba()`` 和 ``#rrggbb``）。"""
+        from src.core import skins
+
+        self.assertEqual(skins.parse_color("rgba(255, 255, 255, 0.5)"),
+                         (255, 255, 255, 0.5))
+        self.assertEqual(skins.parse_color("#102030"), (16, 32, 48, 1.0))
+        self.assertEqual(skins.parse_color("#abc"), (170, 187, 204, 1.0))
+        #: ⚠ 认不出要返回 None（不能瞎给白色 —— 调用方靠它判断）
+        self.assertIsNone(skins.parse_color("不是颜色"))
+        self.assertIsNone(skins.parse_color(""))
+
+    def test_blend_color_math(self):
+        """★★ 混色公式：alpha=0 取底、1 取顶、0.5 取中间。"""
+        from src.core import skins
+
+        self.assertEqual(skins.blend_color("#000000", "#ffffff", 0.0),
+                         "#000000")
+        self.assertEqual(skins.blend_color("#000000", "#ffffff", 1.0),
+                         "#ffffff")
+        mid = skins.blend_color("#000000", "#ffffff", 0.5)
+        #: ⚠ 是 ``#808080`` 不是 ``#7f7f7f`` —— 实现用 ``round``（128 = 0x80）。
+        #: 我第一版凭直觉写了 7f，被测试当场纠正。
+        self.assertEqual(mid, "#808080", f"50% 混色算错了（{mid}）")
+        #: 解析不出来时**原样返回底**，不瞎算
+        self.assertEqual(skins.blend_color("#123456", "乱写", 0.5), "#123456")
+
+    def test_solid_card_on_makes_opaque_hex(self):
+        """★★ 半透明卡片要合成成**不透明的** ``#rrggbb``。"""
+        from src.core import skins
+
+        out = skins.solid_card_on("rgba(255,255,255,0.055)", "#0B1026",
+                                  True)
+        self.assertRegex(out, r"^#[0-9a-f]{6}$", f"不是不透明 hex（{out}）")
+        #: 深色皮肤下要**提亮**，否则跟背景一样看不出分块
+        self.assertNotEqual(out, "#0b1026",
+                            "深色皮肤下卡片跟背景同色 —— 看不出分块")
+
+    def test_qcolor_blend_uses_shared_formula(self):
+        """★★★ ``_blend``（QColor 版）必须和 :func:`blend_color` **同源**。
+
+        ## ⚠⚠ 为什么加这条（护栏验证时发现）
+
+        ``test_color_math_lives_in_skins_only`` 只扫**函数定义** ——
+        函数**留在原地**、但**函数体里自己又算一遍**的情况它抓不住::
+
+            把 _blend 的实现改回"自己乘一遍" → 测试照样过
+
+        → 用**行为**校验：两条路（字符串版 / QColor 版）算同一个输入，
+        结果必须一致。
+        """
+        from PySide6.QtGui import QColor
+
+        from src.core import skins
+
+        for base, top, a in (("#000000", "#ffffff", 0.5),
+                             ("#102030", "#a0b0c0", 0.25),
+                             ("#0B1026", "#ffffff", 0.055)):
+            with self.subTest(base=base, top=top, alpha=a):
+                expect = skins.blend_color(base, top, a)
+                got = skins._blend(QColor(base), QColor(top), a)
+                self.assertEqual(
+                    got.name(), expect,
+                    f"_blend 和 blend_color 算出来不一样 —— 公式分裂了"
+                    f"（{got.name()} vs {expect}）")
+
+    def test_palette_base_is_not_black(self):
+        """★★★ 调色板的 ``Base`` 不能是黑的（这个 bug 修过一次）。
+
+        ``QColor("rgba(...)")`` **解析不出来、返回黑色** ——
+        第一版就是这么写的，暗色皮肤下日志框还是黑底。
+        """
+        from PySide6.QtGui import QPalette
+
+        from src.core import skins
+
+        app = _app()
+        for sid in ("mist", "deepglass"):
+            with self.subTest(skin=sid):
+                skins.apply_skin(sid, save=False)
+                base = app.palette().color(QPalette.ColorRole.Base)
+                self.assertNotEqual(base.name(), "#000000",
+                                    f"「{sid}」的 Base 是黑的 —— "
+                                    f"rgba 解析又出问题了")
+
+
 class TestSkinReallyChangesPixels(unittest.TestCase):
     """★★★ **真的换肤了** —— 渲染后逐点采样比对。
 

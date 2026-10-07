@@ -170,22 +170,6 @@ def _seq_of(record: dict) -> int:
         return 0
 
 
-def _identity_without_nth(record: dict) -> str:
-    """身份（**不含** ``_nth``）—— 清理重复时按它分组。
-
-    ⚠ 跟 :func:`record_key` 的区别：这里故意**丢掉** ``_nth``，
-    这样"同一条的两个版本"（一个有 ``_nth`` 一个没有）会分到同一组。
-    """
-    if not isinstance(record, dict):
-        return f"|junk|{record!r}"
-    who = normalize_player(record.get("playerId"))
-    pool = str(record.get("pool_type") or record.get("cardPoolType") or "")
-    name = str(record.get("name") or "")
-    when = str(record.get("time") or "")
-    rid = str(record.get("resourceId") or "")
-    return f"{pool}|{name}|{when}|{rid}"
-
-
 def _occurrence(record: dict, seen: dict[tuple, int]) -> int:
     """这条记录在**本次拉取**里是"同秒同名"的第几次（从 0 开始）。
 
@@ -254,11 +238,6 @@ def account_label(player_id: str) -> str:
     if not who or who == _LEGACY_PLAYER:
         return "未知账号"
     return f"…{who[-6:]}" if len(who) > 6 else who
-
-
-def _guess_player_name(player_id: str) -> str:
-    """（兼容旧名）等价于 :func:`account_label`。"""
-    return account_label(player_id)
 
 
 @dataclass
