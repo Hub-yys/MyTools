@@ -631,7 +631,10 @@ class TestNavResizerTransparent(unittest.TestCase):
             from src.core import skins
             from src.gui.main_window import MainWindow
 
-            skins.apply_skin("deepglass", save=True)
+            #: ⚠ ``save=False`` —— 别写真实的用户配置文件。
+            #: 原来这里是 ``save=True``，**测试会改掉用户本地的皮肤设置**
+            #: （跟之前 ``gacha_history.json`` 被测试写坏是同一类问题）。
+            skins.apply_skin("deepglass", save=False)
             w = MainWindow()
             w.resize(1000, 700)
             w.show()
@@ -980,6 +983,283 @@ class TestColorMathHasOneHome(unittest.TestCase):
                 self.assertNotEqual(base.name(), "#000000",
                                     f"「{sid}」的 Base 是黑的 —— "
                                     f"rgba 解析又出问题了")
+
+
+class TestSkinPersists(unittest.TestCase):
+    """★★★ 皮肤选完要**真的存住**，重开程序还在。
+
+    ## ⚠⚠⚠ 用户 2026-10-08 装完包才发现的 bug
+
+        "我用安装包安装后，皮肤应用之后，再次重新打开，还是之前的皮肤"
+
+    ## 三个叠加的原因（都不是显而易见的）
+
+    ### ① item 挂在**模块级**，qconfig 存不了它
+
+    ``QConfig.toDict()`` 的实现是::
+
+        for name in dir(self._cfg.__class__):     # ← 只扫**类属性**
+            item = getattr(self._cfg.__class__, name)
+            if not isinstance(item, ConfigItem): continue
+
+    模块级变量它看不见 → ``qconfig.set()`` 改了内存，``save()`` **扫不到**。
+    实测：落盘只有 ``QFluentWidgets`` 一节，**没有 Skins**。
+
+    ### ② 配置文件写在**相对路径**（跟着当前工作目录跑）
+
+    ``qconfig.file`` 默认 ``WindowsPath('config/config.json')``。
+    开发时 CWD 是项目目录，看着正常；**打包后 CWD 是安装目录** ——
+    重装/卸载会清掉，装到 ``Program Files`` 还可能没权限写。
+
+    ### ③ ⚠⚠ 顺序反了：``load()`` 跑在 item 注册**之前**
+
+    这条最隐蔽。``load()`` 也是**遍历 QConfig 类属性**填值的 ——
+    如果那时 ``QConfig.skin`` 还不存在，磁盘上的值就没地方填。
+
+    实测::
+
+        磁盘 = {"Skins": {"CurrentSkin": "ember"}}
+        顺序错 → 全新进程读出来 mist
+        顺序对 → 全新进程读出来 ember   ✓
+
+    ⚠ 我验证时还绕过几圈**自己脚本的 bug**：
+      · 外层进程 ``qconfig.file`` 是旧值 → 读的是**另一个文件**
+      · 写完没恢复默认 → 读默认值本来就是对的，我却以为"没存住"
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _app()
+
+    def test_item_is_on_qconfig_class(self):
+        """★★★ item 必须挂在 **QConfig 类**上。
+
+        ⚠ 挂到"自己新建的类"上也**没用** —— ``qconfig._cfg.__class__``
+        就是 ``QConfig``，扫的是它。我第一次挂在 ``_SkinConfig`` 上，
+        验证脚本还误报成功了。
+        """
+        from qfluentwidgets.common.config import QConfig
+
+        from src.core import skins
+
+        item = skins._skin_item()
+        self.assertIs(getattr(QConfig, "skin", None), item,
+                      "皮肤 ConfigItem 没挂在 QConfig 类上 —— "
+                      "qconfig.save() 扫不到它，皮肤存不住")
+
+    def test_config_file_is_absolute_and_in_user_data(self):
+        """★★★ 落盘位置必须是**用户数据目录**下的**绝对路径**。"""
+        import pathlib
+
+        from qfluentwidgets import qconfig
+
+        from src.core import paths, skins
+
+        skins._skin_item()          #: 触发 _ensure_config_file
+        f = pathlib.Path(str(qconfig.file))
+        self.assertTrue(f.is_absolute(),
+                        f"qconfig.file 还是相对路径（{f}）—— "
+                        f"打包后会写进安装目录")
+        self.assertEqual(f.parent, paths.user_data_dir(),
+                         f"配置没落在用户数据目录（{f}）")
+
+    def test_saved_value_actually_reaches_disk(self):
+        """★★★ 换皮肤之后，磁盘上要**真的有**那个值。
+
+        ⚠ 只断言 ``current_skin()`` 不够 —— 那只读内存，
+        **内存对了磁盘没写**正是这个 bug 的表现。
+
+        ## ⚠⚠⚠ 不能靠"改 qconfig.file 到 temp"来隔离（试过，不行）
+
+        ``_skin_item()`` 里的 ``_ensure_config_file()`` 会把路径
+        **"纠正"回** ``data/config.json``（那是生产代码的**正确**行为）——
+        实测::
+
+            qconfig.load(file=tmp)          → qconfig._cfg.file = tmp
+            skins._skin_item() 一跑          → 又被改回 data/config.json
+            apply_skin(...)                  → 写进 data/config.json
+
+        → 那就**直接用真实文件**，但**先备份、测完还原**。
+        （``qconfig.set`` 还有个"值没变就早退"的坑：必须先把内存值
+        改掉，否则它什么都不写。）
+
+        ⚠⚠ 另外 ``test_skins.py`` 里**好几个测试都在 apply_skin(save=True)**
+        写同一个文件 —— 这本身就不该（会改用户配置）。
+        完整隔离需要把这些都改掉，属于另一件事，见测试文件顶部说明。
+
+        ## ⚠⚠⚠ 真正的隔离：临时文件 + 关掉"路径纠正"
+
+        直接改 ``qconfig.file`` **没用** —— ``_skin_item()`` 里的
+        ``_ensure_config_file()`` 会把它**纠正回** ``data/config.json``::
+
+            qconfig.load(file=tmp)     → _cfg.file = tmp
+            skins._skin_item() 一跑     → 又被改回 data/config.json
+            apply_skin(...)             → 写进 data/config.json（不是 tmp）
+
+        → 这条测试**暂时把路径纠正关掉**（monkeypatch 成 no-op），
+        就能安心用临时文件，**谁也抢不到、也不碰用户配置**。
+        """
+        import json
+        import pathlib
+        import tempfile
+
+        from qfluentwidgets import qconfig
+
+        from src.core import skins
+
+        target = "nebula"
+        original_load = skins._ensure_config_file
+        original_file = qconfig.file
+        tmp = pathlib.Path(tempfile.mkdtemp()) / "config.json"
+        try:
+            #: ★ 关掉路径纠正 —— 否则它会把我设的临时路径改回去
+            skins._ensure_config_file = lambda: None
+            qconfig.load(file=tmp)
+
+            #: ★ 内存值和文件值都要**不是** target，
+            #: 否则 qconfig.set() 会因为"值没变"早退、不写盘
+            skins._skin_item().value = skins.DEFAULT_SKIN
+            tmp.write_text(json.dumps(
+                {"QFluentWidgets": {},
+                 "Skins": {"CurrentSkin": skins.DEFAULT_SKIN}},
+                ensure_ascii=False), encoding="utf-8")
+            qconfig.load(file=tmp)
+
+            skins.apply_skin(target, save=True)
+
+            self.assertTrue(tmp.exists(), f"配置文件没生成（{tmp}）")
+            raw = json.loads(tmp.read_text(encoding="utf-8"))
+            self.assertIn("Skins", raw,
+                          f"落盘内容里没有 Skins 节：{list(raw)}")
+            self.assertEqual(raw["Skins"].get("CurrentSkin"), target,
+                             f"磁盘上存的不是刚设的值：{raw.get('Skins')}")
+        finally:
+            skins._ensure_config_file = original_load
+            qconfig.load(file=pathlib.Path(original_file))
+            try:
+                skins.apply_skin(skins.DEFAULT_SKIN, save=False)
+            except Exception:  # noqa: BLE001
+                pass
+
+    #: ── ★★★ 下面这条是**唯一能真正抓住"顺序"问题**的测试
+    #:
+    #: ⚠⚠⚠ 为什么必须**开新进程**（我在这里绕了好几圈）
+    #:
+    #: ``_SKIN_ITEM`` 是**模块级单例** —— 测试进程里它早就建好了，
+    #: 所以 ``_skin_item()`` 里那段"懒建"代码**根本不会执行**。
+    #:
+    #: 后果：把 ``load()`` 挪到挂载**之前**（就是把 bug 改回去），
+    #: 那 4 条**进程内**测试**全都照样通过** —— 假绿。
+    #:
+    #: 实测确认::
+    #:
+    #:     修复后          → 新进程读 nebula   ✓
+    #:     load 提前（bug） → 新进程读 mist     ✗   ← 只有新进程看得出来
+    #:
+    #: → 用 ``subprocess`` 起两个全新进程：一个写、一个读。
+    def test_skin_survives_a_real_restart(self):
+        """★★★ **真·重启**：两个独立进程 —— 一个写、一个读。
+
+        这是唯一能覆盖"启动时读盘顺序"的测法。
+        """
+        import os
+        import pathlib
+        import subprocess
+
+        root = pathlib.Path(__file__).resolve().parent.parent
+        py = str(root / ".venv" / "Scripts" / "python.exe")
+        if not pathlib.Path(py).exists():
+            self.skipTest("找不到 venv python")
+
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen",
+                   PYTHONIOENCODING="utf-8")
+
+        def run(body: str) -> str:
+            r = subprocess.run([py, "-c", head + body],
+                               capture_output=True, text=True,
+                               encoding="utf-8", errors="replace",
+                               cwd=str(root), timeout=180, env=env)
+            return ((r.stdout or "") + (r.stderr or ""))
+
+        #: ⚠⚠ 子进程也要**隔离到临时目录** —— 否则它会写用户真实的
+        #: ``data/config.json``（测试不该动用户数据）。
+        #: ``paths.user_data_dir`` 在非打包态固定是 ``<项目>/data``，
+        #: 所以在这里**猴补**掉，让 qconfig 落到 temp。
+        import tempfile
+
+        tmpdir = pathlib.Path(tempfile.mkdtemp())
+        head = (f"import sys, pathlib\n"
+                f"sys.path.insert(0, r'{root}')\n"
+                f"from src.core import paths\n"
+                f"paths.user_data_dir = lambda: pathlib.Path(r'{tmpdir}')\n"
+                "from PySide6.QtWidgets import QApplication\n"
+                "app = QApplication.instance() or QApplication([])\n"
+                "from src.core import skins\n")
+
+        target = "ember"
+        #: ① 进程 A：写成 ember
+        out = run(f"skins.apply_skin('{target}', save=True)\n"
+                  "print('OK')\n")
+        self.assertIn("OK", out, f"写入进程失败：{out[-300:]}")
+
+        #: ② 进程 B（全新）：读出来应该还是 ember
+        out = run("print('SKIN', skins.current_skin()['id'])\n")
+        line = [ln for ln in out.splitlines() if ln.startswith("SKIN")]
+        self.assertTrue(line, f"读取进程没输出：{out[-300:]}")
+        got = line[0].split()[-1]
+        self.assertEqual(
+            got, target,
+            f"重启后读出来是 {got!r} 而不是 {target!r} —— "
+            f"皮肤没存住（或者启动时读盘的顺序不对）")
+
+    def test_value_survives_reload_from_disk(self):
+        """★★★ 从磁盘**重新读**能拿到存的那个值（= 重开程序）。
+
+        ⚠ 这条盯的是**顺序**：``load()`` 必须在 item 注册**之后**跑，
+        否则磁盘有值也填不进去。
+
+        ⚠ 同样用**真实文件 + 备份还原**（``_ensure_config_file`` 会把
+        路径纠正回 ``data/config.json``，临时文件隔离不了）。
+        """
+        import json
+        import pathlib
+        import shutil
+
+        from qfluentwidgets import qconfig
+
+        from src.core import skins
+
+        target = "abyss"
+        f = pathlib.Path(str(qconfig.file))
+        if not f.is_absolute():
+            f = pathlib.Path(__file__).resolve().parent.parent / f
+        backup = f.with_suffix(".json.testbak")
+        had = f.exists()
+        if had:
+            shutil.copy2(f, backup)
+        try:
+            #: 先把内存值改掉 —— 否则 set() 因"值没变"早退
+            skins._skin_item().value = skins.DEFAULT_SKIN
+            skins.apply_skin(target, save=True)
+
+            assert json.loads(f.read_text(encoding="utf-8"))["Skins"][
+                "CurrentSkin"] == target, "前提不成立：没写进磁盘"
+
+            #: 清成默认，再从磁盘 load（模拟新进程启动）
+            skins._skin_item().value = skins.DEFAULT_SKIN
+            qconfig.load()
+            self.assertEqual(
+                skins.current_skin()["id"], target,
+                "从磁盘 load 之后没拿回存的值 —— "
+                "load() 和 item 注册的顺序反了")
+        finally:
+            if had:
+                shutil.copy2(backup, f)
+                backup.unlink()
+            try:
+                skins.apply_skin(skins.DEFAULT_SKIN, save=False)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 class TestSkinReallyChangesPixels(unittest.TestCase):

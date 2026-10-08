@@ -133,23 +133,141 @@ DEFAULT_SKIN = "mist"
 
 #: 持久化用的 ``ConfigItem`` —— qconfig 只认它（**不是**裸字符串）
 #:
-#: ⚠ 更早的一版写了 ``qconfig.get("skin", DEFAULT_SKIN)`` ——
-#: ``qconfig.get()`` 只接**一个 ``ConfigItem``**，
-#: 传字符串会炸 ``TypeError``（启动时就崩了）。
+#: ## ⚠⚠⚠ 这里修过一个**"皮肤选了不生效、重开又变回去"**的 bug
+#: （用户 2026-10-08 装完包才发现："皮肤应用之后，再次重新打开，还是之前的皮肤"）
+#:
+#: ### bug ①：item 挂在**模块级**，qconfig 根本存不了它
+#:
+#: ``QConfig.toDict()`` 的实现是::
+#:
+#:     for name in dir(self._cfg.__class__):        # ← 扫**类属性**
+#:         item = getattr(self._cfg.__class__, name)
+#:         if not isinstance(item, ConfigItem):
+#:             continue
+#:         ...
+#:
+#: **它只认识挂在 ``QConfig`` 子类上的类属性。** 而原来这个 item 是
+#: 模块级普通变量 —— ``qconfig.set()`` 改得了内存，``save()`` 时**扫不到它**，
+#: 于是**永远不落盘**。实测::
+#:
+#:     模块级 item  → 落盘 ['QFluentWidgets']                ← 没有 Skins ✗
+#:     类属性 item  → 落盘 ['QFluentWidgets', 'ProbeTest']   ← 存上了 ✓
+#:
+#: ### bug ②：配置文件写在**相对路径**（跟着当前工作目录跑）
+#:
+#: ``qconfig.file`` 默认是 ``WindowsPath('config/config.json')`` ——
+#: **相对路径**。开发时 CWD 是项目目录（看着正常），
+#: **打包后 CWD 是安装目录** → 配置写进安装目录（甚至写不进去）。
+#:
+#: → 修法：见 :func:`_ensure_config_file` —— 把 qconfig 的落盘位置
+#: 指到 :func:`src.core.paths.user_data_dir`（和别的用户数据放一起）。
 _SKIN_ITEM = None
 
 
+def _ensure_config_file() -> None:
+    """★ 把 ``qconfig`` 的落盘位置指到**用户数据目录**（只做一次）。
+
+    ## ⚠ 为什么必须做
+
+    ``qconfig.file`` 默认是**相对路径** ``config/config.json`` ——
+    落在**当前工作目录**下。开发时是项目目录（看着没事），
+    **打包后是安装目录**：重装/卸载会清掉，装到 ``Program Files``
+    还可能根本没权限写。
+
+    → 指到 ``<用户数据>/config.json``，跟 ``ui_state.json`` /
+    ``gacha_history.json`` 那些放一起。
+
+    ⚠ 用 ``Path`` 不是 ``str`` —— qfluentwidgets 内部会 ``.parent``，
+    给字符串会炸 ``AttributeError``（这个坑踩过）。
+
+    ## ⚠⚠⚠ 改路径的**正确姿势是 ``load(file=...)``**
+
+    ## ⚠ 改路径用带参数的 ``load()``（两种写法其实都行，但这个更直白）
+
+    ``QConfig.load(file=...)`` 内部会 ``self._cfg.file = Path(file)``
+    再读盘 —— **一步到位**，不用操心 ``qconfig`` 和 ``qconfig._cfg``
+    那两个对象的关系::
+
+        qconfig.load(file=target)   # 设路径 + 读盘
+
+    ⚠⚠ 我一度断言"手动 ``qconfig.file = x`` 不生效"，**那是误判**。
+    实测（脚本对比过）**两种写法都能让 ``save()`` 写到新路径**。
+
+    之所以看着"不生效"，是因为**这个函数每次都把路径纠正回**
+    ``target``（那正是它的职责）—— 盖掉了测试里临时改的值。
+
+    ⚠ 因此**测试没法靠改 ``qconfig.file`` 来隔离配置** ——
+    得备份真实文件、测完还原（见 ``TestSkinPersists``）。
+    """
+    from qfluentwidgets import qconfig
+
+    from . import paths
+
+    target = paths.user_data_dir() / "config.json"
+    try:
+        if str(qconfig.file) == str(target):
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        #: ★ 带参数的 load —— 设路径 + 读盘一步到位
+        qconfig.load(file=target)
+    except Exception:  # noqa: BLE001 - 配置存不下也不该让程序起不来
+        logger.warning("设置 qconfig 落盘位置失败", exc_info=True)
+
+
 def _skin_item():
-    """皮肤配置的 ``ConfigItem``（懒建）。"""
+    """皮肤配置的 ``ConfigItem``（懒建）。
+
+    ## ⚠⚠⚠ 必须挂在 **``QConfig`` 类本身**上
+
+    ``qconfig.save()`` → ``self._cfg.toDict()`` → 遍历的正是::
+
+        for name in dir(self._cfg.__class__):     # ← QConfig 这个类
+            item = getattr(self._cfg.__class__, name)
+            if not isinstance(item, ConfigItem): continue
+
+    ⚠ 我第一版把 item 挂到**自己新建的一个类**上（``_SkinConfig``）——
+    **没用**：``qconfig._cfg.__class__ is QConfig``，扫的是 ``QConfig``，
+    不是我那个类。实测确认过::
+
+        qconfig._cfg.__class__ = <class 'QConfig'>
+        我挂的 _SkinConfig      = <class 'src.core.skins._SkinConfig'>
+        两者是同一个吗 = False        ← 所以还是存不上
+
+    → 直接 ``setattr(QConfig, ...)``。qfluentwidgets 自己的配置项
+    （``qconfig.themeColor`` 那些）就是这么挂的 —— 我们补一个同款。
+    """
     global _SKIN_ITEM
     if _SKIN_ITEM is None:
         from qfluentwidgets import OptionsConfigItem, OptionsValidator
+        from qfluentwidgets.common.config import QConfig
 
-        _SKIN_ITEM = OptionsConfigItem(
+        #: ⚠⚠⚠ **顺序不能反**（这是我踩的最后一个坑，绕了好几圈）
+        #:
+        #: ``_ensure_config_file()`` 里会 ``qconfig.load()`` ——
+        #: 而 ``load()`` 是**遍历 QConfig 的类属性**把值填进去的。
+        #:
+        #: 所以必须**先注册 item、再 load**::
+        #:
+        #:     ① item 建好
+        #:     ② 挂到 QConfig 上      ← 让 load() 找得到它
+        #:     ③ 改文件路径 + load()  ← 这时才会把磁盘的值填进 item
+        #:
+        #: 我原来写的是 ③①② —— load() 跑的时候 ``QConfig.skin`` 还不存在，
+        #: 于是磁盘上明明有 ``ember``，读出来还是默认的 ``mist``。
+        item = OptionsConfigItem(
             "Skins", "CurrentSkin",
             DEFAULT_SKIN,
             OptionsValidator([s["id"] for s in SKINS]),
         )
+        try:
+            QConfig.skin = item          # type: ignore[attr-defined]
+        except Exception:                # noqa: BLE001
+            logger.warning("把皮肤配置挂到 QConfig 失败", exc_info=True)
+
+        #: ★ 改动路径 + 重新读盘（会把这个 item 的值填上）
+        _ensure_config_file()
+
+        _SKIN_ITEM = item
     return _SKIN_ITEM
 
 
@@ -345,7 +463,14 @@ def apply_skin(skin_id: str, *, save: bool = True) -> bool:
     if save:
         from qfluentwidgets import qconfig
 
+        #: ⚠ 显式 ``save()`` —— ``qconfig.set`` 只改**内存**，
+        #: 不落盘的话"重开又变回旧皮肤"（用户 2026-10-08 报的 bug）。
+        #: 见 ``_SKIN_ITEM`` 上面那段说明。
         qconfig.set(_skin_item(), skin["id"])
+        try:
+            qconfig.save()
+        except Exception:  # noqa: BLE001 - 存不下也不该让换肤失败
+            logger.warning("皮肤配置落盘失败", exc_info=True)
     return True
 
 
