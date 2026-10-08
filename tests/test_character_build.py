@@ -1211,18 +1211,28 @@ class TestDetailView(unittest.TestCase):
                                 f"可点的链只有 {len(clickable)} 条")
 
     def test_marks_locked_chains(self):
-        """★ 未解锁的共鸣链要能看出来（**压暗**，不是黄底）。
+        """★★ 未解锁的共鸣链要**真的被压暗**（不是只写了个样式字符串）。
 
         ⚠ 原来查的是文字"未激活" —— 用户后来把那一列标题**删掉了**
-        （截图圈出那一列：「删掉」），改成看**图标的压暗样式**。
+        （截图圈出那一列：「删掉」），改成看**图标压暗**。
+
+        ## ⚠⚠ 这条测试原来**是假的**（2026-10-08 修）
+
+        旧版断言的是 ``"opacity" in w.styleSheet()`` —— 而当时的实现是
+        ``setStyleSheet("opacity: 0.35;")``，**QSS 的 opacity 在 QLabel 上
+        根本不生效**。字符串写得进去、也读得出来，所以这条测试一直"通过"，
+        界面上却一个像素都没暗下去（实测两个 QLabel 渲染亮度都是 240.67）。
+
+        → 现在断言 :class:`QGraphicsOpacityEffect`（Qt 真正生效的机制）：
+        必须**正好一个**图标被压暗，而且得是未激活的那个。
+        样式字符串再怎么写都骗不过这条。
         """
         import tempfile
 
         from PySide6.QtGui import QPixmap
-        from PySide6.QtWidgets import QLabel, QWidget
+        from PySide6.QtWidgets import QLabel, QGraphicsOpacityEffect
 
         from src.core import icon_cache as IC
-        from src.tools.game.character_build import detail_view as DV
         from src.tools.game.character_build.detail_view import EchoDetailView
 
         tmp = tempfile.TemporaryDirectory()
@@ -1246,18 +1256,17 @@ class TestDetailView(unittest.TestCase):
         view = EchoDetailView()
         view.show_detail(detail)
 
-        #: 未解锁的那个图标被压暗
-        dimmed = [w for w in view.findChildren(QLabel)
-                  if "opacity" in (w.styleSheet() or "")]
-        self.assertTrue(dimmed, "未解锁的链条目没压暗")
+        icons = [w for w in view.findChildren(QLabel)
+                 if w.objectName() == "chainIcon"]
+        self.assertEqual(len(icons), 2, f"共鸣链图标数不对（{len(icons)}）")
 
-        #: 已解锁的**黄底**，未解锁的**没有**
-        cells = [w for w in view.findChildren(QWidget)
-                 if w.objectName() == "chainCell"]
-        self.assertEqual(len(cells), 2, f"链条目数不对（{len(cells)}）")
-        yellow = [c for c in cells if DV.SELECT_BG in (c.styleSheet() or "")]
-        self.assertEqual(len(yellow), 1,
-                         "黄底应该只有已激活那一个")
+        dimmed = [w for w in icons
+                  if isinstance(w.graphicsEffect(), QGraphicsOpacityEffect)
+                  and w.graphicsEffect().opacity() < 1.0]
+        self.assertEqual(len(dimmed), 1,
+                         f"应该**正好一个**图标被压暗（未激活那个），"
+                         f"实际 {len(dimmed)} 个")
+        self.assertIs(icons[1], dimmed[0], "被压暗的是第 2 个（未激活）")
 
     def test_chain_names_available_via_click(self):
         """★ 标题删了，但点图标仍能看到是哪条（面板标题里有名字）。"""
@@ -1299,18 +1308,23 @@ class TestDetailView(unittest.TestCase):
         self.assertTrue(any("链名丙" in t for t in texts),
                         f"点开后看不到是哪条链（{texts}）")
 
-    def test_unlocked_chains_are_yellow(self):
-        """★★ 已激活的共鸣链图标 → **黄底高亮**。
+    def test_chain_icons_have_no_yellow_box(self):
+        """★★ 共鸣链图标**不再套黄底方块** —— 和「技能」块一样直接放灰底上。
 
-        用户 2026-10-05（截图圈出共鸣链图标行）："已激活这里黄色高亮"
+        用户 2026-10-08（截图圈出图标行，箭头①指向那排图标）::
 
-        ⚠ 我原来只是"未解锁的灰掉" —— 在深色底上差别不明显，
-        用户要求把**已激活的**点亮。
+            "这里改成上面一样的灰色吧"
+
+        「上面」（技能块）的画法是：白线图标**直接画在深灰底上**，没有单独底色。
+        共鸣链原来每条套一个 ``SELECT_BG`` 黄方块 —— 现在去掉。
+
+        ⚠ 这条**替代**了原来的 ``test_unlocked_chains_are_yellow``
+        （用户当时要"黄色高亮"，现在明确改回灰色）。
         """
         import tempfile
 
         from PySide6.QtGui import QPixmap
-        from PySide6.QtWidgets import QWidget
+        from PySide6.QtWidgets import QLabel, QWidget
 
         from src.core import icon_cache as IC
         from src.tools.game.character_build import detail_view as DV
@@ -1337,13 +1351,99 @@ class TestDetailView(unittest.TestCase):
         view = EchoDetailView()
         view.show_detail(detail)
 
+        #: ★ 一个黄底格子都不该有
         cells = [w for w in view.findChildren(QWidget)
                  if w.objectName() == "chainCell"]
-        self.assertEqual(len(cells), 2, f"共鸣链格子数不对（{len(cells)}）")
-        yellow = [c for c in cells if DV.SELECT_BG in (c.styleSheet() or "")]
-        self.assertEqual(len(yellow), 1,
-                         f"黄底格子应该正好 1 个（已激活那个），"
-                         f"实际 {len(yellow)}")
+        self.assertEqual(cells, [], f"共鸣链还在套格子（{len(cells)} 个）")
+
+        #: ★ 但图标本身要在，而且**挂在深灰 plate 上**（和技能块同款）
+        icons = [w for w in view.findChildren(QLabel)
+                 if w.objectName() == "chainIcon"]
+        self.assertEqual(len(icons), 2, f"共鸣链图标数不对（{len(icons)}）")
+        for icon in icons:
+            parent = icon.parentWidget()
+            with self.subTest(parent=parent.objectName() if parent else None):
+                self.assertIsNotNone(parent, "图标没有父控件")
+                self.assertEqual(parent.objectName(), "chainPlate",
+                                 "图标没直接挂在深灰底上")
+                self.assertIn(DV.ICON_PLATE_BG, parent.styleSheet(),
+                              "图标底板不是深灰的（白图标会隐形）")
+
+        #: ★★ 整个共鸣链块里**任何一处**都不许再出现那个黄
+        #:
+        #: ⚠ 只查 ``chainCell`` 不够 —— 我验证护栏时发现，
+        #: 把黄底直接设在**图标自己**身上（不套 cell）照样能通过上面那条。
+        #: 用户抱怨的是"图标套了个黄方块"，所以直接查**色值**：不管谁写的都抓。
+        YELLOW = "#ffe9a8"
+        guilty = [(w.objectName() or type(w).__name__)
+                  for w in view.findChildren(QWidget)
+                  if YELLOW in (w.styleSheet() or "")]
+        self.assertEqual(guilty, [],
+                         f"共鸣链里还有黄底方块（{guilty}）—— "
+                         f"用户要求「改成上面一样的灰色」")
+
+    def test_activation_shown_in_panel_title(self):
+        """★★ 激活状态用**文字**表示：面板标题「共鸣链 N（未激活/已激活）」。
+
+        用户 2026-10-08（截图圈出展开面板标题「共鸣链 4」，箭头②指向它）::
+
+            "如果该共鸣链未激活，加个括号未激活，已激活的话加个括号已激活"
+
+        ⚠ 这条和「去掉黄底」是**配套**的：黄底去掉后，激活状态得有个明确的说法。
+        """
+        import tempfile
+
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtWidgets import QLabel, QWidget
+
+        from src.core import icon_cache as IC
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        orig = IC.icon_root
+        IC.icon_root = lambda: pathlib.Path(tmp.name)
+        self.addCleanup(lambda: setattr(IC, "icon_root", orig))
+        p = IC.local_path("https://x/c.png")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        pix = QPixmap(8, 8)
+        pix.fill()
+        pix.save(str(p))
+
+        detail = self._detail()
+        detail["chainList"] = [
+            {"order": 3, "name": "浮灯照水藏微愿", "unlocked": False,
+             "description": "未激活的说明", "iconUrl": "https://x/c.png"},
+            {"order": 4, "name": "诸相流转由心定", "unlocked": True,
+             "description": "已激活的说明", "iconUrl": "https://x/c.png"},
+        ]
+        view = EchoDetailView()
+        view.show_detail(detail)
+
+        icons = [w for w in view.findChildren(QLabel)
+                 if w.objectName() == "chainIcon"]
+        self.assertEqual(len(icons), 2, f"共鸣链图标数不对（{len(icons)}）")
+
+        def panel_texts():
+            return [t.text() for w in view.findChildren(QWidget)
+                    if w.objectName() == "expandPanel"
+                    for t in w.findChildren(QLabel) if t.text()]
+
+        #: 点**未激活**那条 → 标题里要有「（未激活）」
+        icons[0].mousePressEvent(None)
+        texts = panel_texts()
+        self.assertTrue(any("（未激活）" in t for t in texts),
+                        f"未激活的链没标出来（{texts}）")
+        self.assertFalse(any("（已激活）" in t for t in texts),
+                         f"未激活的链被标成了已激活（{texts}）")
+
+        #: 点**已激活**那条 → 标题里要有「（已激活）」
+        icons[1].mousePressEvent(None)
+        texts = panel_texts()
+        self.assertTrue(any("（已激活）" in t for t in texts),
+                        f"已激活的链没标出来（{texts}）")
+        self.assertFalse(any("（未激活）" in t for t in texts),
+                         f"已激活的链被标成了未激活（{texts}）")
 
     def test_no_chain_title_list(self):
         """★★ 共鸣链**不再列那一串标题**。
@@ -3319,11 +3419,13 @@ class TestSelectedTileHighlight(unittest.TestCase):
     def test_no_full_card_highlight(self):
         """★★ 卡片本身**不再整块变色**（用户要的是下方一条线）。
 
-        ⚠ 我上一版做成整卡黄底（``background: SELECT_BG``）——
-        用户截图圈的是**下方那条线**。
-        """
-        from src.tools.game.character_build import detail_view as DV
+        ⚠ 我上一版做成整卡黄底 —— 用户截图圈的是**下方那条线**。
 
+        ⚠ 原来断言的是 ``background: SELECT_BG``。那个常量 2026-10-08
+        已经删了（共鸣链的黄底方块是最后一处用处，也按用户要求去掉了），
+        所以这里改成直接查**黄的那个色值**还在不在样式里 ——
+        这样即使哪天有人重新引入黄底，这条测试照样抓得住。
+        """
         p = self._panel()
         p._data = {
             "roleList": [{"roleId": 1, "roleName": "甲", "level": 90}],
@@ -3332,8 +3434,9 @@ class TestSelectedTileHighlight(unittest.TestCase):
         p._selected = "1"
         p._render(p._data)
         css = p._cards[0].styleSheet()
-        self.assertNotIn(f"background: {DV.SELECT_BG}", css,
+        self.assertNotIn("background: #ffe9a8", css,
                          "卡片还是整块黄底 —— 应该只加下方那条线")
+
     def test_bar_color_is_yellow(self):
         """★ 线是**黄**的（不是原来的蓝，也不是几乎白）。
 

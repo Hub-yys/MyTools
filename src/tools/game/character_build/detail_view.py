@@ -188,9 +188,10 @@ BAD_FG = "#c42b1c"
 SELECT_BORDER = "#f5b301"      # 粗线颜色（黄）
 SELECT_BAR_H = 4               # 粗线高度（px）
 
-#: 选中格子时**黄底**（共鸣链"已激活"用这个）——
-#: ⚠ 角色格子**不用**它了（改成下方粗线），但共鸣链还在用。
-SELECT_BG = "#ffe9a8"
+#: ⚠ 曾经有个 ``SELECT_BG = "#ffe9a8"``（选中格 / 共鸣链"已激活"的黄底）——
+#: 角色格子早改成下方粗线了，共鸣链的**黄底方块**也在 2026-10-08 按用户要求
+#: 去掉（"改成上面一样的灰色吧"，见 :func:`_chains_block`）→ 已经没人用，删掉。
+#: 激活状态现在靠**图标压暗** + 面板标题的**（未激活）**表示。
 
 #: ★★ 技能 / 共鸣链图标区的底色（**深色**）
 #:
@@ -1026,21 +1027,61 @@ def _skills_block(skills, parent) -> QWidget:
     return host
 
 
+def _dim(widget, opacity: float = 0.35) -> None:
+    """把控件**压暗**（未激活的共鸣链图标用）。
+
+    ## ⚠⚠ 不能用 QSS 的 ``opacity`` —— 写了等于没写
+
+    我原来写的是 ``holder.setStyleSheet("opacity: 0.35;")``。它**在 QLabel 上
+    完全不生效**：实测把两个一模一样的 QLabel（一个带这个样式、一个不带）
+    各自渲染成图，平均亮度**都是 240.67**，一个像素都没变。
+
+    危害不只是"没压暗" —— 它是**静默**的：样式字符串写进去了，
+    ``styleSheet()`` 也读得出来，所以当时那条只做字符串比对的测试**照样通过**。
+    真实的后果是：未激活的图标和已激活的长得一模一样，
+    唯一的区别只剩那个黄底方块（用户 2026-10-08 要求去掉它 ——
+    黄底一去，两者就彻底分不出来了，见 :func:`_chains_block`）。
+
+    必须用 :class:`QGraphicsOpacityEffect`（实测真的生效）。
+    """
+    from PySide6.QtWidgets import QGraphicsOpacityEffect
+
+    effect = QGraphicsOpacityEffect(widget)
+    effect.setOpacity(opacity)
+    widget.setGraphicsEffect(effect)
+
+
 def _chains_block(chains, parent) -> QWidget:
-    """「共鸣链」块：图标排（可点展开说明）+ **已激活的黄底高亮**。
+    """「共鸣链」块：一排图标（可点展开说明）。
 
     用户 2026-10-05（截图圈出图标行和标题列表）::
 
         "已激活这里黄色高亮"      ← 图标
         "删掉"                    ← 那一列标题文字（1 雨洗千山皆入画 未激活 …）
 
-    ## 所以这一块现在只有
+    用户 2026-10-08（截图圈出**图标行** + 展开面板里的「共鸣链 4」）::
 
-    **一排图标**（每条一个），已激活的**黄底高亮**，未激活的灰掉。
-    点任意图标 → 下面共用面板展开那条的说明。
+        "这里改成上面一样的灰色吧"                     ← 箭头① → 图标行
+        "如果该共鸣链未激活，加个括号未激活，
+         已激活的话加个括号已激活"                      ← 箭头② → 面板标题
 
-    ⚠ 我原来还列了一串标题（`1 雨洗千山皆入画 未激活` …）——
-    用户明确说"删掉"：图标本身就是"哪条"的表示，文字是多余的。
+    ## ★ 所以「已激活」的表示法**换了一套**
+
+    原来说的"已激活这里黄色高亮"，是给每个图标套一个**黄底方块**
+    （那个 ``SELECT_BG`` 常量已经删了）。用户现在要求图标行
+    "改成上面一样的灰色吧" ——
+    即和「技能」块**完全一致**：白线图标**直接画在深灰底上**，不套方块。
+
+    黄底去掉后，激活状态改由**两处**表示::
+
+        · 未激活的图标**压暗**                        ← 视觉，扫一眼就能分
+        · 展开面板标题「共鸣链 4（未激活）」           ← 文字，明确
+
+    ⚠⚠ 那个"压暗"原来是坏的（QSS ``opacity`` 对 QLabel 无效，见 :func:`_dim`），
+    而黄底正是当时唯一的区分手段 —— 所以这两件事**必须一起改**：
+    只去黄底不修压暗，未激活和已激活就完全没区别了。
+
+    ⚠ 标题列表仍然不要（用户上次说的"删掉"没变）：图标本身就是"哪条"的表示。
     """
     host = QWidget(parent)
     box = QVBoxLayout(host)
@@ -1064,35 +1105,26 @@ def _chains_block(chains, parent) -> QWidget:
         #: ⚠ 防御：同 ``_skills_block`` —— 接口列表可能含 None
         if not isinstance(it, dict):
             continue
-        label = f"共鸣链 {it.get('order')}　{it.get('name') or ''}"
-        desc = str(it.get("description") or "").strip()
         unlocked = bool(it.get("unlocked"))
+        #: ★ 激活状态写进面板标题（用户："加个括号未激活/已激活"）
+        label = (f"共鸣链 {it.get('order')}"
+                 f"（{'已激活' if unlocked else '未激活'}）"
+                 f"　{it.get('name') or ''}")
+        desc = str(it.get("description") or "").strip()
 
-        #: ★★ 已激活 → **黄底高亮**（用户："已激活这里黄色高亮"）
-        #:
-        #: ⚠ 原来只是"未解锁的灰掉" —— 在深色底上差别不明显，
-        #: 用户要求把**已激活的**标出来（点亮而不是压暗）。
-        cell = QWidget(plate)
-        cell.setObjectName("chainCell")
-        cell.setStyleSheet(
-            f"#chainCell {{ background: "
-            f"{SELECT_BG if unlocked else 'transparent'};"
-            f" border-radius: 6px; }}")
-        cell_box = QVBoxLayout(cell)
-        cell_box.setContentsMargins(4, 4, 4, 4)
-        cell_box.setSpacing(0)
-
-        holder = _icon_label(it.get("iconUrl"), SKILL_ICON, cell)
+        #: ★★ 图标**直接放深灰底上**（和技能块一致）——
+        #: 不再套 ``SELECT_BG`` 黄底方块（用户："改成上面一样的灰色吧"）
+        holder = _icon_label(it.get("iconUrl"), SKILL_ICON, plate)
         #: ★ 没图就不摆空方块
         if holder is None:
             continue
+        holder.setObjectName("chainIcon")
         if not unlocked:
-            holder.setStyleSheet("opacity: 0.35;")
+            _dim(holder)
         if desc:
             holder.setCursor(Qt.CursorShape.PointingHandCursor)
             _bind_exclusive(holder, panel, label, desc)
-        cell_box.addWidget(holder)
-        plate_row.addWidget(cell)
+        plate_row.addWidget(holder)
     plate_row.addStretch(1)
     box.addWidget(plate)
     box.addWidget(panel)
