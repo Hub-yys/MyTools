@@ -985,6 +985,120 @@ class TestColorMathHasOneHome(unittest.TestCase):
                                     f"rgba 解析又出问题了")
 
 
+class TestMainWindowPaintedAfterShow(unittest.TestCase):
+    """★★★ 主窗口**显示之后**侧栏 / 标题栏必须被刷上皮肤。
+
+    ## ⚠⚠⚠ 用户 2026-10-08 截图报的
+
+        截图里：**侧栏是原生的黑、内容区是皮肤的紫**（割裂）
+        "这是什么鬼"
+
+    ## 根因：``_paint`` 只刷可见窗口，而 ``__init__`` 时窗口不可见
+
+    ``MainWindow.__init__`` 里就调了 ``apply_current_skin()`` —— 但那时
+    窗口**还没 show**，``topLevelWidgets()`` 里虽然有它、``isVisible()``
+    却是 False → **一个都没刷到**。
+
+    更糟的是那次"空刷"**被记进了缓存**（``_PAINTED_QSS``）→
+    ``show()`` 之后再调也会被跳过。
+
+    实测::
+
+        建完窗口：窗口 QSS 长度 37（没挂）、NavigationPanel 长度 584
+                  （还是原生的深灰 `rgb(32,32,32)`）
+        清缓存重刷：1774 / 有渐变  ✓
+
+    → 修法：``MainWindow.showEvent`` 里补刷一次（那时窗口可见了）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _app()
+
+    def test_sidebar_and_titlebar_get_gradient(self):
+        """★★★ 显示后：窗口 / 侧栏 / 标题栏都要带**渐变**。
+
+        ⚠⚠⚠ **不要在这里手动清缓存**（护栏验证时改的）
+
+        第一版我在测试开头 `skins._PAINTED_QSS = ""` —— 结果把
+        "补刷时忘了清缓存"这个**真 bug** 掩盖了::
+
+            把 main_window 里补刷前的 `_PAINTED_QSS = ""` 删掉
+            → 测试照样过（因为我自己在前面清了）
+
+        → **让真实的启动路径自己跑**：`__init__` 会先"空刷"一次
+        并**污染缓存**，然后 `show()` 触发补刷。补刷若不清缓存，
+        就会被跳过 —— 那正是出 bug 的状态。
+        """
+        from qfluentwidgets import FluentTitleBar, NavigationPanel
+
+        from src.core import skins
+        from src.gui.main_window import MainWindow
+
+        #: ⚠ 只清"窗口名单"，**故意保留** `_PAINTED_QSS`
+        #: —— 模拟"前面已经有别的窗口刷过"的真实情况。
+        skins._PAINTED_WINDOWS = set()
+
+        w = MainWindow()
+        w.resize(1200, 800)
+        w.show()
+        for _ in range(8):
+            self.app.processEvents()
+
+        self.assertIn("qlineargradient", w.styleSheet(),
+                      f"窗口级 QSS 没挂上（长度 {len(w.styleSheet())}）—— "
+                      f"内容区会是主题色、侧栏是原生色")
+
+        panels = w.findChildren(NavigationPanel)
+        self.assertTrue(panels, "没找到 NavigationPanel")
+        css = panels[0].styleSheet()
+        self.assertIn("qlineargradient", css,
+                      f"侧栏没刷上渐变（长度 {len(css)}）—— "
+                      f"用户截图里那条「原生的黑」就是这个")
+
+        bars = w.findChildren(FluentTitleBar)
+        self.assertTrue(bars, "没找到 FluentTitleBar")
+        #: ⚠ 第一个是左上角那个小的（宽度 200），第二个才是主标题栏
+        main = max(bars, key=lambda b: b.width())
+        self.assertIn("qlineargradient", main.styleSheet(),
+                      "主标题栏没刷上渐变")
+
+    def test_sidebar_color_is_not_native_dark(self):
+        """★★★ 侧栏渲染出来的颜色**不能是原生深灰**（``#000000`` 那种）。
+
+        ⚠ 这条**直接看像素** —— 比查 styleSheet 更贴近用户看到的。
+        ⚠ 同样**不清** ``_PAINTED_QSS``（见上一条的说明）。
+        """
+        from src.core import skins
+        from src.gui.main_window import MainWindow
+
+        skins._PAINTED_WINDOWS = set()
+
+        w = MainWindow()
+        w.resize(1200, 800)
+        w.show()
+        for _ in range(8):
+            self.app.processEvents()
+
+        img = w.grab().toImage()
+        nav_px = img.pixelColor(90, 300).name()
+        content_px = img.pixelColor(w.width() - 200, 300).name()
+
+        self.assertNotEqual(nav_px, "#000000",
+                            "侧栏渲染成纯黑了 —— 就是截图里那个原生色")
+        #: 侧栏和内容区应该是**同一个色系**（同一款皮肤的渐变），
+        #: 不该一个纯黑一个紫。
+        def _lum(hexv: str) -> float:
+            h = hexv.lstrip("#")
+            r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+        self.assertLess(
+            abs(_lum(nav_px) - _lum(content_px)), 80,
+            f"侧栏({nav_px}) 和内容区({content_px}) 亮度差太多 —— "
+            f"看着就是两块割裂的颜色")
+
+
 class TestSkinPersists(unittest.TestCase):
     """★★★ 皮肤选完要**真的存住**，重开程序还在。
 

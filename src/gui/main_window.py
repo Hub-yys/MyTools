@@ -287,6 +287,25 @@ class MainWindow(FluentWindow):
         self._setup_nav_reorder()
 
         #: ★ 应用存下来的皮肤（启动时）—— 见 :mod:`src.core.skins`
+        #:
+        #: ## ⚠⚠⚠ 光在这里调一次是**不够**的（用户 2026-10-08 截图）
+        #:
+        #: 截图症状：**侧栏 / 标题栏是原生的黑，内容区却是皮肤的紫色**
+        #: （"右边玻璃、左边白板"的翻版）。
+        #:
+        #: 原因：``skins._paint`` 只刷 ``isVisible()`` 的顶层窗口 ——
+        #: 而 ``__init__`` 里**窗口还没 show**，一个都刷不到。
+        #: 更糟的是它**把这次"空刷"记进了缓存**（``_PAINTED_QSS``），
+        #: 于是 ``show()`` 之后就算再调 ``apply_current_skin()`` 也会被跳过。
+        #:
+        #: 实测::
+        #:
+        #:     建完窗口后 window 级 QSS 长度 = 37（没挂上）
+        #:     NavigationPanel 长度 = 584（还是原生的深灰）
+        #:     清掉缓存重刷 → 1774 / 有渐变   ✓
+        #:
+        #: → 这里照旧调（保证 app 级 QSS 生效），**另外在 showEvent 里
+        #: 再刷一次**（那时窗口可见了）。
         from src.core import skins as _skins
 
         _skins.apply_current_skin()
@@ -708,6 +727,52 @@ class MainWindow(FluentWindow):
         self._tweak_navigation()
         # 注意：这里**不**展开工具分组。启动时侧栏保持收起，
         # 只有从主页点卡片跳转时才展开（见 open_tool）。
+
+        #: ★★★ **窗口显示后补刷一次皮肤**（用户 2026-10-08 截图）
+        #:
+        #: ``__init__`` 里调 ``apply_current_skin()`` 时窗口还**不可见** ——
+        #: 而 ``skins._paint`` 只刷 ``isVisible()`` 的窗口，于是
+        #: **侧栏 / 标题栏一个都没刷到**（还停留在原生的黑），
+        #: 内容区却因为 app 级 QSS 是皮肤色 → 截图里那种割裂。
+        #:
+        #: ⚠ 而且那次"空刷"会被记进 ``_PAINTED_QSS`` 缓存 →
+        #: 之后再调也会被跳过。所以这里**清掉缓存**再刷。
+        #:
+        #: ⚠ 只在真的需要时做（``_PAINTED_WINDOWS`` 里没有自己）——
+        #: ``showEvent`` 每次显示都会触发（最小化恢复、切页面…），
+        #: 无条件重刷会白花那 1.4 秒。
+        self._repaint_skin_if_needed()
+
+    def _repaint_skin_if_needed(self) -> None:
+        """窗口显示后若发现自己**没被刷过**，补刷一次皮肤。
+
+        ## ⚠ 不需要清 ``_PAINTED_QSS``（实测确认过）
+
+        我一开始在这里写了 ``_skins._PAINTED_QSS = ""`` —— 以为
+        "缓存记着已经刷过，不清就跳过了"。
+
+        **其实是多余的**：``_paint`` 的跳过条件是::
+
+            if qss == _PAINTED_QSS and set(map(id, targets)) <= _PAINTED_WINDOWS:
+                return
+
+        —— **连"刷过哪些窗口"一起比**。这个窗口还没进过名单，
+        条件自然不成立，``_paint`` 会照常刷。实测（删掉清缓存那行）::
+
+            窗口 QSS 1778 / 侧栏有渐变   ✓ 照样生效
+
+        → 删掉，少一行误导人的代码。
+        """
+        try:
+            from src.core import skins as _skins
+
+            if id(self) in _skins._PAINTED_WINDOWS:  # noqa: SLF001
+                return
+            #: 这个窗口没进过"已刷"名单 —— 说明建的时候它不可见。
+            #: 直接让 ``_paint`` 重来一遍（它会自己判断该不该刷）。
+            _skins.refresh_windows()
+        except Exception:  # noqa: BLE001 - 换肤失败不该拖垮显示
+            logger.warning("显示后补刷皮肤失败", exc_info=True)
 
     def _install_nav_resizer(self) -> None:
         """把分隔条插到导航栏右边（FluentWindow 的主布局是 hBoxLayout）。"""
