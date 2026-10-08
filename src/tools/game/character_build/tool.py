@@ -285,7 +285,10 @@ def _compare_echo_sets(items, standard) -> list[str]:
         return []                              #: 官方没给 → 不比，不瞎报
 
     actual: dict[str, int] = {}
+    #: ⚠ 列表里可能有 ``None``（没装声骸的占位）—— 见 ``_echo_issues``
     for x in items or []:
+        if not isinstance(x, dict):
+            continue
         name = str((x.get("fetterDetail") or {}).get("name") or "").strip()
         if name:
             actual[name] = actual.get(name, 0) + 1
@@ -1074,7 +1077,19 @@ class CharacterBuildPanel(ScrollArea):
         issues: list[str] = []
         detail = detail or {}
         ph = detail.get("phantomData") or {}
-        items = ph.get("equipPhantomList") or []
+        #: ⚠⚠⚠ 接口返回的 ``equipPhantomList`` **可能含 ``None`` 元素**
+        #: （用户 2026-10-08 登录后崩溃：``AttributeError: 'NoneType'
+        #: object has no attribute 'get'``）。
+        #:
+        #: 实测真实数据::
+        #:
+        #:     角色 1601: [None, None, None, None, None]      ← 全空
+        #:     角色 1303: [None, 3★0, 3★0, 1★0, 1★0]        ← 部分空
+        #:
+        #: 那是"这个位置没装声骸"的**占位**，不是脏数据。
+        #: → 先把 ``None`` 滤掉，后面就都能安全 ``.get()``。
+        items = [x for x in (ph.get("equipPhantomList") or [])
+                 if isinstance(x, dict)]
         if not items:
             return ["没拿到声骸数据"]
 
@@ -1132,10 +1147,18 @@ class CharacterBuildPanel(ScrollArea):
         """推荐辅音词条命中数（官方那个黄色数字）。
 
         库街区用 ``valid`` 标"是不是推荐词条" —— 直接数它。
+
+        ⚠ ``items`` 来自 ``equipPhantomList``，**可能含 ``None``**
+        （没装声骸的占位）—— 见 ``_echo_issues`` 的说明。
+        这里不滤的话，打开工具页就会 ``AttributeError``。
         """
         hit = total = 0
         for item in items:
+            if not isinstance(item, dict):
+                continue
             for s in (item.get("subProps") or []):
+                if not isinstance(s, dict):
+                    continue
                 total += 1
                 if s.get("valid"):
                     hit += 1

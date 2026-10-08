@@ -281,6 +281,9 @@ def _build_icon_index(detail: dict) -> dict[str, str]:
 
     ph = detail.get("phantomData") or {}
     for item in ph.get("equipPhantomList") or []:
+        #: ⚠ 列表里可能有 ``None``（没装声骸的占位）—— 见 tool._echo_issues
+        if not isinstance(item, dict):
+            continue
         for prop in item.get("mainProps") or []:
             take(prop)
         for prop in item.get("subProps") or []:
@@ -625,11 +628,15 @@ def _echoes_block(ph: dict, parent, icon_index=None) -> QWidget:
     box.setContentsMargins(0, 0, 0, 0)
     box.setSpacing(8)
 
-    items = ph.get("equipPhantomList") or []
+    #: ⚠ 列表里可能有 ``None``（没装声骸的占位）—— 见 tool._echo_issues
+    items = [x for x in (ph.get("equipPhantomList") or [])
+             if isinstance(x, dict)]
     hits: dict[str, int] = {}
     total = 0
     for it in items:
         for s in it.get("subProps") or []:
+            if not isinstance(s, dict):
+                continue
             if s.get("valid"):
                 hits[str(s.get("attributeName") or "?")] = \
                     hits.get(str(s.get("attributeName") or "?"), 0) + 1
@@ -976,6 +983,11 @@ def _skills_block(skills, parent) -> QWidget:
     panel, _pt, _pb = _expand_panel(host)
 
     for it in skills or []:
+        #: ⚠ 防御：接口列表**可能含 None**（``equipPhantomList`` 就有，
+        #: 见 tool._echo_issues）—— 技能/共鸣链目前没观察到，
+        #: 但代价只有一行，别等崩了再回来加。
+        if not isinstance(it, dict):
+            continue
         sk = it.get("skill") or {}
         col = QVBoxLayout()
         col.setSpacing(2)
@@ -1049,6 +1061,9 @@ def _chains_block(chains, parent) -> QWidget:
     panel, _pt, _pb = _expand_panel(host)
 
     for it in chains or []:
+        #: ⚠ 防御：同 ``_skills_block`` —— 接口列表可能含 None
+        if not isinstance(it, dict):
+            continue
         label = f"共鸣链 {it.get('order')}　{it.get('name') or ''}"
         desc = str(it.get("description") or "").strip()
         unlocked = bool(it.get("unlocked"))

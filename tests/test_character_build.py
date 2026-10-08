@@ -1944,6 +1944,170 @@ class TestColorsFollowSkin(unittest.TestCase):
                          f"换肤后还是白底：{after}")
 
 
+class TestNullPhantomEntries(unittest.TestCase):
+    """★★★ 接口的 ``equipPhantomList`` **可能含 ``None``** —— 不能直接 ``.get()``。
+
+    ## ⚠⚠⚠ 用户 2026-10-08 登录后崩了
+
+        AttributeError: 'NoneType' object has no attribute 'get'
+        tool.py:1085  not_max = [x for x in items if (x.get("level") or 0) < 25]
+
+    ## 为什么会有 None
+
+    **角色没装声骸时，接口在那个位置放 ``None`` 占位**。
+
+    实测用户真实数据::
+
+        角色 1601: [None, None, None, None, None]      ← 全空
+        角色 1303: [None, 3★0, 3★0, 1★0, 1★0]        ← 部分空
+        43 个角色里 **7 个**含 None
+
+    ⚠ 这是**正常数据**，不是脏数据 —— 所以不能"报错就整个跳过"，
+    得**滤掉 None 继续算**（没装的本来就不该参与判定）。
+
+    ## 崩的一共 5 处（都修了）
+
+        tool._echo_issues          按 level / cost 判
+        tool._compare_echo_sets    数套装
+        tool._substat_hits         数词条命中
+        detail_view._build_icon_index
+        detail_view._echoes_block
+    """
+
+    @staticmethod
+    def _with_none() -> dict:
+        """一个"部分位置没装声骸"的 detail。"""
+        return {
+            "role": {"roleName": "测试", "level": 90},
+            "roleAttributeList": [
+                {"attributeName": "暴击", "attributeValue": "50%"}],
+            "phantomData": {
+                "cost": 12,
+                "equipPhantomList": [
+                    None,                                    #: ★ 空位
+                    {"cost": 4, "level": 25,
+                     "fetterDetail": {"name": "轻云出月"},
+                     "mainProps": [{"attributeName": "暴击伤害",
+                                    "attributeValue": "44%"}],
+                     "subProps": [{"attributeName": "暴击",
+                                   "attributeValue": "10.5%",
+                                   "valid": True}]},
+                    None,                                    #: ★ 空位
+                ],
+            },
+        }
+
+    @staticmethod
+    def _all_none() -> dict:
+        """**全部**位置都没装声骸。"""
+        return {
+            "role": {"roleName": "测试", "level": 90},
+            "phantomData": {"cost": 0, "equipPhantomList": [None] * 5},
+        }
+
+    def test_echo_issues_tolerates_none(self):
+        """★★★ ``_echo_issues`` 不能因为 None 崩。"""
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        got = CharacterBuildPanel._echo_issues(self._with_none(), None)
+        self.assertIsInstance(got, list)
+
+    def test_all_none_reports_no_data(self):
+        """★★ 全空 = 「没拿到声骸数据」（不是崩、也不是"达标"）。"""
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        got = CharacterBuildPanel._echo_issues(self._all_none(), None)
+        self.assertEqual(got, ["没拿到声骸数据"],
+                         f"全 None 该报「没数据」，实际 {got}")
+
+    def test_substat_hits_tolerates_none(self):
+        """★★★ ``_substat_hits`` 不能因为 None 崩，且计数要对。"""
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        items = self._with_none()["phantomData"]["equipPhantomList"]
+        hit, total = CharacterBuildPanel._substat_hits(items)
+        self.assertEqual((hit, total), (1, 1),
+                         f"该数到 1 命中 / 1 总词条，实际 {(hit, total)}")
+
+    def test_no_partial_none_crash(self):
+        """★★ 部分 None（有的装了有的没装）也要能判定。"""
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        got = CharacterBuildPanel._echo_issues(self._with_none(), None)
+        #: 1 个 4★ 满级声骸 → 不该报"没满级"
+        self.assertNotIn("没满级", " ".join(got),
+                         f"只装了 1 个满级声骸却报没满级：{got}")
+
+    def test_echo_set_compare_tolerates_none(self):
+        """★★★ **带套装标准**时也不能崩。
+
+        ⚠⚠ 这条是护栏验证时补的：原来我传 ``standard=None`` ——
+        而 ``_compare_echo_sets`` 在"官方没给套装组合"时**提前 return**，
+        于是**根本走不到**遍历 ``items`` 那段 → 护栏失效。
+
+        → 这里给一份**真的带 `echoSetEffects` 的 standard**，
+        逼它走到"数套装"那一步（含 None 的列表就崩在那儿）。
+        """
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        #: 形状照 ``_recommended_set_counts`` 的真实读法：
+        #: ⚠ ``texts`` 里是 **dict**（带 ``name``），不是字符串 ——
+        #: 我写错了两次，都是这条测试的断言「没走到套装比对」纠正的。
+        standard = {
+            "echo": {"main": {"echoSetEffects": [
+                {"echoSet": 5, "texts": [{"name": "轻云出月"}]},
+            ]}},
+        }
+        got = CharacterBuildPanel._echo_issues(self._with_none(), standard)
+        self.assertIsInstance(got, list)
+
+        #: 顺带确认**真的走到了**那段（1 件轻云出月 ≠ 5 件，该报不符）
+        self.assertTrue(
+            any("套装" in g for g in got),
+            f"没走到套装比对（{got}）—— 这条测试就白写了")
+
+    def test_detail_view_renders_with_none(self):
+        """★★★ 详情视图能画出来（不崩）。"""
+        from PySide6.QtWidgets import QApplication
+
+        from src.tools.game.character_build.detail_view import EchoDetailView
+
+        app = QApplication.instance() or QApplication([])  # noqa: F841
+        view = EchoDetailView()
+        try:
+            view.show_detail(self._with_none(), None, None)
+        except Exception as exc:  # noqa: BLE001
+            self.fail(f"含 None 的详情画不出来：{type(exc).__name__}: {exc}")
+
+    def test_real_cached_data_does_not_crash(self):
+        """★★★ 用**真实缓存数据**过一遍（数据不在就跳过）。
+
+        ⚠ 比构造用例更真 —— 用户那份数据里有 **7 个角色**含 None。
+        """
+        from src.tools.game.character_build.tool import CharacterBuildPanel
+
+        cache = (pathlib.Path(__file__).resolve().parent.parent
+                 / "data" / "kuro_练度.json")
+        if not cache.exists():
+            self.skipTest("没有本地缓存数据")
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        details = data.get("details") or {}
+        if not details:
+            self.skipTest("缓存里没有 details")
+
+        crashed = []
+        for cid, d in details.items():
+            try:
+                CharacterBuildPanel._echo_issues(d, None)
+                items = ((d or {}).get("phantomData") or {}) \
+                    .get("equipPhantomList") or []
+                CharacterBuildPanel._substat_hits(items)
+            except Exception as exc:  # noqa: BLE001
+                crashed.append(f"{cid}: {type(exc).__name__}")
+        self.assertEqual(crashed, [],
+                         f"真实数据上崩了 {len(crashed)} 个：{crashed[:3]}")
+
+
 class TestTextIsAlwaysColored(unittest.TestCase):
     """★★★ 详情页里**每个带文字的标签都要显式给 ``color``**。
 
