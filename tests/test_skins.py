@@ -985,6 +985,178 @@ class TestColorMathHasOneHome(unittest.TestCase):
                                     f"rgba 解析又出问题了")
 
 
+class TestToolCardFollowsSkin(unittest.TestCase):
+    """★★★ 主页工具卡片的底色要跟**皮肤**，不是 qfluentwidgets 的主题。
+
+    ## ⚠⚠⚠ 用户 2026-10-08 截图
+
+        用户（截图圈出整片卡片区）："我怎么鼠标已过去他才变色？"
+
+    截图里**同一排卡片一半灰白、一半深紫** —— 划过的才变深。
+
+    ## 根因
+
+    ``ToolCard`` 继承 ``SimpleCardWidget``，而它的底色是::
+
+        return QColor(255, 255, 255, 13 if isDarkTheme() else 170)
+                                      ↑ 深色        ↑ 浅色（几乎不透明白 = 灰）
+
+    ⚠ ``isDarkTheme()`` 读的是 **qfluentwidgets 的全局主题**，
+    **不是我们的皮肤** —— 而且**只在"创建时"和"鼠标进出时"**被读::
+
+        main.py: setTheme(Theme.AUTO)   # 按系统明暗（用户系统浅色 → 170 → 灰白）
+        MainWindow()                    # ★ 卡片在这里创建，颜色定死 170
+        apply_current_skin()            # 之后才切深色 —— 但卡片不重画
+
+    → 实测：叠在紫底上，alpha 170 ≈ ``#b1afb9``（灰白，就是截图那几块）
+            alpha  13 ≈ ``#211a39``（深紫，对的）
+
+    ## 修法
+
+    ``ToolCard`` 覆盖 ``_normalBackgroundColor`` / ``_hoverBackgroundColor``
+    / ``_pressedBackgroundColor``，从 ``skin["card"]`` 取色。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = _app()
+
+    @staticmethod
+    def _over(bg: str, col) -> str:
+        """把带 alpha 的颜色叠到底色上 —— 用户**实际看到**的颜色。"""
+        from PySide6.QtGui import QColor
+
+        b = QColor(bg)
+        a = col.alpha() / 255.0
+        return "#{:02x}{:02x}{:02x}".format(*[
+            round(col.red() * a + b.red() * (1 - a)),
+            round(col.green() * a + b.green() * (1 - a)),
+            round(col.blue() * a + b.blue() * (1 - a)),
+        ])
+
+    def _one_card(self):
+        from src.core.registry import ToolRegistry
+        from src.gui.widgets import ToolCard
+        from src.tools import discover_tools
+
+        discover_tools()
+        return ToolCard(ToolRegistry.all_metas()[0])
+
+    def test_card_color_follows_skin(self):
+        """★★★ 深浅皮肤下，卡片**看起来的颜色**必须不同。"""
+        from src.core import skins
+
+        seen = set()
+        for sid in ("mist", "nebula", "deepglass"):
+            skins.apply_skin(sid, save=False)
+            skin = skins.active_skin()
+            card = self._one_card()
+            seen.add(self._over(skin["bg"][0][1],
+                                card._normalBackgroundColor()))
+        self.assertEqual(len(seen), 3,
+                         f"三款皮肤下卡片看起来一样：{seen} —— 说明没跟皮肤")
+
+    def test_card_is_not_grey_on_dark_skin(self):
+        """★★★ 深色皮肤下卡片**不能是灰白的**（截图那个 bug）。"""
+        from PySide6.QtGui import QColor
+
+        from src.core import skins
+
+        skins.apply_skin("nebula", save=False)
+        skin = skins.active_skin()
+        card = self._one_card()
+        shown = self._over(skin["bg"][0][1], card._normalBackgroundColor())
+
+        col = QColor(shown)
+        lum = 0.2126 * col.red() + 0.7152 * col.green() + 0.0722 * col.blue()
+        self.assertLess(
+            lum, 100,
+            f"深色皮肤下卡片渲染成 {shown}（亮度 {lum:.0f}）—— "
+            f"那正是用户截图里那块灰白（alpha=170 的浅色主题值）")
+
+    def test_hover_is_visibly_different(self):
+        """★★ 悬停要**看得出变化**（基类这里返回和正常态一样的值）。
+
+        ⚠ ``SimpleCardWidget._hoverBackgroundColor`` 就是
+        ``return self._normalBackgroundColor()`` —— 一模一样，
+        所以"划过去没反馈"。我们自己加了亮度差。
+        """
+        from src.core import skins
+
+        skins.apply_skin("nebula", save=False)
+        skin = skins.active_skin()
+        card = self._one_card()
+        bg = skin["bg"][0][1]
+        normal = self._over(bg, card._normalBackgroundColor())
+        hover = self._over(bg, card._hoverBackgroundColor())
+        self.assertNotEqual(normal, hover,
+                            "悬停和正常态一样 —— 鼠标划过去没反馈")
+
+    def test_refresh_skin_colors_recolors(self):
+        """★★★ ``refresh_skin_colors()``（换肤回调）要真的重取色。
+
+        ## ⚠⚠⚠ 必须**固定同一个底色**再比（护栏验证时发现的）
+
+        第一版我这样写::
+
+            light = over(skins.active_skin()["bg"][0][1], 卡片色)   # mist 的 bg
+            apply_skin("deepglass")
+            dark  = over(skins.active_skin()["bg"][0][1], 卡片色)   # deepglass 的 bg
+
+        —— **两次的底色不同**，所以就算卡片色**完全没更新**，
+        叠出来的结果也不一样 → 测试照样通过（**假绿**）。
+
+        实测（把 refresh 改成 no-op）::
+
+            切皮肤后 _bg_rgba 还是旧的 → alpha 184（该是 14）
+            但测试仍 pass
+
+        → 改成**固定一个底色**，只让卡片色变化。
+        """
+        from src.core import skins
+
+        #: ⚠ 固定底色 —— 这样"卡片色变没变"才是唯一变量
+        fixed_bg = "#150E2E"
+
+        skins.apply_skin("mist", save=False)
+        card = self._one_card()
+        light = self._over(fixed_bg, card._normalBackgroundColor())
+
+        skins.apply_skin("deepglass", save=False)
+        card.refresh_skin_colors()
+        dark = self._over(fixed_bg, card._normalBackgroundColor())
+
+        self.assertNotEqual(light, dark,
+                            "换肤回调之后卡片没重取色（_bg_rgba 还是旧的）")
+
+    def test_card_colors_stale_without_refresh(self):
+        """★★★ 没有回调时卡片色**是旧皮肤的** —— 所以回调必须有。
+
+        ⚠ 这条钉住"为什么需要 ``refresh_skin_colors``"：
+        ``_bg_rgba`` 是**建卡片时缓存**的，换肤不会自动更新它。
+        """
+        from src.core import skins
+
+        fixed_bg = "#150E2E"
+        skins.apply_skin("mist", save=False)
+        card = self._one_card()
+        before = card._normalBackgroundColor().alpha()
+
+        skins.apply_skin("deepglass", save=False)     #: 故意**不调** refresh
+        stale = card._normalBackgroundColor().alpha()
+
+        self.assertEqual(
+            before, stale,
+            "换肤后卡片色自己变了 —— 那 _bg_rgba 就不是缓存了，"
+            "``refresh_skin_colors`` 也没必要存在")
+
+        #: 而调了 refresh 就会更新
+        card.refresh_skin_colors()
+        self.assertNotEqual(
+            before, card._normalBackgroundColor().alpha(),
+            "refresh_skin_colors() 没更新 _bg_rgba")
+
+
 class TestMainWindowPaintedAfterShow(unittest.TestCase):
     """★★★ 主窗口**显示之后**侧栏 / 标题栏必须被刷上皮肤。
 

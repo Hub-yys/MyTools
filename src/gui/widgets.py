@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QDoubleValidator, QIcon
+from PySide6.QtGui import QColor, QDoubleValidator, QIcon
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -69,7 +69,43 @@ def build_tool_icon(meta: ToolMeta, size: int, parent: QWidget) -> QWidget:
 
 
 class ToolCard(SimpleCardWidget):
-    """主页里的一张工具卡片：上面图标、下面名称，说明只在鼠标悬浮时以小字提示弹出。"""
+    """主页里的一张工具卡片：上面图标、下面名称，说明只在鼠标悬浮时以小字提示弹出。
+
+    ## ⚠⚠⚠ 底色**必须自己管**（用户 2026-10-08 截图）
+
+        用户（截图圈出整片卡片区）："我怎么鼠标已过去他才变色？"
+
+    截图里**同一排卡片一半灰白、一半深紫** —— 划过的才变深。
+
+    ## 根因：``SimpleCardWidget`` 的底色看的是 **qfluentwidgets 的主题**，
+    ## 不是我们的皮肤
+
+    ::
+
+        def _normalBackgroundColor(self):
+            return QColor(255, 255, 255, 13 if isDarkTheme() else 170)
+                                          ↑ 深色        ↑ 浅色（几乎不透明白 = 灰）
+
+    而 ``isDarkTheme()`` **只在两个时刻被读**：
+
+      · **创建时** —— 但 ``main.py`` 那时是 ``setTheme(Theme.AUTO)``
+        （按**系统**明暗；用户系统是浅色 → 取到 170 → **灰白**）
+      · **鼠标进出时**（``enterEvent`` → ``_updateBackgroundColor``）
+
+    ``apply_current_skin()`` 之后才切深色主题 —— 但**卡片不会重画**。
+
+    实测::
+
+        建卡片时 alpha = 170（灰白，叠在紫底上 ≈ #b1afb9）
+        切深色后    alpha 仍是 170   ← 没跟着变
+        鼠标划过    alpha 才变 13（≈ #211a39，深紫）
+
+    ## 修法：底色**从皮肤取**，并在换肤时重取
+
+    ``skin["card"]``（半透明）+ ``skin["border"]`` 就是为这个准备的。
+    换肤时由 ``refresh_skin_colors()`` 回收（``skins._notify_custom_widgets``
+    会自动调它，不用注册）。
+    """
 
     #: 悬浮提示的延迟（毫秒）。Qt 默认要等 700ms 才弹，太慢，这里压到 120。
     TOOLTIP_DELAY = 120
@@ -79,6 +115,8 @@ class ToolCard(SimpleCardWidget):
         self.meta = meta
         self.setClickEnabled(True)
         self.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
+        #: ★ 底色跟皮肤（覆盖基类那两个方法，见类文档）
+        self._refresh_card_colors()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 16, 8, 14)
@@ -100,6 +138,64 @@ class ToolCard(SimpleCardWidget):
             self.installEventFilter(ToolTipFilter(self, self.TOOLTIP_DELAY))
 
         self._badge = ComingSoonBadge(self) if meta.coming_soon else None
+
+    #: ── ★ 底色跟**皮肤**，不跟 qfluentwidgets 的全局主题 ─────────────
+    def _refresh_card_colors(self) -> None:
+        """从当前皮肤取底色（``skins`` 换了之后由回调再调一次）。"""
+        try:
+            from ..core import skins
+
+            skin = skins.active_skin()
+            self._card_color = QColor(255, 255, 255, 0)   #: 占位，下面覆盖
+            self._bg_rgba = skin["card"]
+            self._border_rgba = skin["border"]
+        except Exception:  # noqa: BLE001 - 皮肤读不到就别拦着建卡片
+            self._bg_rgba = "rgba(255, 255, 255, 0.06)"
+            self._border_rgba = "rgba(255, 255, 255, 0.16)"
+        self._updateBackgroundColor()
+
+    @staticmethod
+    def _to_qcolor(text: str) -> QColor:
+        """解析 ``rgba(...)`` / ``#rrggbb`` → ``QColor``（**带 alpha**）。
+
+        ⚠ 不能用 ``QColor("rgba(...)")`` —— 实测它解析不出来、返回**黑色**。
+        """
+        from ..core import skins
+
+        parsed = skins.parse_color(text)
+        if parsed is None:
+            return QColor(255, 255, 255, 16)
+        r, g, b, a = parsed
+        return QColor(r, g, b, round(a * 255))
+
+    def _normalBackgroundColor(self) -> QColor:
+        """正常态底色 —— 皮肤的卡片色。"""
+        return self._to_qcolor(getattr(self, "_bg_rgba", ""))
+
+    def _hoverBackgroundColor(self) -> QColor:
+        """悬浮态 —— **比正常态亮一点**（让鼠标划过去有反馈）。
+
+        ⚠ 基类这里返回的是**和正常态一样**的值（``return self._normalBackgroundColor()``）
+        —— 所以我们自己做一点区分，否则"划过去没反应"。
+        """
+        base = self._normalBackgroundColor()
+        return QColor(min(255, base.red() + 18),
+                      min(255, base.green() + 18),
+                      min(255, base.blue() + 22),
+                      min(255, base.alpha() + 26))
+
+    def _pressedBackgroundColor(self) -> QColor:
+        """按下态 —— 再亮一点。"""
+        base = self._normalBackgroundColor()
+        return QColor(min(255, base.red() + 30),
+                      min(255, base.green() + 30),
+                      min(255, base.blue() + 36),
+                      min(255, base.alpha() + 44))
+
+    def refresh_skin_colors(self) -> None:
+        """★ 换肤后重取底色 —— ``skins._notify_custom_widgets`` 会自动调。"""
+        self._refresh_card_colors()
+        self.update()
 
     def resizeEvent(self, event):  # noqa: N802 - Qt 回调
         super().resizeEvent(event)
