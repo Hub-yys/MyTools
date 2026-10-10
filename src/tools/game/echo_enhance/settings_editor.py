@@ -79,6 +79,7 @@ class EchoSettingsEditor(QWidget):
         layout.addWidget(self._build_core_card(self))
         layout.addWidget(self._build_crit_card(self))
         layout.addWidget(self._build_maxroll_card(self))
+        layout.addWidget(self._build_autostop_card(self))
         layout.addWidget(self._build_optional_card(self))
         layout.addWidget(self._build_valid_card(self))
 
@@ -233,6 +234,49 @@ class EchoSettingsEditor(QWidget):
         self.maxroll_switch.setChecked(True)      # 需求：默认就开着
         self.maxroll_switch.checkedChanged.connect(lambda *_: self._notify())
         row.addWidget(self.maxroll_switch, 0, Qt.AlignmentFlag.AlignTop)
+        return card
+
+    def _build_autostop_card(self, parent: QWidget) -> QWidget:
+        """★ 出现符合条件的声骸 → 自动暂停任务并通知（用户 2026-10-10 要求）。
+
+        ⚠ 文案里必须把**排除项**写清楚。用户原话::
+
+            "出现符合条件声骸自动停止
+             （不包括出现满爆击/满暴伤，但是词条数不符合的）"
+
+        因为「满值保护」是最高优先且会短路，满暴击/满爆伤**一定会被上锁**，
+        用户很容易以为"上锁 = 符合条件"。不说清楚的话，他会觉得这功能坏了
+        （明明停下来的次数比想象中少）。
+        """
+        card = CardWidget(parent)
+        row = QHBoxLayout(card)
+        row.setContentsMargins(20, 15, 20, 15)
+        row.setSpacing(10)
+
+        box = QWidget(card)
+        col = QVBoxLayout(box)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+        col.addWidget(StrongBodyLabel("出现符合条件的声骸就自动停止", box))
+        hint = CaptionLabel(
+            "强化过程中一旦出现**真正符合条件**的声骸：立刻暂停任务（游戏停手，"
+            "不会继续强化下一个），托盘弹通知叫你回来确认。\n"
+            f"⚠ **不算**这一条：只因为出了满{CRIT}/满爆伤而被上锁、"
+            f"但有效词条数其实不够的声骸 —— 那种是满值保护保下来的，"
+            f"不触发自动停止。",
+            box,
+        )
+        hint.setTextColor("#8A8F98", "#7C7C7C")
+        hint.setWordWrap(True)
+        col.addWidget(hint)
+        row.addWidget(box, 1)
+
+        self.autostop_switch = SwitchButton(card)
+        self.autostop_switch.setOnText("启用")
+        self.autostop_switch.setOffText("不启用")
+        self.autostop_switch.setChecked(True)      # 需求：默认就开着
+        self.autostop_switch.checkedChanged.connect(lambda *_: self._notify())
+        row.addWidget(self.autostop_switch, 0, Qt.AlignmentFlag.AlignTop)
         return card
 
     def _build_optional_card(self, parent: QWidget) -> CardWidget:
@@ -414,6 +458,7 @@ class EchoSettingsEditor(QWidget):
             crit_dmg_min=self.crit_dmg_field.value(),
             enable_crit_check=self.crit_switch.isChecked(),
             enable_max_roll_lock=self.maxroll_switch.isChecked(),
+            enable_auto_stop=self.autostop_switch.isChecked(),
             min_valid_count=self.valid_stepper.value(),
         )
 
@@ -442,6 +487,7 @@ class EchoSettingsEditor(QWidget):
         self.crit_dmg_field.set_value(settings.crit_dmg_min)
         self.crit_switch.setChecked(settings.enable_crit_check)
         self.maxroll_switch.setChecked(settings.enable_max_roll_lock)
+        self.autostop_switch.setChecked(settings.enable_auto_stop)
 
         self._on_crit_switch(settings.enable_crit_check)   # 双爆框的灰/亮跟着开关走
         # 核心 ↔ 可选联动：盘上若存着"两边都勾了"的脏数据（老版本写过），

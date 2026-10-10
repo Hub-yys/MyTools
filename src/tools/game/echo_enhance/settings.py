@@ -77,6 +77,15 @@ class EchoSettings:
     enable_crit_check: bool = True
     enable_max_roll_lock: bool = True
     min_valid_count: int = DEFAULT_VALID_COUNT
+    #: ★ 出现**符合条件**的声骸时自动暂停任务并通知（用户 2026-10-10 要求）。
+    #:
+    #: ⚠ 判据是 :func:`stats.qualifies`，**不是**"上锁了" ——
+    #: 满暴击/满爆伤但有效词条数不够的那种也会被上锁（那是有意的保护），
+    #: 但它**不该**触发自动停止。用户明确要求排除这一类。
+    #:
+    #: 默认**开**：这是用户主动要的功能（"出现符合条件声骸自动停止"），
+    #: 默认关的话他升级完还得自己去开一次。不想要的人一个开关就关掉。
+    enable_auto_stop: bool = True
 
     def __post_init__(self) -> None:
         """把非法/越界配置收敛到合法范围 —— **唯一的收敛点**。
@@ -124,6 +133,7 @@ class EchoSettings:
             "enable_crit_check": self.enable_crit_check,
             "enable_max_roll_lock": self.enable_max_roll_lock,
             "min_valid_count": self.min_valid_count,
+            "enable_auto_stop": self.enable_auto_stop,
         }
 
     @classmethod
@@ -152,6 +162,7 @@ class EchoSettings:
             enable_crit_check=_flag(raw.get("enable_crit_check"), True),
             enable_max_roll_lock=_flag(raw.get("enable_max_roll_lock"), True),
             min_valid_count=_count(raw.get("min_valid_count")),
+            enable_auto_stop=_flag(raw.get("enable_auto_stop"), True),
         )
 
     # ---------------------------------------------------------------- 判定
@@ -164,6 +175,7 @@ class EchoSettings:
             crit_dmg_min=self.crit_dmg_min,
             enable_crit_check=self.enable_crit_check,
             enable_max_roll_lock=self.enable_max_roll_lock,
+            enable_auto_stop=self.enable_auto_stop,
             min_valid_count=self.min_valid_count,
         )
 
@@ -176,6 +188,7 @@ class EchoSettings:
             crit_dmg_min=config.crit_dmg_min,
             enable_crit_check=config.enable_crit_check,
             enable_max_roll_lock=config.enable_max_roll_lock,
+            enable_auto_stop=config.enable_auto_stop,
             min_valid_count=config.min_valid_count,
         )
 
@@ -195,6 +208,7 @@ class EchoSettings:
             f" / {crit}"
             f" / 有效词条 ≥{self.min_valid_count}"
             f" / 满值保护：{'开' if self.enable_max_roll_lock else '关'}"
+            f" / 符合条件自动停：{'开' if self.enable_auto_stop else '关'}"
         )
 
 

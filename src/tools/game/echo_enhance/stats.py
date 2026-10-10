@@ -168,6 +168,16 @@ class JudgeConfig:
     #: 满暴击 / 满爆伤自动保护：出现满值词条就一律强化到满级并上锁。
     #: **最高优先** —— 排在所有弃置规则之前（包括双爆下限），出了满值就保住。
     enable_max_roll_lock: bool = True
+    #: ★ 出现**符合条件**的声骸时自动暂停任务并通知（用户 2026-10-10 要求）。
+    #:
+    #: ⚠ 判据是 :func:`qualifies`，**不是** ``action == "lock"`` ——
+    #: 满暴击/满爆伤但有效词条数不够的也会被上锁（见 ``enable_max_roll_lock``
+    #: 的短路行为），那一种**不该**触发自动停止（用户明确要求排除）。
+    #:
+    #: 放在 ``JudgeConfig`` 而不是单开一个注入点：任务只被注入这一个对象
+    #: （``configure(task) -> task.judge_config = config``），
+    #: 加在这里就**自动流到引擎侧**，不必再改两处注入代码。
+    enable_auto_stop: bool = True
     #: 满级时至少要有多少条有效词条
     min_valid_count: int = 3
     max_sub_stats: int = MAX_SUB_STATS
@@ -224,6 +234,40 @@ class JudgeConfig:
             f"已按 ≥{self.effective_min_valid_count} 执行。"
             f"想提高要求，请在「可选属性」里多勾几条。"
         )
+
+
+def qualifies(stats: list[EchoStat], config: JudgeConfig) -> bool:
+    """这个声骸是不是**真的符合条件** —— 用于「出现符合条件的就自动停止」。
+
+    ## ⚠⚠ 为什么不能直接看 ``judge(...).action == "lock"``
+
+    用户 2026-10-10 的要求写得很明确::
+
+        "出现符合条件声骸自动停止
+         （**不包括出现满爆击/满暴伤，但是词条数不符合的**）"
+
+    而 ``judge`` 里「满值保护」是**最高优先**、并且会**短路**：只要出现了
+    满暴击/满爆伤，它立刻返回 ``lock``（code=``max_roll``），**后面那三道
+    实质性检查（双爆下限 / 核心属性 / 有效词条数）根本没跑**。
+
+    → 所以「上锁了」≠「符合条件」：一个满暴击但有效词条只有 1 条的声骸
+    也会被上锁（那是**有意**的保护行为），但它**不该**触发自动停止。
+
+    ## 实现：把满值保护关掉再判一次
+
+    ``enable_max_roll_lock=False`` 时那条短路规则不生效，``judge`` 就会老老实实
+    跑完三道实质检查 —— 于是::
+
+        action != "discard"  ⇔  双爆达标 ∧ 核心齐 ∧ 有效词条数够
+
+    ⚠ 用 ``dataclasses.replace`` 而不是手写一遍那三道检查：
+    抄一遍就等于埋一个"以后改了 judge、这里忘了跟着改"的雷
+    （本仓已经吃过这种亏 —— 报告排版和它的解析函数必须同步）。
+    """
+    from dataclasses import replace
+
+    relaxed = replace(config, enable_max_roll_lock=False)
+    return judge(stats, relaxed).action != "discard"
 
 
 @dataclass

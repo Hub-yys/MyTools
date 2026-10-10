@@ -541,6 +541,8 @@ class MainWindow(FluentWindow):
                 self._tray.hide()
             except Exception:  # noqa: BLE001
                 pass
+            #: ★ 注销登记 —— 否则工具页的 notify() 会往一个已死的图标上发消息
+            tray_mod.drop_tray(self._tray)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 回调
         """关闭确认：隐藏到托盘 / 直接退出 / 取消。

@@ -47,6 +47,51 @@ def tray_available() -> bool:
         return False
 
 
+#: ★ 当前活着的托盘图标（``make_tray`` 建好后登记，``_teardown_tray`` 时注销）。
+#:
+#: 为什么需要它：工具页想弹「符合条件的声骸」气泡，但它**拿不到**主窗口那个
+#: ``self._tray``（工具页是导航里的子页面，不该反向去摸主窗口的内部字段）。
+#: 这里做一个最小的登记处 —— 工具页只管喊 :func:`notify`，有没有托盘它不用管。
+_live_tray = None
+
+
+def notify(title: str, message: str, *, msecs: int = 8000,
+           icon=None) -> bool:
+    """弹一个**托盘气泡**通知（拿不到托盘就返回 False，不抛异常）。
+
+    :param title: 标题（用户一眼要看到的结论）
+    :param message: 正文
+    :param msecs: 停留毫秒数
+    :param icon: :class:`QSystemTrayIcon.MessageIcon`；默认 ``Information``
+    :return: 真的弹出去了没有
+
+    ## ⚠ 为什么不用 ok-ww 的 ``notify=True``
+
+    ``log_info(..., notify=True)`` 走的是 ok-script 的通知链路
+    （``communicate.notification`` 信号）。但 MyTools **故意关掉了**
+    ok 的系统托盘通知（见 ``okww_boot._install_no_system_notifier`` ——
+    它每跑一次会在托盘区留一个删不掉的图标）。所以那条路弹不出气泡，
+    得由宿主自己弹 Qt 的托盘气泡。
+
+    ⚠ 托盘不可用时**只是返回 False**：调用方该接着用 InfoBar 之类的
+    界面内提示兜底，不能因为"没气泡"就把通知整个丢掉。
+    """
+    try:
+        from PySide6.QtWidgets import QSystemTrayIcon
+
+        tray = _live_tray
+        if tray is None:
+            logger.debug("还没有托盘图标，跳过气泡通知：%s", title)
+            return False
+        tray.showMessage(title, message,
+                         icon or QSystemTrayIcon.MessageIcon.Information,
+                         int(msecs))
+        return True
+    except Exception:  # noqa: BLE001 - 通知失败不该影响任务
+        logger.warning("托盘气泡通知失败：%s", title, exc_info=True)
+        return False
+
+
 def running_task_name(host) -> str | None:
     """有任务在跑就返回它的可读名字，否则 None。
 
@@ -326,8 +371,21 @@ def make_tray(parent, on_show, on_quit, icon=None) -> QSystemTrayIcon | None:
             else None
         )
         tray.show()
+        #: ★ 登记给 :func:`notify` 用（工具页要弹气泡，但拿不到主窗口的内部字段）
+        global _live_tray
+        _live_tray = tray
         logger.info("托盘图标已创建")
         return tray
     except Exception:  # noqa: BLE001 - 托盘建不起来也不该拖垮程序
         logger.warning("托盘图标创建失败，退化成最小化到任务栏", exc_info=True)
         return None
+
+
+def drop_tray(tray=None) -> None:
+    """注销托盘（销毁时调）—— 否则 :func:`notify` 会往一个已死的图标上发消息。
+
+    :param tray: 要注销的那个；传 ``None`` = 不管是谁，一律清掉
+    """
+    global _live_tray
+    if tray is None or _live_tray is tray:
+        _live_tray = None

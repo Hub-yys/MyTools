@@ -92,6 +92,7 @@ from .stats import (  # noqa: E402
     judge,
     normalize_stat_name,
     parse_value,
+    qualifies,
 )
 
 #: 任务在宿主里的注册名（``okww_boot.TASKS`` 与页面上用的是同一个 key）
@@ -99,6 +100,13 @@ TASK_KEY = "声骸自动强化"
 
 #: ok-ww 侧看到的类名
 TASK_CLASS_NAME = "MyToolsEnhanceEchoTask"
+
+#: 「符合条件的声骸」在 info 里存哪 —— 值是一个 list[dict]。
+#:
+#: 存 info 而不是普通属性，是因为**工具页要从任务实例上读回来**
+#: （``_snapshot_task_stats`` 每 300ms 抄一次，任务跑完实例就被 disable 了）。
+#: 结构见 :meth:`MyToolsEnhanceEchoTask._record_qualifying`。
+QUALIFYING_INFO_KEY = "符合条件的声骸"
 
 
 @contextlib.contextmanager
@@ -222,11 +230,107 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
         self.checked_echoes = 0
         #: 「满属性」声骸数（出现过满暴击/满爆伤词条并被上锁的声骸）
         self.perfect_echoes = 0
+        #: ★ 「真正符合条件」的声骸清单（用户要求：报告里以卡片完整展示声骸图）。
+        #: 每项形如 ``{"index": 成功序号, "stats": ["暴击 7.5", …], "image": 文件名}``。
+        self.qualifying_echoes: list[dict] = []
         #: 当前这个声骸有没有出现过满分词条（逐声骸结算用，见 ``_finalize_echo``）
         self._perfect_seen = False
         #: 「材料已在里面」这个哨兵本轮是否已经报告过（见 ``find_add_mat``）。
         #: 只报告一次，好让 ok-ww 那个内层 while 能正常 break 出去、不白等满 5 秒。
         self._materials_ready_sent = False
+
+        #: ★ 当前这个声骸**最后一条词条**读出来时，是不是「真正符合条件」的。
+        #:
+        #: 为什么掐"最后一条"那一刻：``check_echo_stats`` 一个声骸会被调 5 次，
+        #: 前面几条时"能不能达标"还是未知的（还有孔位），只有**满 5 条**那一刻
+        #: 结论才定。所以逐条记录、以最后一条为准。
+        self._qualifying_now = False
+        #: 已经自动暂停过几次（防止"暂停后又被恢复→立刻再暂停"来回弹）
+        self.auto_stop_count = 0
+        #: 当前这个声骸**最后一次**读到的词条（结算时拿去记录，见 _finalize_echo）
+        self._last_present: list[EchoStat] = []
+
+    # ------------------------------------------------------ 符合条件的判定
+    def _remember_judgement(self, stats: list[EchoStat], full: bool) -> None:
+        """记住"当前这个声骸算不算真正符合条件"。
+
+        :param full: 是不是已经读满 5 条（= 结论定的那一刻）
+
+        ⚠ 判据用 :func:`stats.qualifies` 而**不是** ``result.action == "lock"``：
+        「满值保护」是最高优先且**会短路** —— 出了满暴击/满爆伤就直接返回
+        ``lock``，双爆下限 / 核心属性 / 有效词条数**根本没跑**。
+        于是"满暴击但有效词条只有 1 条"也会被上锁（有意保护），
+        但那**不算符合条件**（用户 2026-10-10 明确要求排除）。
+
+        ⚠ 只在 ``full`` 时把结论**当真**：没读满之前 `qualifies` 为真
+        只表示"还没被淘汰"（还剩孔位可以凑），不能拿去触发自动停止。
+        """
+        if full:
+            self._qualifying_now = qualifies(stats, self.judge_config)
+        elif not qualifies(stats, self.judge_config):
+            #: 中途就已经废了（双爆低于下限 / 核心凑不齐）→ 提前钉死为"否"，
+            #: 免得靠后面把它翻回来
+            self._qualifying_now = False
+
+    def _record_qualifying(self, stats: list[EchoStat]) -> None:
+        """把一个「符合条件的声骸」记进 info（含截图文件名，给报告卡用）。
+
+        ## 为什么要记截图名
+
+        用户 2026-10-10 要求："结果报告符合条件的要完整展示声骸图，以卡片形式展示"。
+        而 ok-ww 在 ``lock_and_esc`` 里**已经**把那个声骸截好图了::
+
+            self.screenshot_echo(f'success/{成功声骸数量}')
+
+        落在 ``<用户数据>/okww/screenshots/success/`` 下，文件名形如
+        ``16-38-56.014_1_original.png``（``时间_序号_original``）。
+        → 直接复用这些图，**不重建截图链路**（那要碰 ok-ww 的坐标和时序）。
+
+        ⚠ 用 ``success/`` 目录 + ``序号`` 前缀找：ok-ww 的序号 = 成功声骸数量，
+        正好能对上。找不到就只记词条（卡片那边退化成纯文字，不留空洞）。
+        """
+        self.qualifying_echoes.append({
+            "index": self.info_get("成功声骸数量", 0),
+            "stats": [str(s) for s in stats],
+            "image": self._find_echo_screenshot(),
+            #: ★ 这个声骸是不是**因为出了满值词条**才被保下来的。
+            #:
+            #: 逐声骸记，不用"整体满属性计数"近似 —— 用户要求卡片上标出满属性，
+            #: 而"全局有几个满属性"根本推不出"**这一个**是不是满属性"
+            #: （我第一版就是这么近似的，纯属糊弄）。
+            "perfect": bool(self._perfect_seen),
+        })
+        try:
+            self.info_set(QUALIFYING_INFO_KEY, list(self.qualifying_echoes))
+        except Exception:  # noqa: BLE001 - info 写不进去不该打断任务
+            pass
+
+    def _find_echo_screenshot(self) -> str:
+        """找刚上锁那个声骸的截图**文件名**（找不到返回空串）。
+
+        ⚠ 只返回**文件名**，不返回绝对路径：图片目录在用户数据目录下，
+        而工具页那边自己知道根目录（``paths.user_data_dir()``）——
+        存绝对路径的话，用户搬了数据目录、或者打包版路径不同，就会全失效。
+        """
+        try:
+            from ....core import paths
+
+            folder = (paths.user_data_dir() / "okww" / "screenshots" / "success")
+            if not folder.is_dir():
+                return ""
+            want = int(self.info_get("成功声骸数量", 0) or 0)
+            #: 文件名里的序号是 ``..._<n>_original.png`` 那一段
+            pattern = re.compile(r"_%d_original\.png$" % want)
+            hits = [p.name for p in folder.iterdir()
+                    if p.is_file() and pattern.search(p.name)]
+            #: 同一个序号理论上只有一个；多个就取最新改的（改名/重跑都不怕）
+            if not hits:
+                return ""
+            hits.sort(key=lambda n: (folder / n).stat().st_mtime, reverse=True)
+            return hits[0]
+        except Exception as exc:  # noqa: BLE001 - 找不到图不该打断任务
+            self.log_debug(f"找声骸截图失败：{type(exc).__name__}: {exc}")
+            return ""
 
     # ------------------------------------------------------------------ 判定
     def check_echo_stats(self, properties, values) -> bool:
@@ -235,6 +339,11 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
         result = judge(stats, self.judge_config)
 
         self.last_judgement = str(result)
+        #: ★ 记住"这个声骸算不算真正符合条件"（判据见 :meth:`_remember_judgement`）。
+        #: 一个声骸会被调 5 次，只有读满 5 条那一刻结论才定。
+        self._last_present = list(result.stats)
+        self._remember_judgement(list(result.stats),
+                                 full=len(result.stats) >= self.judge_config.max_sub_stats)
         # 统计"为什么弃置"——不然用户只看到"全都丢掉了"，无从下手
         self.checked_echoes += 1
         if result.action == "discard":
@@ -339,22 +448,78 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
 
         只在**启用满值保护**时统计（用户要求）—— 关掉保护时满分词条不会被特殊对待，
         那个数就失去意义了。
+
+        ★ 2026-10-10 起这里还负责记「符合条件的声骸」（见 :meth:`_record_qualifying`），
+        用的是同一个"按声骸结算"的时机 —— 理由完全一样。
         """
         if kept and self._perfect_seen and self.judge_config.enable_max_roll_lock:
             self.perfect_echoes += 1
             self.info_set("满属性声骸数量", self.perfect_echoes)
+        #: ★ 「符合条件的声骸」—— 上锁的那一刻结算（弃置的不算）
+        #:
+        #: ⚠⚠ ``_qualifying_now`` 要**先记下来再清**：清完再交给
+        #: :meth:`_auto_stop_if_needed` 的话它永远读到 False（自动停止彻底失效）。
+        #: 我第一版就是这个顺序 bug —— 靠"两个方法各自读一个字段"很难看出来，
+        #: 所以这里改成**显式传参**，让依赖关系写在调用处。
+        hit = bool(kept and self._qualifying_now)
+        if hit:
+            self._record_qualifying(self._last_present)
         self._perfect_seen = False
+        self._qualifying_now = False
+        return hit
 
     # ok-ww 的两个收尾动作各对应"一个声骸处理完" → 在这两处结算
     def lock_and_esc(self):
         super().lock_and_esc()
-        self._finalize_echo(kept=True)
+        #: ★ 顺序要紧：先结算（拿到"是不是符合条件"），再决定要不要自动暂停
+        hit = self._finalize_echo(kept=True)
+        self._auto_stop_if_needed(hit)
         self._aim_at_next_unenhanced()
 
     def trash_and_esc(self):
         super().trash_and_esc()
         self._finalize_echo(kept=False)
         self._aim_at_next_unenhanced()
+
+    def _auto_stop_if_needed(self, qualifying: bool) -> bool:
+        """★ 出了符合条件的声骸 → **暂停任务 + 通知**（用户 2026-10-10 要求）。
+
+        :param qualifying: 刚处理完那个声骸是不是**真正符合条件**
+            （由 :meth:`_finalize_echo` 判定并传来 —— 不在这个方法里自己读字段，
+            免得再踩"谁先清谁后读"的顺序坑）
+        :return: 是否真的暂停了
+
+        ## 为什么暂停而不是停止
+
+        用户选了「暂停任务（可续跑）」：暂停后游戏停手、但任务还在，
+        他回来点继续就能接着强化。**停止**会把任务整个结束掉，想接着跑得重开。
+
+        ok-ww 的 ``pause()`` 正是干这个的（原版那句
+        ``if self.config.get('Pause after Success'): self.pause()``
+        就是这个机制）—— 我们只是把触发条件从"成功即暂停"换成
+        "**真正符合条件**才暂停"，并且**由开关控制**。
+
+        ⚠ 只在 ``enable_auto_stop`` 打开时做。关掉时**完全不动**
+        （连日志都不打，免得刷屏）。
+        """
+        if not getattr(self.judge_config, "enable_auto_stop", False):
+            return False
+        if not qualifying:
+            return False
+
+        self.auto_stop_count += 1
+        stats_text = "、".join(str(s) for s in self._last_present) or "无"
+        summary = f"出现符合条件的声骸（第 {self.info_get('成功声骸数量', 0)} 个）：{stats_text}"
+        self.info_set("自动停止原因", summary)
+        #: notify=True → 走 ok 的通知链路，宿主那边接出来弹托盘气泡（见 tool.py）
+        self.log_info(f"★ {summary} —— 已暂停任务，请回来确认", notify=True)
+        try:
+            self.pause()
+            self.info_set("已自动停止", True)
+        except Exception as exc:  # noqa: BLE001 - 暂停失败不该把任务搞崩
+            self.log_error(f"自动暂停失败：{type(exc).__name__}: {exc}")
+            return False
+        return True
 
     # ------------------------------------------------- 3.7 声骸堆叠的修正
     def _aim_at_next_unenhanced(self) -> bool:
@@ -414,6 +579,17 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
         self.discard_tally = {}
         self.perfect_echoes = 0
         self._perfect_seen = False
+        #: ★ 符合条件清单 / 自动停止状态也要清（见各自字段的说明）
+        self.qualifying_echoes = []
+        self.auto_stop_count = 0
+        self._qualifying_now = False
+        self._last_present = []
+        try:
+            self.info_set(QUALIFYING_INFO_KEY, [])
+            self.info_set("自动停止原因", "")
+            self.info_set("已自动停止", False)
+        except Exception:                     # noqa: BLE001 - info 写不进去不该挡启动
+            pass
         if self.judge_config.enable_max_roll_lock:
             # 先播一个 0：报告卡靠"这个键在不在"判断要不要统计满属性
             self.info_set("满属性声骸数量", 0)

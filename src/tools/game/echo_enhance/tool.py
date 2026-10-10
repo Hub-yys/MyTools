@@ -25,6 +25,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QLabel,
     QVBoxLayout,
     QWidget,
 )
@@ -33,6 +34,7 @@ from qfluentwidgets import (
     CardWidget,
     FluentIcon,
     InfoBar,
+    InfoBarPosition,
     PrimaryPushButton,
     PushButton,
     ScrollArea,
@@ -68,6 +70,128 @@ from .stats import (
 # src/gui/widgets.py —— 新工具「4C 自动战斗」要用同一套，别在后头各写一份。
 
 
+#: 「满属性」标记的金色（浅色皮肤底 / 深色皮肤底各一档）
+_BADGE_GOLD = "#c8a02c"
+_BADGE_GOLD_LIGHT = "#f5d76e"
+
+
+def _badge_bg() -> str:
+    """「满属性」标记的底色 —— **跟着当前皮肤算**（不写死）。
+
+    ⚠ 写死浅黄会被 ``tests/test_character_build.TestNoHardcodedLightBackground``
+    抓住（它按亮度扫全仓的 ``background:``）：深色皮肤下那就是一块发白的黄斑。
+    用户为这类问题报过两次，所以老老实实按皮肤混。
+    """
+    from ....core import skins
+
+    try:
+        skin = skins.active_skin()
+        return skins.blend_color(
+            skin["bg"][0][1],
+            _BADGE_GOLD if skin["mode"] == "dark" else _BADGE_GOLD_LIGHT,
+            0.28 if skin["mode"] == "dark" else 0.45)
+    except Exception:  # noqa: BLE001 - 取皮肤色失败不该让卡片建不出来
+        return "#f2e6c0"
+
+
+def _badge_fg() -> str:
+    """标记文字色：深色底上用亮金，浅色底上用深棕（都要压得住底色）。"""
+    from ....core import skins
+
+    try:
+        return "#e8d9a0" if skins.active_skin()["mode"] == "dark" else "#6b5310"
+    except Exception:  # noqa: BLE001
+        return "#6b5310"
+
+
+class QualifyingEchoCard(CardWidget):
+    """一个「符合条件的声骸」卡片：**声骸截图 + 词条**。
+
+    用户 2026-10-10 要求::
+
+        "结果报告符合条件的要完整展示声骸图，以卡片形式展示"
+
+    ## 图从哪来
+
+    ok-ww 在 ``lock_and_esc`` 里**已经**给每个上锁的声骸截了图
+    （``screenshot_echo('success/<序号>')``），落在
+    ``<用户数据>/okww/screenshots/success/`` 下。这里直接读那些图，
+    **不重建截图链路**（那要碰 ok-ww 的坐标和时序，风险大得多）。
+
+    ⚠ 找不到图就**只显示词条**，不留一个空洞的灰框
+    （本仓的老规矩：拿不到图就不画占位 —— 见 ``detail_view._icon_label``）。
+    """
+
+    #: 声骸图显示宽度（原始截图约 538×497，等比缩到这么大够看清楚词条）
+    IMAGE_WIDTH = 190
+
+    def __init__(self, item: dict, *, index: int, is_perfect: bool = False,
+                 parent=None):
+        super().__init__(parent)
+        from qfluentwidgets import BodyLabel
+
+        box = QVBoxLayout(self)
+        box.setContentsMargins(12, 10, 12, 10)
+        box.setSpacing(6)
+
+        # ── 标题行：第 N 个 + 「满属性」标记（如果这个声骸出了满值词条）
+        head = QHBoxLayout()
+        head.setSpacing(6)
+        title = StrongBodyLabel(f"第 {index} 个", self)
+        head.addWidget(title)
+        if is_perfect:
+            #: ⚠ 满属性 ≠ 符合条件：出了满暴击/满爆伤会被上锁（有意保护），
+            #: 但有效词条数可能不够。那个标记要说清它是"因为满值才留下的"。
+            badge = CaptionLabel("满属性", self)
+            #: ★ 底色**跟皮肤算**，不写死。
+            #:
+            #: ⚠ 我第一版写死 ``background: #ffe9a8`` —— 被本仓自己的
+            #: ``TestNoHardcodedLightBackground``（按亮度扫全仓的 background）
+            #: 当场抓住：**深色皮肤下会是一块发白的黄斑**。
+            #: 那个测试就是为这个bug类建的（用户报过两次"深色皮肤下发白"），
+            #: 所以这里走它的正解：用 ``skins`` 按当前皮肤混出实色。
+            badge.setStyleSheet(
+                f"color: {_badge_fg()}; background: {_badge_bg()};"
+                f" border-radius: 6px; padding: 1px 6px;")
+            head.addWidget(badge)
+        head.addStretch(1)
+        box.addLayout(head)
+
+        # ── 声骸图（拿不到就跳过这一块）
+        pixmap = self._load_pixmap(item.get("image") or "")
+        if pixmap is not None and not pixmap.isNull():
+            holder = QLabel(self)
+            holder.setPixmap(pixmap)
+            holder.setAlignment(Qt.AlignmentFlag.AlignLeft)
+            box.addWidget(holder)
+
+        # ── 词条（图看不到时这就是唯一信息，所以一定要有）
+        stats = item.get("stats") or []
+        text = "、".join(str(s) for s in stats) if stats else "（没读到词条）"
+        body = BodyLabel(text, self)
+        body.setWordWrap(True)
+        box.addWidget(body)
+
+    def _load_pixmap(self, name: str):
+        """按**文件名**去截图目录取图（不是绝对路径 —— 见 okww_task 的说明）。"""
+        from PySide6.QtGui import QPixmap
+
+        if not name:
+            return None
+        try:
+            folder = paths.user_data_dir() / "okww" / "screenshots" / "success"
+            path = folder / name
+            if not path.is_file():
+                return None
+            pix = QPixmap(str(path))
+            if pix.isNull():
+                return None
+            return pix.scaledToWidth(self.IMAGE_WIDTH,
+                                     Qt.TransformationMode.SmoothTransformation)
+        except Exception:  # noqa: BLE001 - 图读不出来不该让报告卡崩掉
+            return None
+
+
 # ------------------------------------------------------------------ 统计快照
 
 
@@ -92,6 +216,8 @@ def _snapshot_task_stats(task) -> dict:
         # 有它时报告优先显示它 —— 真实原因都在这里，不显示的话用户会去
         # 看默认那句「请确认停在 背包 → 声骸 界面」，完全对不上。
         "failed_reason": (str(info.get("失败原因") or "").strip() or None),
+        #: ★ 真正符合条件的声骸清单（用户要求：报告里以卡片完整展示声骸图）
+        "qualifying": list(info.get("符合条件的声骸") or []),
     }
 
 
@@ -173,6 +299,10 @@ class EchoEnhanceWidget(ScrollArea):
         #: 本次轮询期间见过本页的任务（running/pending）——
         #: 引擎自启完成（booting→ready）不算「任务结束」，就靠它区分
         self._task_seen = False
+        #: ★ 已经报过的「自动停止原因」（防止每 300ms 重复弹气泡 —— 见 _notify_auto_stop）
+        self._auto_stop_reported = ""
+        #: 上一次轮询时任务是不是暂停着（「继续」按钮的可见状态跟着它走）
+        self._was_paused = False
         #: 本页当前的一套设置。**每次打开页面都是出厂默认**（用户 2026-09-24
         #: 明确要求："不要遗留上次的东西，每次进入都是默认配置"）—— 所以这里
         #: 不用 ``EchoSettings.load()``。改动仍然存盘，任务流程读的就是存下来那份。
@@ -239,6 +369,9 @@ class EchoEnhanceWidget(ScrollArea):
         """本次运行的结果报告（判定数 / 符合条件 / 弃置原因 / 满属性）。
 
         跑的过程中就实时刷新（数据来自每 300ms 的统计快照），结束后定格。
+
+        ★ 2026-10-10 起下面多一块「符合条件的声骸」卡片区（用户要求：
+        "结果报告符合条件的要完整展示声骸图，以卡片形式展示"）。
         """
         card = CardWidget(parent)
         col = QVBoxLayout(card)
@@ -253,7 +386,57 @@ class EchoEnhanceWidget(ScrollArea):
         # 按两行钉最小高度；正文固定两行以内（首行统计 + 弃置原因），不会溢出。
         self.report_label.setMinimumHeight(46)
         col.addWidget(self.report_label)
+
+        #: ★ 符合条件的声骸卡片区（没有符合条件的就整块隐藏）
+        self.echo_area = QWidget(card)
+        self.echo_box = QVBoxLayout(self.echo_area)
+        self.echo_box.setContentsMargins(0, 6, 0, 0)
+        self.echo_box.setSpacing(8)
+        self.echo_area.setVisible(False)
+        col.addWidget(self.echo_area)
+        #: 上次画的是哪一批（只在内容真的变了才重建 —— 否则每 300ms 重建一次，
+        #: 图片会一直闪，而且 300ms 重新解码几十张 PNG 很费）
+        self._echo_key: tuple = ()
         return card
+
+    def _update_echo_cards(self, qualifying) -> None:
+        """把「符合条件的声骸」画成卡片（图 + 词条）。
+
+        ⚠ 用 ``_echo_key`` 做**内容指纹**：这一卡每 300ms 被刷一次，
+        无条件重建的话图片会闪、还白白解码 PNG。内容没变就直接跳过。
+        """
+        items = list(qualifying or [])
+        key = tuple((it.get("index"), it.get("image"), bool(it.get("perfect")),
+                     tuple(it.get("stats") or [])) for it in items
+                    if isinstance(it, dict))
+        if key == self._echo_key:
+            return
+        self._echo_key = key
+
+        #: 清空（连同旧控件）
+        while self.echo_box.count():
+            child = self.echo_box.takeAt(0)
+            w = child.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+        if not items:
+            self.echo_area.setVisible(False)
+            return
+
+        head = StrongBodyLabel(f"符合条件的声骸（{len(items)} 个）", self.echo_area)
+        self.echo_box.addWidget(head)
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            card = QualifyingEchoCard(
+                item, index=int(item.get("index") or 0),
+                #: ★ 满属性标记取**这个声骸自己**的标记（不在卡片区用全局计数近似）
+                is_perfect=bool(item.get("perfect")),
+                parent=self.echo_area)
+            self.echo_box.addWidget(card)
+        self.echo_area.setVisible(True)
 
     def _update_report_card(self, text: str) -> None:
         label = getattr(self, "report_label", None)
@@ -272,6 +455,17 @@ class EchoEnhanceWidget(ScrollArea):
         self.run_button = PrimaryPushButton(FluentIcon.PLAY, "运行", holder)
         self.run_button.clicked.connect(self._on_run)
 
+        #: ★「继续」—— 自动停止把任务**暂停**了，没有这个按钮用户就回不去
+        #:
+        #: ⚠ 这不是可选的锦上添花：``pause()`` 之后 ok-ww 的 executor 会停在
+        #: "不抓帧"的状态（``TaskExecutor.next_frame`` 里那句
+        #: ``if not (self.paused or task.paused …)``），任务确实不动了 ——
+        #: 而工具箱这边原来**只有「运行」和「停止」**，两个都不是"接着跑"。
+        #: 少了它，"可续跑"就只是个说法（用户只能停止再重跑，前面强化的白费）。
+        self.resume_button = PushButton(FluentIcon.PLAY, "继续", holder)
+        self.resume_button.setEnabled(False)
+        self.resume_button.clicked.connect(self._on_resume)
+
         self.stop_button = PushButton(FluentIcon.CANCEL, "停止", holder)
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self._on_stop)
@@ -282,6 +476,7 @@ class EchoEnhanceWidget(ScrollArea):
 
         # 按钮紧跟在标题右边，不推到最右
         row.addWidget(self.run_button)
+        row.addWidget(self.resume_button)
         row.addWidget(self.stop_button)
         row.addWidget(self.reset_button)
         row.addStretch(1)
@@ -383,10 +578,17 @@ class EchoEnhanceWidget(ScrollArea):
         settings = self.editor.settings()
         config = settings.to_judge_config()
 
+        #: ★ 新一轮：清掉上一轮的自动停止标记，否则这次停了不会再报
+        self._auto_stop_reported = ""
+        self._echo_key = ()
+        self._update_echo_cards([])
+
         self._append("— 开始运行（ok-ww 引擎）—")
         self._append("判定配置：" + settings.describe())
         self._append("前置：请停在 背包 → 声骸 界面，用过滤器筛好、按等级升序排序")
         self._append("⚠ 不符合条件的自动弃置（按 Z），符合条件的上锁（按 C）")
+        if settings.enable_auto_stop:
+            self._append("★ 出现符合条件的声骸会**自动暂停**并通知你")
         if self._host.state in ("idle", "error"):
             self._append("引擎未就绪：后台加载 ok-ww 中，就绪后自动开始（首次会慢一些）")
 
@@ -433,6 +635,51 @@ class EchoEnhanceWidget(ScrollArea):
             self._append(">>> 已请求停止")
 
     # ---------------------------------------------------------------- 轮询
+    def _notify_auto_stop(self) -> None:
+        """★ 自动停止时通知用户（托盘气泡 + 应用内提示）。
+
+        用户 2026-10-10 要求："出现符合条件声骸自动停止 … **并通知**"。
+
+        ## ⚠ 为什么两种都发
+
+        用户跑这个工具时**多半在看游戏**（工具页在后台）——
+        只弹 InfoBar 他看不见（那是窗口内的提示）。所以:
+
+        * **托盘气泡** —— 窗口最小化/被游戏盖住也能看到；
+        * **InfoBar** —— 他切回工具箱时，窗口里也有个明确的落点。
+
+        ⚠ 只报**一次**：轮询每 300ms 跑一次，而 ``已自动停止`` 这个 info 键
+        会一直是 True —— 不记状态的话会每 300ms 弹一次气泡（刷屏）。
+        """
+        task = self._host.find_task(TASK_KEY)
+        info = getattr(task, "info", None) if task is not None else None
+        if not isinstance(info, dict):
+            return
+        if not info.get("已自动停止"):
+            return                          #: 没停 → 什么都不做
+
+        reason = str(info.get("自动停止原因") or "").strip()
+        if not reason or reason == self._auto_stop_reported:
+            return                          #: 已经报过这一条了
+        self._auto_stop_reported = reason
+
+        title = "出现符合条件的声骸"
+        self._append(f"★ {reason} —— 任务已暂停，请在游戏里确认")
+        #: ① 托盘气泡（窗口不在前台也能看到）
+        try:
+            from ....gui import tray as tray_mod
+
+            tray_mod.notify(title, reason + "\n任务已暂停，回到游戏确认后继续")
+        except Exception:  # noqa: BLE001 - 气泡发不出去不该影响任务
+            logger.debug("托盘气泡通知失败", exc_info=True)
+        #: ② 应用内提示（切回窗口时的落点）
+        try:
+            InfoBar.success(title, reason, duration=15000, isClosable=True,
+                            position=InfoBarPosition.TOP_RIGHT,
+                            parent=self.window())
+        except Exception:  # noqa: BLE001
+            logger.debug("InfoBar 通知失败", exc_info=True)
+
     def _poll(self) -> None:
         """照「4C 自动战斗」那套：状态从宿主读，页面不自己维护线程。"""
         # 「引擎就绪后才开任务」那条路以前只有日志，页面上看不到 ——
@@ -455,6 +702,8 @@ class EchoEnhanceWidget(ScrollArea):
                 self._last_stats = _snapshot_task_stats(task)
             self._task_seen = True
             self._update_report_card(format_result_report(**self._last_stats))
+            self._update_echo_cards(self._last_stats.get("qualifying"))
+            self._notify_auto_stop()
 
         if state != self._last_state:
             if err and state == "error":
@@ -484,9 +733,49 @@ class EchoEnhanceWidget(ScrollArea):
         self._was_running = bool(running)
         self.run_button.setEnabled(not running)
         self.stop_button.setEnabled(bool(running) or bool(pending))
+        #: ★ 「继续」只在**任务被暂停**时可用（见 _task_paused）
+        paused = self._task_paused()
+        self.resume_button.setEnabled(paused)
+        self._was_paused = paused
 
         # 一次性任务跑完把状态拉回 ready
         self._host.poll_done()
+
+    def _task_paused(self) -> bool:
+        """本页的任务现在是不是**暂停**状态。
+
+        自动停止用的是 ``task.pause()``，它把 ``task._paused`` 置真
+        （``ok.task.task.BaseTask.pause``）—— 读那个属性就知道要不要点亮「继续」。
+        拿不到任务（没在跑 / 已结束）就是 False。
+        """
+        try:
+            task = self._host.find_task(TASK_KEY)
+            return bool(task is not None and getattr(task, "paused", False))
+        except Exception:  # noqa: BLE001 - 读不到就算没暂停
+            return False
+
+    def _on_resume(self) -> None:
+        """★ 继续：把自动暂停的任务放回去接着跑。
+
+        走 ok-ww 自己的 ``task.unpause()``（它会把 ``_paused`` 置假、
+        ``executor.start()`` 唤醒执行线程）—— 和它 GUI 里那个"继续"按钮
+        是同一条路。**不自己造恢复逻辑**。
+        """
+        task = self._host.find_task(TASK_KEY)
+        if task is None:
+            InfoBar.warning("没有可继续的任务", "任务已经结束了",
+                            duration=5000, parent=self.window())
+            return
+        try:
+            task.unpause()
+        except Exception as e:  # noqa: BLE001 - 恢复失败要说清楚，别静默
+            self._append(f"继续失败：{type(e).__name__}: {e}")
+            InfoBar.error("继续失败", str(e), duration=8000, parent=self.window())
+            return
+        self._append("已继续（从自动暂停处接着强化）")
+        InfoBar.success("已继续", "接着强化剩下的声骸", duration=5000,
+                        parent=self.window())
+        self._poll()
 
 
 
