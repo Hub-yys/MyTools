@@ -144,6 +144,12 @@ _ICON_CANDIDATES: dict[str, tuple[str, ...]] = {
     "TASK": ("BOOK_INDEX", "APPOINTMENT", "CALENDAR", "LIBRARY", "APPLICATION"),
     #: ★ 皮肤（用户 2026-10-05："皮肤加在左侧边栏"）
     "SKIN": ("PALETTE", "BRUSH", "CONSTRACT", "COLOR", "APPLICATION"),
+    #: ★ 消息通知（用户 2026-10-10："左侧边栏增加消息通知功能"）
+    #:
+    #: ⚠ 本版 qfluentwidgets **没有** ``RING`` / ``BELL`` / ``ALERT`` 成员
+    #: （实测），有 ``RINGER``（铃铛）/ ``MESSAGE`` / ``CHAT``。
+    #: 按"铃铛优先"排，缺了就退到消息气泡 —— 都能表达"通知"。
+    "BELL": ("RINGER", "MESSAGE", "CHAT", "APPLICATION"),
     "PANEL_COLLAPSED": ("CHEVRON_DOWN_MED", "ARROW_DOWN", "DOWN", "APPLICATION"),
     "PANEL_EXPANDED": ("UP", "CARE_UP_SOLID", "CHEVRON_DOWN_MED", "APPLICATION"),
 }

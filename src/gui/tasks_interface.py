@@ -30,6 +30,8 @@ from qfluentwidgets import (
     TitleLabel,
 )
 
+from ..core import notifications as N
+from ..core import notify
 from ..core.registry import ToolRegistry, logger
 from ..core.run_report import (
     RoundReport,
@@ -408,13 +410,27 @@ class TaskRowCard(QWidget):
         self._set_running(False)
         self._page.note_running(self, False)
         InfoBar.success("任务完成", summary, duration=5000, parent=self.window())
+        #: ★ 记一条消息（用户 2026-10-10："每个任务完成/失败都要进行通知"）
+        notify.report_task_result(self.flow.name or "任务", ok=True,
+                                  detail=summary)
 
     def _on_stopped_or_failed(self, message: str) -> None:
         self.status_label.setText(message[-60:] if message else "已停止")
         self._set_running(False)
         self._page.note_running(self, False)
-        if message not in ("已停止",) and not message.startswith("已停止"):
+        #: ★ 「已停止」是**用户自己按的**，不是失败 —— 单独记成一种，
+        #: 别在消息列表里报"失败"吓人（用户会以为出了故障）。
+        #: 这跟 okww_boot 里「自动暂停」的处理是同一个口径。
+        stopped = not message or message.startswith("已停止")
+        if not stopped:
             InfoBar.error("运行出错", message, duration=5000, parent=self.window())
+        name = self.flow.name or "任务"
+        if stopped:
+            notify.report(f"{name} · 已停止",
+                          (message or "").strip() or "已停止（用户主动停止）",
+                          level=N.LEVEL_INFO)
+        else:
+            notify.report_task_result(name, ok=False, detail=message)
 
     def _set_running(self, running: bool) -> None:
         self.run_button.setEnabled(not running)

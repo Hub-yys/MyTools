@@ -39,6 +39,7 @@ from .home_interface import HomeInterface
 from .library_interface import WuwaLibraryInterface
 from .nav_reorder import ORDER_KEY, NavReorderHelper
 from .tasks_interface import TasksInterface
+from .notify_page import build_notice_page
 from .skin_page import build_skin_page
 from .update_card import build_update_page
 from .widgets import ComingSoonWidget, tool_icon_of
@@ -65,6 +66,12 @@ LIBRARY_KEY = "WuwaLibraryInterface"
 #: ⚠ 用的是**偏金的黄**（不是纯黄 `#ffff00`）—— 纯黄在浅色背景上
 #: 几乎看不清；这个色在浅色和暗色皮肤下都够亮。
 UPDATE_BADGE_COLOR = "#E8A33D"
+
+#: 侧栏「消息」那一项的**基础文字**（未读时显示成 ``消息 · 3``）
+#:
+#: ⚠ 抽成常量是因为它被用在两个地方（建导航项 + 更新角标），
+#: 两处写死同一个字符串迟早会不一致（跟「检查更新」那边同样的处理）。
+NAV_NOTICE_TEXT = "消息"
 
 
 def _in_test_mode() -> bool:
@@ -278,6 +285,18 @@ class MainWindow(FluentWindow):
             self.update_interface, resolve_icon("UPDATE"), "检查更新"
         )
 
+        #: ★ 消息通知页面 —— 用户 2026-10-10："左侧边栏增加消息通知功能，
+        #: 用来储存最近发的通知，最多储存10条，每天自动清理，也可手动清理"
+        #:
+        #: ⚠ 跟「皮肤」「检查更新」一样是**正式导航项**（用户明确说"左侧边栏增加"），
+        #: 不是塞在别页里的一块。未读数走侧栏黄字（和「检查更新」同一套机制）。
+        self.notice_interface = build_notice_page(self)
+        self.addSubInterface(
+            self.notice_interface, resolve_icon("BELL"), NAV_NOTICE_TEXT
+        )
+        self.notice_interface.changed.connect(self.refresh_notice_badge)
+        self._install_notice_read_hook()
+
         self._build_tool_group()
         self._build_library_group()
 
@@ -401,7 +420,89 @@ class MainWindow(FluentWindow):
         :param version: 新版本号（显示成 ``检查更新 · v1.2.0``）；
             传空字符串则**清掉**提示。
 
-        ## ⚠⚠ 两个坑（都是摸源码才搞清的）
+        ⚠ 真正画字/取色那两个坑写在 :meth:`_paint_nav_badge` 里 ——
+        2026-10-10 加了「消息」角标后抽出去共用了（两处各写一份必然跑偏）。
+        """
+        item = None
+        try:
+            item = self.navigationInterface.widget(
+                self.update_interface.objectName())
+        except (RuntimeError, AttributeError):
+            item = None
+        if item is None:
+            return
+        self._paint_nav_badge(item, "检查更新", version)
+
+    def _install_notice_read_hook(self) -> None:
+        """★ 切到「消息」页时 → 标记全部已读（清掉侧栏未读角标）。
+
+        ## 为什么不用"打开页面就清"（在页面自己里做）
+
+        ``NoticeInterface`` 是 ``addSubInterface`` 加进去的**常驻页面** ——
+        它在建窗口时就构造好了，**不是每次点开都新建**。所以"在页面里标已读"
+        等于"程序一启动就全标已读"，未读角标永远不会亮。
+
+        真正能用的信号是导航项的 ``selectedChanged``（qfluentwidgets 的
+        ``NavigationInterface`` **没有** page-changed 信号 —— 实测只有
+        ``displayModeChanged`` / ``objectNameChanged`` 这些，都跟页面无关）。
+
+        ⚠ ``selectedChanged`` 每选中/取消都会发（``True``/``False`` 两次），
+        所以只在 ``selected=True`` 时清。
+
+        ⚠ 拿不到导航项就**跳过**（别抛）—— 单测里的小窗口未必有完整侧栏。
+        """
+        item = None
+        try:
+            item = self.navigationInterface.widget(
+                self.notice_interface.objectName())
+        except (RuntimeError, AttributeError):
+            item = None
+        if item is None or not hasattr(item, "selectedChanged"):
+            logger.debug("拿不到「消息」导航项，未读角标不会自动清")
+            return
+        try:
+            item.selectedChanged.connect(self._on_notice_selected)
+        except (RuntimeError, AttributeError):
+            logger.debug("接 selectedChanged 失败", exc_info=True)
+
+    def _on_notice_selected(self, selected: bool) -> None:
+        """选中「消息」页 → 标已读（见 :meth:`_install_notice_read_hook`）。"""
+        if not selected:
+            return
+        try:
+            self.notice_interface.mark_read()
+        except Exception:  # noqa: BLE001 - 标已读失败不该影响切页
+            logger.debug("标记消息已读失败", exc_info=True)
+
+    def refresh_notice_badge(self) -> None:
+        """★ 侧栏「消息」那一项显示未读数（``消息 · 3``）。
+
+        用户 2026-10-10 要的消息功能 —— 未读时用**和「检查更新」同一种黄字**，
+        这样侧栏上"有东西要看"是同一套视觉语言（两处各搞一种颜色只会乱）。
+
+        ⚠ 和「检查更新」不同的地方：这个角标在**切到消息页**时会清掉
+        （见 :meth:`_install_notice_read_hook`），而更新提示是"装完新版本才消失"。
+        """
+        count = 0
+        try:
+            count = int(self.notice_interface.unread_count())
+        except Exception:  # noqa: BLE001 - 读不到就当没有未读
+            logger.debug("读未读数失败", exc_info=True)
+        item = None
+        try:
+            item = self.navigationInterface.widget(
+                self.notice_interface.objectName())
+        except (RuntimeError, AttributeError):
+            item = None
+        if item is None:
+            return
+        self._paint_nav_badge(item, NAV_NOTICE_TEXT,
+                              str(count) if count > 0 else "")
+
+    def _paint_nav_badge(self, item, base_text: str, badge: str) -> None:
+        """给一个侧栏导航项画/清**黄字角标**（「检查更新」和「消息」共用）。
+
+        ## ⚠⚠ 两个坑（都是摸源码才搞清的，别再踩）
 
         **① 必须用 ``setText()``，不能赋值 ``item.text``**
 
@@ -418,33 +519,26 @@ class MainWindow(FluentWindow):
         ``NavigationTreeItem`` 是**自绘**的，颜色存在
         ``lightTextColor`` / ``darkTextColor`` 两个 ``QColor`` 上。
         写 ``styleSheet("color: ...")`` **没用**（第一版就这么写，白写）。
-        """
-        item = None
-        try:
-            item = self.navigationInterface.widget(
-                self.update_interface.objectName())
-        except (RuntimeError, AttributeError):
-            item = None
-        if item is None:
-            return
 
+        :param item: ``navigationInterface.widget(objectName)`` 拿到的项
+        :param base_text: 没有角标时的文字（``检查更新`` / ``消息``）
+        :param badge: 角标内容（版本号 / 未读数）；空串 = 清掉角标
+        """
         #: 真正画字的是里面的 NavigationTreeItem
         inner = item.findChild(QWidget)
         target = inner if inner is not None else item
-        base_text = "检查更新"
 
         try:
-            target.setText(f"{base_text} · {version}" if version
-                           else base_text)
-            if version:
-                badge = QColor(UPDATE_BADGE_COLOR)
-                target.setTextColor(badge, badge)
+            target.setText(f"{base_text} · {badge}" if badge else base_text)
+            if badge:
+                color = QColor(UPDATE_BADGE_COLOR)
+                target.setTextColor(color, color)
             else:
                 #: 恢复默认（浅色主题黑字 / 暗色主题白字）
                 target.setTextColor(QColor(0, 0, 0), QColor(255, 255, 255))
             target.update()
         except (RuntimeError, AttributeError):
-            logger.debug("设置侧栏更新提示失败", exc_info=True)
+            logger.debug("设置侧栏角标失败：%s", base_text, exc_info=True)
 
     # ------------------------------------------------------------------ 托盘 / 关闭
     def _setup_tray(self) -> None:

@@ -450,6 +450,28 @@ def input_permission_error() -> str | None:
                               elevation.integrity_level(pid))
 
 
+def _counts_line(info: dict) -> str:
+    """从任务的 info 里拼一行统计（给消息正文用）；没数字就返回空串。
+
+    ⚠ 只挑**确定存在**的键，缺的一个字都不编 —— 消息里出现
+    "成功 0 个"而实际是"这个任务根本不统计这个数"是很误导的。
+    """
+    info = info if isinstance(info, dict) else {}
+    parts = []
+    for label, key in (("符合条件", "成功声骸数量"), ("弃置", "失败声骸数量"),
+                       ("跳过", "跳过声骸数量")):
+        value = info.get(key)
+        if isinstance(value, int):
+            parts.append(f"{label} {value}")
+    if not parts:
+        return ""
+    #: 判定次数（强化那边有；调频没有）
+    checked = info.get("判定统计")
+    if isinstance(checked, str) and checked.strip():
+        parts.append(checked.strip())
+    return " · ".join(parts)
+
+
 class OkwwHost:
     """ok-ww 运行时的宿主。一次进程只 boot 一个 OK 实例（ok 的 og 是全局单例）。
 
@@ -863,7 +885,18 @@ class OkwwHost:
             return dict(self._finished_info.get(task_key) or {})
 
     def poll_done(self) -> None:
-        """工具页的定时器调用：检测一次性任务是否已结束。"""
+        """工具页的定时器调用：检测一次性任务是否已结束。
+
+        ★ 2026-10-10 起这里**顺便记一条消息**（用户要求"声骸批量调频、
+        声骸自动强化等工具完成/失败时也要通知"）。
+
+        ## ⚠ 为什么记在这儿（而不是每个工具页各写一遍）
+
+        所有工具页（强化 / 调频 / 4C 战斗）跑完都**必然**经过这个方法 ——
+        它是"宿主上的任务结束了"的**唯一收敛点**。
+        各页自己记的话：三处各写一遍、标题格式各不一样、
+        而且以后新增工具一定会漏（用户就得再报一次"XX 没通知"）。
+        """
         with self._lock:
             key, ok = self._running_task, self._ok
         if key and ok is not None:
@@ -879,6 +912,49 @@ class OkwwHost:
                     if self._report_started_at and not self._report_stopped_at:
                         self._report_stopped_at = time.time()
                 self._log("■ 任务结束：%s" % key)
+                self._notice_task_done(key, info)
+
+    def _notice_task_done(self, key: str, info) -> None:
+        """给刚结束的任务记一条消息（见 :meth:`poll_done` 的说明）。
+
+        ## 成功 / 失败怎么判
+
+        ok-script 在任务抛异常时写 ``info["Error"]``（见 ``TaskExecutor.execute``
+        的 ``except`` 分支：``task.info_set(task._app.tr('Error'), error)``）。
+        我们自己的任务多写了一个中文的 ``失败原因``（``okww_task.run`` 的 except）。
+        两个都查一遍 —— 只查一个的话另一类任务的失败会被记成"完成"。
+
+        ⚠ **不自己判断"跑得好不好"**（比如"成功声骸数量 == 0 算失败"）——
+        那会把"过滤器里本来就没东西"这种正常情况误报成失败。
+        只认引擎/任务自己明确写下的错误。
+        """
+        from ....core import notifications as N
+        from ....core import notify
+
+        info = info if isinstance(info, dict) else {}
+        error = ""
+        for name in ("Error", "失败原因"):
+            value = info.get(name)
+            if isinstance(value, str) and value.strip():
+                error = value.strip()
+                break
+
+        #: 自动停止那种"既非成功也非失败"的情况单独标一下（用户在等它）
+        auto_stopped = bool(info.get("已自动停止"))
+        if error:
+            detail = error
+            #: 顺手把统计带上（失败前跑了多少，用户想知道）
+            counts = _counts_line(info)
+            if counts:
+                detail = f"{error}\n{counts}"
+            notify.report_task_result(key, ok=False, detail=detail)
+        elif auto_stopped:
+            notify.report(f"{key} · 已自动暂停",
+                          str(info.get("自动停止原因") or "").strip()
+                          or "出现符合条件的声骸",
+                          level=N.LEVEL_INFO)
+        else:
+            notify.report_task_result(key, ok=True, detail=_counts_line(info))
 
     def _log(self, message: str) -> None:
         """宿主的运行日志。
