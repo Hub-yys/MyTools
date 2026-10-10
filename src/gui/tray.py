@@ -145,6 +145,149 @@ def ask_close(parent, running_task: str | None, *, allow_hide: bool = True) -> s
     return CLOSE_HIDE if primary else CLOSE_QUIT
 
 
+def _menu_palette() -> tuple[str, str, str]:
+    """托盘菜单的 ``(底色, 文字色, 高亮底)`` —— 跟着当前皮肤走。
+
+    ## ⚠⚠ 为什么必须**显式钉死**（用户 2026-10-09："托盘退出怎么都看不见"）
+
+    菜单是 ``QMenu``（**裸 Qt 控件**），它的文字走 ``ButtonText`` 角色。
+    皮肤只把调色板设成"深色皮肤对应的浅字"，看着没错 —— 但**实测渲染出来
+    是深字压深底**，整块几乎纯色：
+
+        深空玻璃（用户在用的）: 背景 rgb(11,16,38) / 最亮像素 rgb(1,2,4)
+                                → 反差 **19/255**，字完全糊在底里
+        晨雾玻璃（浅色）:       反差 223/255 → 正常
+
+    ⚠ 我试过 ``app.setStyleSheet("")``、去掉窗口级 QSS、换 parent ——
+    **都改不了它**；只有**给菜单自己**设配色才生效
+    （四种组合的实测数据见 :func:`style_menu`）。
+    所以这里不依赖调色板继承，直接把颜色算出来写上去。
+
+    :return: ``(背景, 文字, 选中项背景)``，都是 ``#rrggbb``。
+    """
+    from ..core import skins
+
+    try:
+        skin = skins.active_skin()
+        dark = skin["mode"] == "dark"
+        #: 底色用**实心卡片色** —— 半透明的玻璃色铺在菜单上会透出桌面，很脏
+        bg = skins.solid_card_on(skin["card"], skin["bg"][0][1], dark)
+        text = skin["text"]
+        hi = skin["primary"]
+    except Exception:  # noqa: BLE001 - 皮肤坏了也得有个能看的菜单
+        logger.debug("取皮肤色失败，托盘菜单退回深色默认", exc_info=True)
+        return "#2b2b2b", "#f0f0f0", "#4a9eff"
+    return bg, text, hi
+
+
+def _rgb_tuple(color: str) -> tuple[int, int, int] | None:
+    """``"#rrggbb"`` → ``(r, g, b)``；解析不出来返回 None。"""
+    s = str(color or "").strip().lstrip("#")
+    if len(s) != 6:
+        return None
+    try:
+        return tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+    except ValueError:
+        return None
+
+
+def _alpha(color: str, alpha: float) -> str:
+    """把 ``#rrggbb`` + 透明度 → QSS 认的 ``rgba(r,g,b,a)``。
+
+    ## ⚠⚠ 不能用 8 位十六进制 ``#rrggbbaa``
+
+    Qt 的 QSS 把 8 位十六进制当 **``#AARRGGBB``**（alpha 在前），
+    不是 CSS 的 ``#RRGGBBAA``。我第一版写成 ``{hi}40``（想加 25% 透明），
+    实测被解析成 alpha=0x4A、R=0x9E、G=0xFF、B=0x40 —— 菜单边框变成
+    **一条绿线**（像素 rgb(63,95,54)）。
+
+    同一个坑本仓已经踩过一次（见 ``core/skins._rgba`` 的注释）。
+    所以这里统一走 ``rgba()``。
+    """
+    rgb = _rgb_tuple(color)
+    if rgb is None:
+        return color
+    return "rgba(%d, %d, %d, %.2f)" % (rgb[0], rgb[1], rgb[2], alpha)
+
+
+def style_menu(menu) -> None:
+    """把托盘菜单的配色**钉死**（见 :func:`_menu_palette`）。
+
+    ## ⚠ 为什么调色板和样式表**两个都设**（实测数据，别删任何一个）
+
+    在 Windows 平台下把四种组合都量了一遍（深空玻璃，渲染出来的反差）::
+
+        都不设           19   ← 用户报的现象（深字压深底）
+        只设调色板      206   ← 单独就够
+        只设样式表      203   ← 单独也够
+        两个都设        203   ← 现在这样
+
+    → **任一个单独就能修好**，这里两个都写是**故意的冗余**：
+    样式表负责底/选中条/圆角/分隔线（``QMenu::item`` 那些），
+    调色板兜住"QSS 被覆盖 / 换肤时序错开"的情况。
+    删掉任一条都不会立刻坏，所以更要留着这段注释说明**为什么**。
+    """
+    from PySide6.QtGui import QColor, QPalette
+
+    bg, text, hi = _menu_palette()
+    menu.setStyleSheet(
+        f"QMenu {{ background: {bg}; color: {text};"
+        f" border: 1px solid {_alpha(hi, 0.45)}; border-radius: 6px;"
+        f" padding: 4px; }}"
+        f"QMenu::item {{ padding: 6px 24px 6px 16px;"
+        f" background: transparent; color: {text}; }}"
+        f"QMenu::item:selected {{ background: {hi}; color: #ffffff; }}"
+        f"QMenu::separator {{ height: 1px; background: {_alpha(text, 0.25)};"
+        f" margin: 4px 10px; }}"
+    )
+
+    pal = menu.palette()
+    for role, color in (
+        (QPalette.ColorRole.Window, bg),
+        (QPalette.ColorRole.WindowText, text),
+        (QPalette.ColorRole.Text, text),
+        (QPalette.ColorRole.ButtonText, text),
+        (QPalette.ColorRole.Base, bg),
+        (QPalette.ColorRole.Highlight, hi),
+        (QPalette.ColorRole.HighlightedText, "#ffffff"),
+    ):
+        pal.setColor(role, QColor(color))
+    menu.setPalette(pal)
+
+
+def build_menu(parent, on_show, on_quit):
+    """建托盘右键菜单（**不依赖系统托盘**，方便单测）。
+
+    ⚠ 单独抽出来是有原因的：托盘本身在无头/远程会话里拿不到
+    （``make_tray`` 直接返回 None），如果菜单只在 ``make_tray`` 里建，
+    那"配色有没有刷上、换肤跟不跟"就**永远测不到** ——
+    默认的 offscreen 测试环境下这两条只能 skip，等于没有护栏。
+    """
+    from PySide6.QtGui import QAction
+
+    menu = QMenu(parent)
+    act_show = QAction(f"显示 {APP_DISPLAY_NAME}", menu)
+    # ⚠ triggered 会带一个 checked 参数，直接 connect 裸回调会 TypeError。
+    #   用 lambda 吃掉它。
+    act_show.triggered.connect(lambda *_: on_show())
+    act_quit = QAction("退出", menu)
+    act_quit.triggered.connect(lambda *_: on_quit())
+    menu.addAction(act_show)
+    menu.addSeparator()
+    menu.addAction(act_quit)
+
+    #: ★★ 菜单配色**显式钉死**，否则深色皮肤下"深字压深底"看不见
+    #: （用户 2026-10-09："托盘退出怎么都看不见"，见 :func:`_menu_palette`）
+    #:
+    #: ⚠ 每次弹出前**重刷一遍**，不只在这里设一次：换肤后要跟着变。
+    #:   挂 ``aboutToShow`` 比注册回调更稳 —— 那套 ``refresh_skin_colors``
+    #:   机制依赖"菜单挂在窗口下、且换肤时窗口已存在"，
+    #:   而这里无论什么时候右键，用的都是**当下**的皮肤色。
+    menu.aboutToShow.connect(lambda _m=menu: style_menu(_m))
+    style_menu(menu)
+    return menu
+
+
 def make_tray(parent, on_show, on_quit, icon=None) -> QSystemTrayIcon | None:
     """建托盘图标。拿不到托盘返回 None（调用方退化成"最小化"）。
 
@@ -160,7 +303,6 @@ def make_tray(parent, on_show, on_quit, icon=None) -> QSystemTrayIcon | None:
         logger.info("系统托盘不可用，托盘图标跳过（关闭/缩小时退化成最小化）")
         return None
     try:
-        from PySide6.QtGui import QAction
         from qfluentwidgets import FluentIcon
 
         tray = QSystemTrayIcon(parent)
@@ -172,16 +314,7 @@ def make_tray(parent, on_show, on_quit, icon=None) -> QSystemTrayIcon | None:
             tray.setIcon(FluentIcon.APPLICATION.icon())
         tray.setToolTip(APP_DISPLAY_NAME)
 
-        menu = QMenu(parent)
-        act_show = QAction(f"显示 {APP_DISPLAY_NAME}", menu)
-        # ⚠ triggered 会带一个 checked 参数，直接 connect 裸回调会 TypeError。
-        #   用 lambda 吃掉它。
-        act_show.triggered.connect(lambda *_: on_show())
-        act_quit = QAction("退出", menu)
-        act_quit.triggered.connect(lambda *_: on_quit())
-        menu.addAction(act_show)
-        menu.addSeparator()
-        menu.addAction(act_quit)
+        menu = build_menu(parent, on_show, on_quit)   #: 见 :func:`build_menu`
         tray.setContextMenu(menu)
         # 菜单得挂在 tray 上，否则可能被 GC 掉（右键点不出来）
         tray._menu_ref = menu          # noqa: SLF001 - 仅为了持有引用

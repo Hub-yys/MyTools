@@ -47,6 +47,22 @@ datas += [
     (str(OKWW / "i18n"), "vendor/okww/i18n"),
     (str(OKWW / "config.py"), "vendor/okww"),
 ]
+# ⚠⚠ ``ok_tasks/`` 必须一起收 —— 漏了它 = **自动战斗全部认不出角色**（2026-10-09 实机翻车）
+#
+# 它是上游 ok-ww 的**官方扩展点**（不是我们的代码）：``FeatureSet.read_from_json``
+# 会按**相对路径** ``os.path.join('ok_tasks','assets','coco_annotations.json')``
+# 去找这个文件，把里面的模板**合并**进特征表。我们的「心」识别模板
+# （``tools/make_xin_templates.py`` 生成）就放在这里。
+#
+# 漏掉的后果**极其隐蔽**：界面正常、日志只有一行 ``Merged ...`` 不见了，
+# 但 ``char_names`` 里有 ``char_xin`` → ``FeatureSet.find_one_feature`` 直接
+# ``raise ValueError: Labels.char_xin not found in featureDict``。
+# 而 ``get_char_by_pos`` 是拿**整张角色表**（61 个）一次性匹配的 ——
+# **一个模板缺失就让所有队伍都认不出人**（用户看到的是"清宵/达妮娅/莫宁
+# 这队不能自动战斗"，实际跟队伍里是谁毫无关系）。
+datas += [
+    (str(OKWW / "ok_tasks"), "vendor/okww/ok_tasks"),
+]
 # ok-script 框架（PyPI 包）：模块动态导入多（capture/interaction/ocr 后端按配置选择），
 # 整包收模块 + 数据；okww 包的 .py 也当数据放一份（它的 TaskManager 按类路径字符串
 # 导入，源码随包更稳，也符合 AGPL「随附源码」的精神）

@@ -43,7 +43,83 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
-class TestSkinRegistry(unittest.TestCase):
+def _destroy_toplevels() -> int:
+    """**真正**销毁所有顶层控件，返回销毁了几个。
+
+    ## ⚠⚠ 为什么必须有它（2026-10-10 修「整套跑会卡死」）
+
+    本文件里的测试建了 ``MainWindow`` 却**不清理**（好几处注释还写着
+    "窗口建了就不用管，进程结束自然回收" —— 那个结论是**错的**）。
+    窗口会一直攒着，而 ``skins._paint`` 里有一句::
+
+        app.setStyleSheet(qss)      # 对**所有**控件递归 re-polish
+
+    → 活着的窗口越多，``apply_skin()`` 越慢。实测::
+
+        0 个 MainWindow → 0.000s
+        1 个            → 2.8s
+        3 个            → 8.5s
+
+    而 ``TestNativeWidgetPalette`` 会循环 6 款皮肤各调一次
+    ``apply_skin``（``setUp``/``tearDown`` 还各一次），后面几个类又继续加窗口
+    → 单次涨到几十秒 × 几十次 = **整套跑几个小时不结束**（看起来像卡死）。
+
+    ## ⚠ 光调 ``deleteLater()`` **不够**
+
+    ``deleteLater()`` 只是**投递**一个 ``DeferredDelete`` 事件，
+    而 ``QApplication.processEvents()`` **默认不处理**它 ——
+    所以原来那些 ``w.deleteLater()`` 等于没删。必须显式
+    ``sendPostedEvents(None, DeferredDelete)`` 把事件跑掉。
+
+    （实测：24 个控件 ``processEvents()`` 后仍是 24 个；
+      ``sendPostedEvents(DeferredDelete)`` 后变 0。）
+    """
+    from PySide6.QtCore import QEvent, QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        return 0
+
+    n = 0
+    for w in app.topLevelWidgets():
+        try:
+            w.hide()
+            w.setParent(None)
+            w.deleteLater()
+            n += 1
+        except RuntimeError:          #: C++ 那边已经没了
+            continue
+    #: ★★ 关键的一步：把 deleteLater 投递的事件**真的处理掉**
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+    return n
+
+
+class _SkinTestCase(unittest.TestCase):
+    """本文件所有测试的基类 —— **每个类跑完自动清理顶层控件**。
+
+    ## ⚠⚠ 为什么用基类而不是在每个类里写 ``tearDownClass``
+
+    本文件有 13 个类、其中 6 个会建 ``MainWindow`` 之类的顶层控件。
+    逐个补 ``tearDownClass`` 一定会漏（原来就漏了好几个），
+    而漏一个的代价是**整套测试跑不完**（见 :func:`_destroy_toplevels`）。
+
+    放在基类里 = **新加的类只要继承它就自动安全**，
+    不会因为"忘了写清理"再把整套拖死。
+
+    ⚠ 用 ``tearDownClass``（类级）而不是 ``tearDown``（方法级）：
+    有些类故意在多个方法间**复用**同一个窗口（如
+    ``TestNavResizerTransparent._window_once``），方法级清理反而会破坏它们。
+    """
+
+    @classmethod
+    def tearDownClass(cls):
+        _destroy_toplevels()
+        super().tearDownClass()
+
+
+class TestSkinRegistry(_SkinTestCase):
     """皮肤注册表本身（不碰窗口）。"""
 
     def test_skins_have_required_fields(self):
@@ -149,7 +225,7 @@ class TestSkinRegistry(unittest.TestCase):
         self.assertIsNone(skins.skin_by_id("不存在的皮肤"))
 
 
-class TestSkinQss(unittest.TestCase):
+class TestSkinQss(_SkinTestCase):
     """★★ ``build_qss`` —— 换肤**看得见**的关键。"""
 
     @classmethod
@@ -487,7 +563,7 @@ class TestSkinQss(unittest.TestCase):
         win.deleteLater()
 
 
-class TestNativeWidgetPalette(unittest.TestCase):
+class TestNativeWidgetPalette(_SkinTestCase):
     """★★★ **裸 Qt 控件**也要跟着换肤（用户 2026-10-05 报的"看不清字"）。
 
         用户（截图圈出「资源库更新」的日志框）::
@@ -600,7 +676,7 @@ class TestNativeWidgetPalette(unittest.TestCase):
         self.assertEqual(skins._rgba(None), (255, 255, 255, 1.0))
 
 
-class TestNavResizerTransparent(unittest.TestCase):
+class TestNavResizerTransparent(_SkinTestCase):
     """★★★ 侧栏那条**白缝**要修掉（用户 2026-10-05 截图）。
 
         用户::
@@ -672,7 +748,7 @@ class TestNavResizerTransparent(unittest.TestCase):
                          "拖宽侧栏没生效 —— 透明把功能弄坏了？")
 
 
-class TestSkinApply(unittest.TestCase):
+class TestSkinApply(_SkinTestCase):
     """应用皮肤（改全局主题）。"""
 
     @classmethod
@@ -723,7 +799,7 @@ class TestSkinApply(unittest.TestCase):
         self.assertIn("qlineargradient", self.app.styleSheet())
 
 
-class TestWindowGetsQss(unittest.TestCase):
+class TestWindowGetsQss(_SkinTestCase):
     """★★★ **顶层窗口必须拿到 QSS** —— 这是"白缝"的根因。
 
     ## ⚠⚠ 用户报过**两次**同一个症状
@@ -853,7 +929,7 @@ class TestWindowGetsQss(unittest.TestCase):
                          "重复 apply 没有跳过 —— 又回到每次都卡 1.4 秒")
 
 
-class TestColorMathHasOneHome(unittest.TestCase):
+class TestColorMathHasOneHome(_SkinTestCase):
     """★★★ 颜色数学（解析 / 混色）**只能有一份实现**。
 
     ## ⚠⚠ 这是实际发生的冗余（2026-10-06 自查发现）
@@ -985,7 +1061,7 @@ class TestColorMathHasOneHome(unittest.TestCase):
                                     f"rgba 解析又出问题了")
 
 
-class TestToolCardFollowsSkin(unittest.TestCase):
+class TestToolCardFollowsSkin(_SkinTestCase):
     """★★★ 主页工具卡片的底色要跟**皮肤**，不是 qfluentwidgets 的主题。
 
     ## ⚠⚠⚠ 用户 2026-10-08 截图
@@ -1157,7 +1233,7 @@ class TestToolCardFollowsSkin(unittest.TestCase):
             "refresh_skin_colors() 没更新 _bg_rgba")
 
 
-class TestMainWindowPaintedAfterShow(unittest.TestCase):
+class TestMainWindowPaintedAfterShow(_SkinTestCase):
     """★★★ 主窗口**显示之后**侧栏 / 标题栏必须被刷上皮肤。
 
     ## ⚠⚠⚠ 用户 2026-10-08 截图报的
@@ -1271,7 +1347,7 @@ class TestMainWindowPaintedAfterShow(unittest.TestCase):
             f"看着就是两块割裂的颜色")
 
 
-class TestSkinPersists(unittest.TestCase):
+class TestSkinPersists(_SkinTestCase):
     """★★★ 皮肤选完要**真的存住**，重开程序还在。
 
     ## ⚠⚠⚠ 用户 2026-10-08 装完包才发现的 bug
@@ -1548,7 +1624,7 @@ class TestSkinPersists(unittest.TestCase):
                 pass
 
 
-class TestSkinReallyChangesPixels(unittest.TestCase):
+class TestSkinReallyChangesPixels(_SkinTestCase):
     """★★★ **真的换肤了** —— 渲染后逐点采样比对。
 
     用户报的 bug：「只有深色的皮肤有效果，其他的根本没有效果」。
@@ -1730,7 +1806,7 @@ class TestSkinReallyChangesPixels(unittest.TestCase):
                 seen[qss] = s["name"]
 
 
-class TestSkinPersistence(unittest.TestCase):
+class TestSkinPersistence(_SkinTestCase):
     """皮肤选择的持久化（用独立 config 文件，不碰用户的）。"""
 
     @classmethod
@@ -1783,7 +1859,7 @@ class TestSkinPersistence(unittest.TestCase):
         self.assertEqual(skins.current_skin()["id"], skins.DEFAULT_SKIN)
 
 
-class TestSkinPage(unittest.TestCase):
+class TestSkinPage(_SkinTestCase):
     """★ 皮肤**页面**（侧栏导航项 → 右边卡片）。
 
     用户："皮肤加在左侧边栏，不是左下角，
@@ -1963,6 +2039,134 @@ class TestSkinPage(unittest.TestCase):
         card = next(c for c in page._cards if c._skin["id"] == target["id"])
         card.chosen.emit(target["id"])
         self.assertEqual(skins.current_skin()["id"], target["id"])
+
+
+class TestNoToplevelWidgetLeak(_SkinTestCase):
+    """★★★ 测试**不许把顶层控件留着** —— 那会让整套测试跑不完。
+
+    ## 为什么单独有这个类（2026-10-10：整套测试挂了 9 小时）
+
+    本文件的测试会建 ``MainWindow``，而 ``skins._paint`` 里有一句::
+
+        app.setStyleSheet(qss)     # 对所有控件递归 re-polish
+
+    → **活着的窗口越多，``apply_skin()`` 越慢**（实测）::
+
+        0 个 MainWindow → 0.000s
+        1 个            → 2.8s
+        3 个            → 8.5s
+
+    原来多个类建了窗口就不管（注释里还写着"进程结束自然回收"），
+    于是越攒越多 → 单次涨到几十秒 × 调用几十次 → **整套跑几个小时不结束**。
+
+    ## ⚠ ``deleteLater()`` 单独用是**没用的**
+
+    ``QApplication.processEvents()`` **默认不处理** ``DeferredDelete`` 事件，
+    所以原来那些 ``w.deleteLater()`` 全等于没删（实测 24 个控件跑完还是 24 个）。
+    必须 ``sendPostedEvents(None, DeferredDelete)`` —— 见 :func:`_destroy_toplevels`。
+
+    下面两条分别钉住"机制对"和"基类真的接上了"。
+    """
+
+    def test_delete_later_needs_send_posted_events(self):
+        """★★ ``deleteLater()`` + ``processEvents()`` **不足以**销毁控件。
+
+        这条是"为什么必须 sendPostedEvents"的证据 ——
+        哪天有人说"调了 deleteLater 就够了"，跑这条看数据。
+        """
+        from PySide6.QtWidgets import QApplication, QWidget
+
+        app = QApplication.instance() or QApplication([])
+        before = len(app.topLevelWidgets())
+
+        w = QWidget()
+        w.deleteLater()
+        app.processEvents()
+        self.assertGreater(
+            len(app.topLevelWidgets()), before,
+            "processEvents() 竟然处理了 DeferredDelete —— "
+            "那 _destroy_toplevels 里的 sendPostedEvents 可以重新评估")
+
+        _destroy_toplevels()          #: 收尾，别把上面那个漏了
+        self.assertEqual(len(app.topLevelWidgets()), before,
+                         "sendPostedEvents 之后应该清干净")
+
+    def test_base_class_cleans_up_after_each_class(self):
+        """★★★ 基类必须在**每个类跑完**后把顶层控件清零。
+
+        ⚠⚠ 这条**必须真的走基类的 ``tearDownClass()``**，不能自己调
+        ``_destroy_toplevels()`` —— 护栏验证时发现：自己调的话，
+        把基类的清理**删掉**测试照样通过（假绿）。
+
+        做法：现造一个继承 ``_SkinTestCase`` 的一次性类，
+        先弄脏环境，再调**它**的 ``tearDownClass()``。
+        """
+        from PySide6.QtWidgets import QApplication, QWidget
+
+        app = QApplication.instance() or QApplication([])
+
+        class _Probe(_SkinTestCase):
+            """只借它的 ``tearDownClass``，不真跑测试。"""
+
+        #: 造两个"泄漏的"顶层控件，模拟没写清理的测试类
+        leaks = [QWidget() for _ in range(2)]
+        for w in leaks:
+            w.show()
+        app.processEvents()
+        self.assertGreaterEqual(len(app.topLevelWidgets()), 2,
+                                "造的泄漏控件没进 topLevelWidgets")
+
+        #: ★ 走**基类**那条路径（删掉基类的清理 → 这里就会挂）
+        _Probe.tearDownClass()
+
+        self.assertEqual(len(app.topLevelWidgets()), 0,
+                         "基类 tearDownClass 没清干净 —— "
+                         "跑整套时窗口会越攒越多，apply_skin 越来越慢")
+
+    def test_every_test_class_inherits_cleanup(self):
+        """★★★ 本文件里**每个** TestCase 都必须继承 ``_SkinTestCase``。
+
+        ⚠ 这条防的是"新加了一个类、忘了继承"—— 那会让整套测试重新变慢。
+        漏一个类的代价不是"慢一点"，而是**整套跑不完**（见类文档）。
+        """
+        import inspect
+
+        module = inspect.getmodule(self)
+        offenders = []
+        for name, obj in vars(module).items():
+            if not (isinstance(obj, type) and issubclass(obj, unittest.TestCase)):
+                continue
+            if obj.__module__ != module.__name__:
+                continue              #: 别管 import 进来的
+            if not issubclass(obj, _SkinTestCase):
+                offenders.append(name)
+        self.assertEqual(
+            offenders, [],
+            f"这些测试类没继承 _SkinTestCase：{offenders} —— "
+            f"它们建的窗口不会被清理，整套测试会越来越慢直到跑不完")
+
+    def test_apply_skin_is_fast_with_clean_state(self):
+        """★★ 干净状态下 ``apply_skin`` 必须是**毫秒级**。
+
+        修之前因为窗口泄漏，单次要 2.8~8.5 秒。这条把"快"钉住 ——
+        如果哪天真慢到这个量级，说明又有东西在攒。
+        """
+        import time
+
+        from src.core import skins
+
+        _destroy_toplevels()          #: 先确保干净
+        skins.apply_skin("mist", save=False)     #: 热身（建 QSS 缓存）
+
+        t0 = time.time()
+        for sid in ("deepglass", "mist", "nebula"):
+            skins.apply_skin(sid, save=False)
+        dt = time.time() - t0
+
+        self.assertLess(
+            dt, 2.0,
+            f"干净状态下换 3 次皮肤用了 {dt:.2f}s（应该 < 0.1s）—— "
+            f"多半又有顶层控件在攒（每个都会让 setStyleSheet 变慢）")
 
 
 if __name__ == "__main__":

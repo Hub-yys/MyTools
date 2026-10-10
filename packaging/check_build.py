@@ -67,6 +67,12 @@ REQUIRED_DATA = [
     "vendor/okww/config.py",                     # 宿主 importlib 按路径加载
     "vendor/okww/okww/task/FarmEchoTask.py",
     "vendor/okww/i18n/zh_CN/LC_MESSAGES/ok.mo",
+    # ⚠⚠ 2026-10-09 实机翻车：漏了这两个 → **自动战斗全部认不出角色**。
+    #    FeatureSet 按**相对路径**找 ok_tasks/assets/coco_annotations.json 并合并；
+    #    找不到 → char_xin 不在特征表 → find_best_match_in_box(整张角色表) 直接
+    #    raise ValueError → 任何队伍都开不了战斗（界面上一片正常，只报 char_xin）。
+    "vendor/okww/ok_tasks/assets/coco_annotations.json",
+    "vendor/okww/ok_tasks/assets/images/xin_templates.png",
 ]
 
 FAILURES: list[str] = []
