@@ -135,11 +135,61 @@ class TestTaskClassLazy(unittest.TestCase):
         ``registry.discover()`` 会 import 工具包下所有模块 ——
         如果本模块在 import 时就要 ok-ww，没装 ok-ww 的环境
         **一个工具都发现不了**（而不是少了这一个）。
+
+        ## ⚠⚠ 这条测试原来**依赖测试顺序**（2026-10-13 修）
+
+        原写法是直接断言进程级状态::
+
+            importlib.reload(okww_task)
+            self.assertNotIn("okww", sys.modules, ...)
+
+        ``sys.modules`` 是**进程级**的，而这条测试**自己不清理**。
+        于是只要同一次运行里**别的**测试先 import 过 ok-ww
+        （``test_okww_vendor`` 或那个"真起引擎"的验收就会），
+        它就**必挂** —— 单独跑过、全量跑挂。
+
+        实测复现：先在进程里 ``import okww`` 再跑这条 → 挂。
+
+        ## 改成怎么测
+
+        不该看"进程里有没有 okww"（那被别人污染），
+        而该看**本模块自己做了什么**：重新加载之后，
+        确认 ``okww_task`` 的懒构造**没有被触发**
+        （即任务类属性还没被求值），
+        并且模块里**没有**对 ok-ww 的**顶层 import**。
         """
-        #: 重新 import 一次，看有没有把 okww 带进来
+        #: ① 静态判据：模块顶层不该有 import okww（AST 判，最可靠）
+        src = Path(okww_task.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for node in tree.body:                      #: 只看**模块顶层**
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+                self.assertNotIn(
+                    "okww", [n.split(".")[0] for n in names],
+                    "okww_task 顶层 import 了 ok-ww —— 没装 ok-ww 的环境会整个失败")
+            elif isinstance(node, ast.ImportFrom):
+                mod = (node.module or "").split(".")[0]
+                self.assertNotEqual(
+                    mod, "okww",
+                    "okww_task 顶层 from okww import ... —— 同上")
+
+        #: ② 动态判据：重新加载后，懒构造**没被触发**
+        #:    （``__getattr__`` 命中后会把类缓存进 ``globals()[TASK_CLASS_NAME]``，
+        #:     所以"没被触发"= 模块命名空间里没有那个类名）
         importlib.reload(okww_task)
-        self.assertNotIn("okww", sys.modules,
-                         "import okww_task 把 ok-ww 拉进来了")
+        cached = getattr(okww_task, "TASK_CLASS_NAME", None)
+        self.assertTrue(cached, "模块里没有 TASK_CLASS_NAME 常量")
+        self.assertNotIn(
+            cached, vars(okww_task),
+            f"import 之后 {cached} 就被构造了 —— 懒构造失效")
+
+        #: ③ 真去取一次任务类，这时才该碰 ok-ww
+        #:    ⚠ 只有装了 ok-ww 才测得到（没装时 __getattr__ 会抛，那也算对）
+        try:
+            cls = okww_task.MyToolsNestSweepTask
+        except Exception:                           # noqa: BLE001
+            return                                  #: 没装 ok-ww → 抛是预期行为
+        self.assertIsNotNone(cls)
 
     def test_unknown_attribute_raises(self):
         """只认任务类名，别的属性照常抛 AttributeError。"""
