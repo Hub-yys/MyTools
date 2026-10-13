@@ -37,6 +37,26 @@ REQUIRED_IN_ARCHIVE = [
     "src.tools.game.echo_enhance.okww_task",   # 声骸强化的 MyTools 子类（ok 侧按名字 import）
     "src.tools.game.auto_combat.okww_farm",    # 4C 刷声骸的 MyTools 子类（ok 侧按名字 import）
     "src.tools.game.auto_combat.okww_boot",    # ok-ww 引擎宿主
+    # 查缺补漏（2026-10-11 新增）：跟着上传的视频走。
+    # ⚠ ``src.core.explore_gap`` 是**包**，下面几个子模块都要在 ——
+    #   它们是被 core 内部 import 的，漏一个会在跑到那条路径时才炸
+    # ⚠ 插件式发现的模块最容易漏，漏了的表现是界面上少一个工具、
+    #   **不报错**（见 registry.discover 的 warning）
+    "src.core.explore_gap.descriptor",
+    "src.core.explore_gap.library",
+    "src.core.explore_gap.catalog",     # ★ 一个视频一份库（上传/列表）
+    "src.core.explore_gap.locate",
+    "src.core.explore_gap.locator",
+    "src.core.explore_gap.controller",
+    # ★ 从视频里学按键（「照视频做一样的操作」）
+    "src.core.explore_gap.keys",        # 提示文字 → 按键判定
+    "src.core.explore_gap.reader",      # 裁提示区 + 多比例 OCR
+    "src.tools.game.explore_gap.tool",
+    "src.tools.game.explore_gap.executor",
+    "src.tools.game.explore_gap.ocr",   # 直接构造 onnxocr（不必开游戏）
+    # ⚠ okww_task 必须能被 import（ok-script 按名字 getattr 它，
+    #   见 explore_gap/okww_task.py 的 PEP 562 __getattr__）
+    "src.tools.game.explore_gap.okww_task",
     "ok.core.start_controller",          # ok-script（ok-ww 引擎宿主依赖）
     "ok.task.TaskExecutor",
     "okww.task.FarmEchoTask",            # vendored ok-ww（AGPL-3.0）
@@ -54,11 +74,14 @@ REQUIRED_DATA = [
     "assets/icons/echo_change.png",
     "assets/icons/gacha.png",
     "assets/icons/wuwa_library_update.png",
+    "assets/icons/explore_gap.png",            # 查缺补漏（2026-10-11 新增）
     "data/loadouts.json",
     "src/core/data/wuwa_echo_sets.json",
     "src/core/data/wuwa_weapons.json",         # 武器图鉴（2026-09-30 新增）
     "src/tools/game/echo_enhance/tool.py",     # 给 walk_packages 扫的源码副本
     "src/tools/game/auto_combat/tool.py",
+    "src/tools/game/explore_gap/tool.py",      # 同上（查缺补漏）
+    "src/tools/game/explore_gap/okww_task.py",  # ok 侧按名字 getattr 的模块
     "onnxocr/models/ppocrv5/det/det.onnx",
     "onnxocr/models/ppocrv5/rec/rec.onnx",
     "onnxocr/models/ppocrv5/ppocrv5_dict.txt",

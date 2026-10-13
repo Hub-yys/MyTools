@@ -474,6 +474,101 @@ class TestResolveRoleByFeatureCode(unittest.TestCase):
             kuro_account.fetch_roles = orig
 
 
+class TestQueryUserId(unittest.TestCase):
+    """★ ``query_user_id`` —— 回归测试，钉住一个**真实发生过**的坏法。
+
+    ## 它曾经怎么坏的（2026-10-11 修）
+
+    ``def query_user_id(...)`` 那一行**连同一段文档字符串一起不见了**，
+    函数体被并进了上面 ``resolve_role`` 的 ``return`` 之后 ——
+    也就是一段**永远不会执行**的死代码。
+
+    后果不是报错，是 ``NameError``：任何调用方在运行期直接炸。
+    而它**当时一条测试都没有**（全仓搜不到 ``query_user_id``），
+    所以坏掉没人发现。
+
+    → 这两条断言就是那个缺口：**函数在** + **真的能调**。
+    """
+
+    def test_exists_and_is_callable(self):
+        self.assertTrue(hasattr(kuro_account, "query_user_id"),
+                        "query_user_id 不见了 —— 别把它的 def 行弄丢")
+        self.assertTrue(callable(kuro_account.query_user_id))
+
+    def test_returns_user_id_from_payload(self):
+        """正常拿到 userId。"""
+        calls = {}
+
+        def fake_post(path, body, token="", dev_code="", **kw):
+            calls.update(path=path, body=body, source=kw.get("source"))
+            return {"code": 200, "data": {"userId": "18706178"}}
+
+        orig = kuro_account._post
+        kuro_account._post = fake_post
+        try:
+            got = kuro_account.query_user_id("tok", "113152489", "srv")
+        finally:
+            kuro_account._post = orig
+
+        self.assertEqual(got, "18706178")
+        self.assertEqual(calls["path"], kuro_account.API_QUERY_USER_ID)
+        #: ★ 实测：这个接口必须用网页头（h5），用 android 会回 220
+        self.assertEqual(calls["source"], "h5",
+                         "query_user_id 必须带 source=h5（android 会回 220）")
+
+    def test_raises_on_business_error(self):
+        """业务码非 200 → 抛 KuroError（调用方要能看见失败）。"""
+        orig = kuro_account._post
+        kuro_account._post = lambda *a, **kw: {"code": 220, "msg": "登录已过期"}
+        try:
+            with self.assertRaises(kuro_account.KuroError):
+                kuro_account.query_user_id("tok", "113152489", "srv")
+        finally:
+            kuro_account._post = orig
+
+
+class TestFetchExplore(unittest.TestCase):
+    """★★ ``fetch_explore`` —— 「查缺补漏」的数据源。
+
+    :data:`API_EXPLORE` 早就定义在模块里，但**全仓从来没有调用过**。
+    这里钉住它的接口路径与请求体 —— 这两个是实测出来的，
+    改错了接口就通不了（声匣/奇藏那些分项会一条都拿不到）。
+    """
+
+    def test_hits_the_explore_endpoint(self):
+        calls = {}
+
+        def fake_post(path, body, token="", dev_code="", **kw):
+            calls.update(path=path, body=body)
+            return {"code": 200, "data": {"exploreList": []}}
+
+        orig = kuro_account._post
+        kuro_account._post = fake_post
+        try:
+            kuro_account.fetch_explore("DT", "113152489", "srv")
+        finally:
+            kuro_account._post = orig
+
+        self.assertEqual(calls["path"], "/aki/roleBox/akiBox/exploreIndex")
+        self.assertEqual(calls["body"]["roleId"], "113152489")
+        self.assertEqual(calls["body"]["serverId"], "srv")
+        self.assertEqual(calls["body"]["gameId"], kuro_account.GAME_ID_WUWA)
+
+    def test_defined_but_was_never_called(self):
+        """接口常量必须在（它一度只是个没人用的定义）。"""
+        self.assertTrue(kuro_account.API_EXPLORE.startswith("/aki/"))
+
+    def test_empty_data_raises_role_not_found(self):
+        """``200 + data:null`` 是"查不到"，不是"查到了空的"。"""
+        orig = kuro_account._post
+        kuro_account._post = lambda *a, **kw: {"code": 200, "data": None}
+        try:
+            with self.assertRaises(kuro_account.RoleNotFound):
+                kuro_account.fetch_explore("DT", "113152489", "srv")
+        finally:
+            kuro_account._post = orig
+
+
 class TestEchoIssues(unittest.TestCase):
     """★★ 声骸"待优化"判定 —— 第一版只报**客观事实**。
 

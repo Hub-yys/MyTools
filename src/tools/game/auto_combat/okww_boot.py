@@ -38,6 +38,13 @@ TASKS = {
     # 声骸批量调频（改主属性）：ok-ww 的 ChangeEchoTask 流程 + MyTools 的容错
     # （原版会在「目标属性相同」等常见情况下直接抛异常把任务打断）
     "声骸批量调频": "MyToolsChangeEchoTask",
+    # 查缺补漏：整条流程都是 MyTools 的（视觉伺服），不基于 ok-ww 任务。
+    # ⚠ 这个任务**不进**「工具页点启动」的默认流程 —— 它需要先建参考库
+    #   并标定转向比例，没标定就跑会乱走。只在任务流程里手动选用。
+    "查缺补漏": "MyToolsExploreGapTask",
+    # 扫荡残像聚落：复用 ok-ww 的 NightmareNestTask（传送/战斗/捡取），
+    # 只把「刷哪个」换成按工具页勾选的清单、按顺序一个一个刷。
+    "扫荡残像聚落": "MyToolsNestSweepTask",
 }
 
 #: 工具页点「启动」时固定跑的任务
@@ -177,6 +184,15 @@ def build_config() -> dict:
             #   app.locale 是 en_US → init_tasks() 会**静默跳过**它，
             #   页面上一切正常、点「启动」却什么任务都找不到。
             ["src.tools.game.echo_change.okww_task", "MyToolsChangeEchoTask"],
+            # 查缺补漏（视觉伺服，不用世界坐标）。
+            # ⚠ 类名走的是本模块的 PEP 562 ``__getattr__`` 懒构造 ——
+            #   平时 import 不碰 ok-ww，ok-script ``getattr`` 时才建类。
+            ["src.tools.game.explore_gap.okww_task", "MyToolsExploreGapTask"],
+            # 扫荡残像聚落：ok-ww 的 NightmareNestTask 流程 + 本工具的勾选清单。
+            # ⚠ 别退回成 ["okww.task.NightmareNestTask", "NightmareNestTask"]：
+            #   原版是「刷所有」（只认行尾计数器，不看那行叫什么），
+            #   而本工具要的是「只刷我勾的那几个、按我的顺序」。
+            ["src.tools.game.nest_sweep.okww_task", "MyToolsNestSweepTask"],
         ],
         "trigger_tasks": [
             ["okww.task.AutoCombatTask", "AutoCombatTask"],

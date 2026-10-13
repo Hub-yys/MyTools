@@ -37,6 +37,30 @@ import numpy as np
 #: 游戏窗口标题关键字（官方启动器/游戏进程名不同版本略有差异）
 WINDOW_KEYWORDS = ("鸣潮", "Wuthering Waves", "WutheringWaves", "Client-Win64-Shipping")
 
+#: ★★ 游戏窗口的**类名** —— 用来把游戏和"标题碰巧含关键字"的窗口分开。
+#:
+#: ## 为什么非要这个（2026-10-11 实机抓到的）
+#:
+#: 只按标题匹配会**抓错窗口**。实测：用户一边看 B 站攻略一边开游戏，
+#: 浏览器标题是::
+#:
+#:     【鸣潮】3.5版本玄方地界-无主的梁鸢60个全收集（1个彩蛋）… - Microsoft Edge
+#:
+#: —— 里面就有「鸣潮」。于是::
+#:
+#:     含关键字的窗口 2 个：
+#:       Chrome_WidgetWin_1  1536x816   ← 浏览器
+#:       UnrealWindow        1536x864   ← 游戏
+#:
+#: 而 ``find()`` 取**面积最大**的。这次游戏恰好多 2 像素高才选中了它 ——
+#: **那是运气不是正确**：浏览器全屏、或者游戏开成窗口化，就会抓到浏览器。
+#: 一旦抓错，后续**截图全拍到浏览器**、按键也发给了浏览器，
+#: 而界面上一切正常（不报错），会非常难查。
+#:
+#: 鸣潮是 UE 游戏，窗口类名固定是 ``UnrealWindow``。
+#: 这条判据比标题可靠得多（标题可以随便改，类名是引擎建的）。
+WINDOW_CLASS_NAMES: tuple[str, ...] = ("UnrealWindow",)
+
 #: 常用按键 → Windows 虚拟键码
 VK_CODES: dict[str, int] = {
     "esc": 0x1B,
@@ -140,29 +164,52 @@ class ClientRect:
 class GameWindow:
     """找到游戏窗口后，用它来抓图和发输入。"""
 
-    def __init__(self, keywords: tuple[str, ...] = WINDOW_KEYWORDS):
+    def __init__(self, keywords: tuple[str, ...] = WINDOW_KEYWORDS,
+                 class_names: tuple[str, ...] = WINDOW_CLASS_NAMES):
         self.keywords = keywords
+        self.class_names = class_names
         self.hwnd: int | None = None
         self.rect: ClientRect | None = None
         self._sct = None
 
     # ---------------------------------------------------------------- 定位
     def find(self) -> int | None:
-        """找游戏窗口，返回窗口句柄；找不到返回 None。"""
+        """找游戏窗口，返回窗口句柄；找不到返回 None。
+
+        ## ★ 挑选顺序（两类判据，游戏优先）
+
+        ① **类名**匹配 ``UnrealWindow`` 的窗口 —— 最可靠（UE 建的类名，改不了）
+        ② 都没有时才退回**标题**匹配
+
+        ⚠ 为什么不能只按标题：浏览器标题里带「鸣潮」很常见
+        （正在看攻略视频），而这里取面积最大的 ——
+        浏览器全屏时就会**抓错窗口**，且**不报错**。
+        见 :data:`WINDOW_CLASS_NAMES` 的说明。
+        """
         import win32gui
 
-        found: list[int] = []
+        by_class: list[int] = []
+        by_title: list[int] = []
 
         def callback(hwnd, _):
             if not win32gui.IsWindowVisible(hwnd):
                 return
+            try:
+                cls = win32gui.GetClassName(hwnd)
+            except Exception:                        # noqa: BLE001
+                cls = ""
+            if any(c.lower() == cls.lower() for c in self.class_names):
+                by_class.append(hwnd)
+                return                               #: 类名命中就够了
             title = win32gui.GetWindowText(hwnd)
             if not title:
                 return
             if any(k.lower() in title.lower() for k in self.keywords):
-                found.append(hwnd)
+                by_title.append(hwnd)
 
         win32gui.EnumWindows(callback, None)
+        #: ★ 类名命中的优先；只有没有时才用标题命中的
+        found = by_class or by_title
         if not found:
             self.hwnd = None
             return None

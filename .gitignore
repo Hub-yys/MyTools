@@ -34,6 +34,12 @@ configs/
 #   里面存着 ThemeColor / ThemeMode / 选的皮肤 id。
 /config/
 
+# 同上，但这是 **ok-ww 引擎**自己写的那一份（它按自己的工作目录落盘）。
+# ⚠ 2026-10-13 发现：跑一次 4C/扫荡就会生成 vendor/okww/config/config.json，
+#   内容只有 ThemeColor / ThemeMode（纯本机偏好）。
+#   不进库 —— 否则每次跑完都多一条"改了配置"的脏状态。
+vendor/okww/config/
+
 # 抓库街区时留下的页面快照（调试产物）
 .playwright-cli/
 
