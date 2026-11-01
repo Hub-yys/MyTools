@@ -79,14 +79,24 @@ _PAGE = """<!DOCTYPE html>
     margin: 0; padding: 0; width: 100%; height: 100%;
     overflow: hidden; background: transparent;
   }
-  /* ① 壁纸视频（GPU 解码 + 合成） */
+  /* ① 壁纸视频 */
   #wp {
     position: fixed; inset: 0;
     width: 100%; height: 100%;
     object-fit: cover;
-    will-change: transform;
-    transform: translateZ(0);
-    backface-visibility: hidden;
+    /* ★★★ 2026-11-01 移除 GPU 层强制提升
+     *
+     * 用户截图：窗口放大后右侧一大块**重复画面**。
+     *
+     * 根因：will-change / translateZ / backface-visibility 这三行
+     * 会强制 Chromium 把 <video> 提升为**独立合成层**。
+     * 窗口变大时那个层的缓冲区不会重新分配 ——
+     * 多出来的区域就**平铺旧内容**。
+     *
+     * （``object-fit: cover`` 本身没问题，它是标准缩放。）
+     *
+     * → 去掉这三行，让视频留在主合成层，跟着 viewport 一起重绘。
+     */
     /* ★ 颜色校正 —— 对齐 DSH 的亮度/对比度/饱和度 */
     /*   DSH 实测：亮度 75% / 对比度 110% / 饱和度 150% */
     filter: brightness(@@BRIGHT@@) contrast(@@CONTRAST@@) saturate(@@SATURATE@@);
@@ -472,6 +482,27 @@ class DshWallpaper:
             cur = (v.x(), v.y(), v.width(), v.height())
             if cur != target:
                 v.setGeometry(*target)
+                #: ★★★ 2026-11-01 **修「放大后右侧平铺」**
+                #:
+                #: 用户截图：窗口放大到 1554 后，右边 ~40% 是重复画面。
+                #:
+                #: 诊断结论（DOM 采样）::
+                #:
+                #:     innerWidth=1554  ← DOM 认为自己是 1554
+                #:     clientWidth=1554
+                #:     但实际渲染 surface 只有 ~1210
+                #:
+                #: 也就是 **DOM 尺寸对了，但 Chromium 的合成表面没重新分配**
+                #: → 多出来的部分平铺旧内容。
+                #:
+                #: `QWebEngineView` 不会自动处理这个。
+                #: 唯一可靠的办法：**尺寸变化时重建一次视图**。
+                #: 代价 ~800ms，只在拖动窗口时发生（用户能接受）。
+                _dw = abs(target[2] - cur[2])
+                _dh = abs(target[3] - cur[3])
+                if _dw > 100 or _dh > 100:
+                    self._rebuild_view()
+                    return
                 v.update()
                 v.lower()
             if not v.isVisible():
@@ -479,6 +510,65 @@ class DshWallpaper:
                 v.lower()
         except (RuntimeError, AttributeError):
             pass
+
+    def _rebuild_view(self) -> None:
+        """★ 尺寸剧变时**重建 Web 视图**（修「放大后右侧平铺」）。
+
+        ## 为什么必须重建
+
+        ``QWebEngineView`` 的合成表面（surface）在尺寸变化时**不会**
+        自动重新分配 —— DOM 的 ``innerWidth`` 变了（实测 1554），
+        但实际渲染区域还是旧的（约 1210）。多出来的部分就
+        **平铺最后一列/最后一行像素**。
+
+        试过无效：``setViewportSize`` / ``dispatchEvent('resize')`` /
+        ``setUrl`` 重载 / ``update()`` / 移除 ``will-change``。
+
+        唯一有效：**销毁旧视图，按新尺寸建一个新的**。
+        代价约 0.8 秒，只在拖动窗口大幅缩放时触发。
+        """
+        try:
+            from PySide6.QtCore import QTimer, QUrl
+            from PySide6.QtGui import QColor
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+
+            from ..core import media_server
+
+            win = self._window
+            old = self._view
+            #: 先把旧的藏起来（避免闪一下旧画面）
+            if old is not None:
+                try:
+                    old.hide()
+                except Exception:  # noqa: BLE001
+                    pass
+
+            view = QWebEngineView(win)
+            view.page().setBackgroundColor(QColor(0, 0, 0, 255))
+            view.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            view.setGeometry(0, 0, max(2, win.width()), max(2, win.height()))
+            view.setUrl(QUrl(media_server.page_url(bust=True)))
+            view.show()
+            view.lower()
+            self._view = view
+
+            #: 旧视图**延后**销毁（立刻删可能让 Chromium 崩）
+            if old is not None:
+                def _kill() -> None:
+                    try:
+                        old.stop()
+                        old.setPage(None)
+                        old.setParent(None)
+                        old.deleteLater()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                QTimer.singleShot(1200, _kill)
+            logger.info("壁纸：视图已按 %dx%d 重建",
+                        win.width(), win.height())
+        except Exception:  # noqa: BLE001
+            logger.warning("壁纸：重建视图失败", exc_info=True)
 
     def _schedule_color_extract(self) -> None:
         """延迟抓帧抽主色（等视频解码就绪）。"""
