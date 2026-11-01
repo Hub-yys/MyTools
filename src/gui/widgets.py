@@ -228,19 +228,117 @@ class ToolGrid(QWidget):
 
     def __init__(self, metas: list[ToolMeta], parent=None):
         super().__init__(parent)
+        self._metas = list(metas)
+        self._cards: list = []
 
-        grid = QGridLayout(self)
-        grid.setSpacing(CARD_GRID_SPACING)
-        grid.setContentsMargins(0, 0, 0, 0)
+        self._grid = QGridLayout(self)
+        self._grid.setSpacing(CARD_GRID_SPACING)
+        self._grid.setContentsMargins(0, 0, 0, 0)
 
-        columns = max(1, CARD_GRID_COLUMNS)
-        for index, meta in enumerate(metas):
+        for meta in self._metas:
             card = ToolCard(meta, self)
-            card.clicked.connect(lambda checked=False, key=meta.key: self.toolClicked.emit(key))
-            grid.addWidget(card, index // columns, index % columns)
+            card.clicked.connect(
+                lambda checked=False, key=meta.key: self.toolClicked.emit(key))
+            self._cards.append(card)
 
+        #: ★★★ 2026-11-01 **列数按可用宽度自适应**
+        #:
+        #: 用户：「主页还有个工具看不见」。
+        #:
+        #: 根因：`CARD_GRID_COLUMNS = 5` 是**写死**的。窗口一窄
+        #: （1150 → 974），第 5 列就被挤出可视区，右上角那个工具
+        #: 只剩一半甚至完全看不到。
+        #:
+        #: → 按 `可用宽度 / 卡片宽度` 算列数，并在 resize 时重排。
+        #:   这样窗口多宽都能正好铺满，不会漏。
+        self._relayout()
+
+    def _columns_for_width(self, width: int) -> int:
+        """按可用宽度算能放几列（至少 1）。"""
+        cw = max(60, int(CARD_WIDTH))
+        gap = int(CARD_GRID_SPACING)
+        #: 每列占 (卡片宽 + 间距)，最后不留间距
+        fit = (int(width) + gap) // (cw + gap)
+        return max(1, int(fit))
+
+    def _available_width(self) -> int:
+        """算**真正可用**的宽度（扣掉父容器边距 / 滚动条）。
+
+        ## ⚠ 为什么不能直接用 `self.width()`
+
+        实测：`grid.width()` 报 1008，按公式算正好 6 列，
+        但**屏幕上第 6 列被切掉一半** ——
+        因为父容器（ScrollArea 的 viewport）有边距 / 滚动条占位，
+        实际可画区域比 `self.width()` 小。
+
+        → 取父容器 viewport 宽度，再留 8px 安全余量。
+        """
+        w = self.width()
+        p = self.parent()
+        #: 往上找 ScrollArea 的 viewport（那是真正的可视区）
+        for _ in range(4):
+            if p is None:
+                break
+            vp = getattr(p, "viewport", None)
+            if callable(vp):
+                try:
+                    vw = vp().width()
+                    if vw > 50:
+                        w = min(w, vw)
+                        break
+                except Exception:  # noqa: BLE001
+                    pass
+            p = p.parent()
+        return max(60, int(w) - 8)
+
+    def _relayout(self) -> None:
+        """按当前宽度重排所有卡片。"""
+        #: 先全摘下来（不删，只是从布局里移除）
+        while self._grid.count():
+            self._grid.takeAt(0)
+        width = self._available_width()
+        columns = self._columns_for_width(width)
+        for index, card in enumerate(self._cards):
+            self._grid.addWidget(card, index // columns, index % columns)
         # 卡片按左上角对齐，右侧多余空间留白，不做拉伸（否则卡片会变形）
-        grid.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        self._grid.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 回调
+        super().resizeEvent(event)
+        #: ★ 宽度变了就重排（列数可能跟着变）
+        try:
+            new_cols = self._columns_for_width(self._available_width())
+            old_cols = getattr(self, "_last_cols", None)
+            if old_cols != new_cols:
+                self._last_cols = new_cols
+                self._relayout()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt 回调
+        """★ 显示时**强制重排一次**。
+
+        ## ⚠ 为什么 resizeEvent 不够
+
+        实测：窗口显示过程中 `resizeEvent` 会触发好几次，但那时
+        父容器（ScrollArea viewport）的宽度**还没定** ——
+        `_available_width()` 拿到的是中间值，算出的列数是 5。
+
+        等真正显示完，viewport 宽度定下来了（947），但
+        `resizeEvent` 已经不触发了 → 停在 5 列 → 第 5 个工具被切。
+
+        → `showEvent` 里**无条件**重排一次（此时布局已定）。
+        """
+        super().showEvent(event)
+        try:
+            from PySide6.QtCore import QTimer
+
+            #: 立刻 + 下一轮事件循环各一次（布局收敛需要时间）
+            self._relayout()
+            QTimer.singleShot(0, self._relayout)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 class ComingSoonWidget(QWidget):

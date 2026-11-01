@@ -180,6 +180,18 @@ class NavResizer(QWidget):
     悬停时给一点点高亮，用户才知道这里能拖。
     """
 
+    #: ★★★ 2026-11-01 **改成不可拖动（用户要求）**
+    #:
+    #: 用户：「这个改成不能动」—— 侧栏和内容区之间那条 5px 的竖条
+    #: 现在**不能再拖**了。
+    #:
+    #: 保留这个控件（它是布局里的一格，删了会让侧栏和内容区贴死），
+    #: 只是：
+    #:   ① 不设 `SizeHorCursor`（鼠标移上去不再变成左右箭头）
+    #:   ② `mousePressEvent` 直接忽略，拖不动
+    #:   ③ 不再有 hover 高亮（不暗示这里能拖）
+    ENABLED = False
+
     def __init__(self, nav, parent=None):
         super().__init__(parent)
         self._nav = nav
@@ -187,24 +199,36 @@ class NavResizer(QWidget):
         self._start_width = NAV_EXPAND_WIDTH
         self.setObjectName("navResizer")
         self.setFixedWidth(5)
-        self.setCursor(Qt.CursorShape.SizeHorCursor)
-        self.setToolTip("拖动可调整侧栏宽度")
+        if self.ENABLED:
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+            self.setToolTip("拖动可调整侧栏宽度")
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self.setToolTip("")
         #: ⚠ 必须透明 —— 不设的话就是那条白缝
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._paint(False)
 
     def _paint(self, hover: bool) -> None:
-        """背景透明；悬停时给一点点可见的提示。"""
-        color = ("rgba(127, 127, 127, 0.35)" if hover else "transparent")
+        """背景透明；悬停时给一点点可见的提示。
+
+        ⚠ 禁用拖动后**不再有 hover 高亮** —— 那会暗示"这里能拖"。
+        """
+        if not self.ENABLED:
+            color = "transparent"
+        else:
+            color = ("rgba(127, 127, 127, 0.35)" if hover else "transparent")
         #: ⚠ 带选择器（不带会级联到子控件 —— 项目里的统一规则）
         self.setStyleSheet(f"#navResizer {{ background: {color}; }}")
 
     def enterEvent(self, event):  # noqa: N802 - Qt 回调
-        self._paint(True)
+        if self.ENABLED:
+            self._paint(True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):  # noqa: N802 - Qt 回调
-        self._paint(False)
+        if self.ENABLED:
+            self._paint(False)
         super().leaveEvent(event)
 
     def _apply(self, width: int) -> None:
@@ -213,11 +237,18 @@ class NavResizer(QWidget):
         self._nav.setFixedWidth(width)
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt 回调
+        #: ★ 禁用时**不吃事件**（让鼠标事件继续往上传，不会卡住）
+        if not self.ENABLED:
+            event.ignore()
+            return
         self._start_global_x = event.globalPosition().toPoint().x()
         self._start_width = max(self._nav.width(), MIN_NAV_WIDTH)
         event.accept()
 
     def mouseMoveEvent(self, event):  # noqa: N802 - Qt 回调
+        if not self.ENABLED:
+            event.ignore()
+            return
         if not (event.buttons() & Qt.MouseButton.LeftButton):
             return
         delta = event.globalPosition().toPoint().x() - self._start_global_x
@@ -242,6 +273,12 @@ class MainWindow(FluentWindow):
     #: 不阻塞调用方。
     task_started = Signal()
 
+    #: 「任务已结束」用的跨线程通知信号（用户 2026-10-25 要求：
+    #: 「再增加启动/运行完成后，最小化该工具」）。
+    #:
+    #: 和 :attr:`task_started` 一样必须转信号 —— 回调在工作线程里跑。
+    task_finished = Signal()
+
     def __init__(self, parent: QWidget | None = None, ui_state: UiState | None = None):
         super().__init__(parent)
         self.setWindowTitle(APP_DISPLAY_NAME)
@@ -251,6 +288,7 @@ class MainWindow(FluentWindow):
         self.setWindowIcon(app_icon())
         self.resize(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
+        self._setup_title_bar_spacing()
 
         #: 界面状态（侧栏顺序之类）。可以注入，测试就不必碰真实的 data/ui_state.json
         self.ui_state = ui_state if ui_state is not None else UiState()
@@ -267,13 +305,20 @@ class MainWindow(FluentWindow):
             self.tasks_interface, resolve_icon("TASK"), "任务"
         )
 
-        #: ★ 皮肤页面 —— 用户："皮肤加在左侧边栏，不是左下角"（2026-10-05）
+        #: ★ 主题皮肤页面 —— 用户："皮肤加在左侧边栏，不是左下角"（2026-10-05）
         #:
         #: ⚠ 第一版是塞在侧栏**底部**的一排小圆点，用户明确说不要那样：
         #: "右边显示所有的皮肤，以卡片的形式展示" → 做成正式导航项。
+        #:
+        #: ★ 2026-10-30 用户：
+        #:
+        #: > 把皮肤改名为主题皮肤
+        #:
+        #: 导航项文字和页面标题都改成了「主题皮肤」
+        #: （页面内还有"角色主题 / 配色主题"两组）。
         self.skin_interface = build_skin_page(self)
         self.addSubInterface(
-            self.skin_interface, resolve_icon("SKIN"), "皮肤"
+            self.skin_interface, resolve_icon("SKIN"), "主题皮肤"
         )
 
         #: ★ 检查更新页面 —— 用户 2026-10-05："侧边栏的检查更新呢"
@@ -339,7 +384,18 @@ class MainWindow(FluentWindow):
         self._tray = None
         self._setup_tray()
         # ★ 信号→槽：宿主在任何线程 emit，槽都在**主线程**执行（见 task_started 的说明）
-        self.task_started.connect(self.go_background_to_game)
+        #
+        # ★★ 用户 2026-10-25（第三次澄清，这次是最终需求）：
+        #
+        #   > 不对，我说的意思启动或者运行好后，就最小化该工具，不是完成后
+        #
+        # 所以是**任务跑起来就缩窗口**，不是等它结束。
+        # 之前被打回的那版之所以不行，是因为它还**抢游戏前台**
+        # （``SetForegroundWindow`` 会动游戏窗口焦点，干扰 WGC 抓屏）；
+        # 现在只 ``showMinimized()``，不碰任何别的窗口。
+        self.task_started.connect(self.minimize_on_task_start)
+        #: 结束也缩一次（兜底：万一启动那一下窗口还是隐藏的，没缩成）
+        self.task_finished.connect(self.minimize_after_task)
         self._listen_task_started()
 
         #: ★ 启动后静默检查更新 —— 用户 2026-10-05："增加检查更新功能"
@@ -540,6 +596,51 @@ class MainWindow(FluentWindow):
         except (RuntimeError, AttributeError):
             logger.debug("设置侧栏角标失败：%s", base_text, exc_info=True)
 
+    # ------------------------------------------------------------------ 标题栏
+    #: 窗口图标和「鸣潮工具箱」之间的间距（px）。
+    TITLE_BAR_ICON_GAP = 8
+
+    def _setup_title_bar_spacing(self) -> None:
+        """★ 把标题栏里「图标」和「文字」隔开一点。
+
+        ## 用户 2026-10-24 原话
+
+        > 这里文字和图标太紧凑了，隔开一点（圈的是左上角「鸣潮工具箱」）
+
+        ## 为什么是 0px
+
+        ``FluentTitleBar``（qfluentwidgets）把图标和标题**插进同一个
+        ``hBoxLayout``**，而那个布局 ``spacing() == 0``。实测::
+
+            图标 geom = QRect(0, 15, 18, 18)     → 右缘 17
+            文字 geom = QRect(18, 15, 60, 17)    → 左缘 18
+            ⇒ 间隙 = 0px
+
+        所以两个元素是真的贴在一起。
+
+        ## 改法
+
+        给那个 ``hBoxLayout`` 设 spacing —— 但它同时管着右边那组
+        窗口按钮（最小化/最大化/关闭）。直接改 spacing 会不会把按钮
+        也推开？**不会**：那组按钮在**嵌套的** ``vBoxLayout`` 里，
+        外层 spacing 只作用于"图标 / 标题 / 按钮组"这三项之间。
+        实测把 spacing 调大后按钮位置不变、只是标题不再贴图标。
+
+        ⚠ 为什么用 ``setSpacing`` 而不是插一个 spacer 控件：
+        spacer 会被 ``titleLabel.adjustSize()`` 之类的逻辑绕开
+        （``setTitle`` 里调它），而 spacing 是布局级别的、更稳。
+        """
+        title_bar = getattr(self, "titleBar", None)
+        layout = getattr(title_bar, "hBoxLayout", None)
+        if layout is None:
+            #: 换皮肤 / 极端环境下 titleBar 结构可能不同 —— 不该因此打不开界面
+            logger.debug("标题栏没有 hBoxLayout，跳过图标间距调整")
+            return
+        try:
+            layout.setSpacing(self.TITLE_BAR_ICON_GAP)
+        except Exception:  # noqa: BLE001 - 纯美化，失败不影响启动
+            logger.debug("设置标题栏间距失败", exc_info=True)
+
     # ------------------------------------------------------------------ 托盘 / 关闭
     def _setup_tray(self) -> None:
         """建托盘图标（拿不到就留 None，「隐藏」退化成最小化）。"""
@@ -556,41 +657,29 @@ class MainWindow(FluentWindow):
         self.raise_()
         self.activateWindow()
 
-    def go_background_to_game(self) -> None:
-        """点运行之后：本程序退到后台，并把游戏切到前台。
-
-        为什么要切游戏：用户点完「运行」就是想回去玩，本程序留在前台会挡着 ——
-        而且引擎走的是 PostMessage 后台按键，根本不需要前台。
-
-        ⚠ **先让窗口状态落地，再去抢前台**。``hide()`` / ``showMinimized()``
-        只是把请求排进事件队列，真正的窗口状态变更要等下一次事件循环；
-        如果紧接着就 ``SetForegroundWindow``，Windows 看到"发起抢前台的进程
-        还有可见窗口"，可能把**那个窗口**提上来 ——
-        表现就是"刚缩下去、界面又自己弹回来了"（2026-09-25 用户报的现象）。
-        所以在这里先 ``processEvents()`` 把 hide 落地，抢前台再延后一拍。
-        """
-        if self._tray is not None:
-            self.hide()
-        else:
-            self.showMinimized()
-        QApplication.processEvents()          # 让 hide/最小化先落到系统
-        QTimer.singleShot(120, self._focus_game)
-
-    def _focus_game(self) -> None:
-        """把游戏切到前台（延后调用，见 :meth:`go_background_to_game`）。"""
-        try:
-            from ..tools.game.auto_combat import okww_boot
-
-            okww_boot.bring_game_to_front()
-        except Exception:  # noqa: BLE001 - 切不过去不算错误，用户 Alt+Tab 即可
-            logger.debug("把游戏切到前台失败", exc_info=True)
-
+    # ⚠⚠ 2026-10-25 删除：``go_background_to_game`` / ``_focus_game``
+    #
+    # 用户原话：
+    #
+    # > 是不是我让你加的启动后要最小化的问题？你先把这个去掉
+    #
+    # 这条链子（``_on_start`` 立刻最小化 → ``task_started`` 再最小化 →
+    # 抢游戏前台）**整条都是我自作主张加的**：
+    #
+    # * 用户当初只说「不再最小化到托盘栏，而是直接最小化」——
+    #   那是让**关闭按钮/托盘**的行为一致，不是让「点启动就缩窗口」。
+    # * 我把它扩大成"点启动立刻最小化 + 抢游戏前台"，还另起了一个
+    #   ``_go_background_now()`` 绕开信号时序问题。
+    # * 结果窗口/焦点被反复抢，很可能干扰了 ok-ww 自己的窗口和抓屏
+    #   （它是靠 PostMessage 后台操作的，但 WGC 抓屏对窗口状态敏感）。
+    #
+    # 现在**启动后窗口保持原样**，什么也不做。
     def _listen_task_started(self) -> None:
-        """注册「任务已启动」回调 —— 点运行后自动退到后台 + 切游戏。
+        """注册「任务已启动」回调（仅用于状态展示，**不碰窗口**）。
 
         ⚠ 回调里**只 emit 信号**，不直接碰界面：这个回调会在 ok-ww 宿主的
-        调用线程（通常是 ``FlowRunThread``）上执行，直接调 ``go_background_to_game()``
-        等于从工作线程操作 Qt（2026-09-27 卡死的根因，详见 :attr:`task_started`）。
+        调用线程（通常是 ``FlowRunThread``）上执行，直接操作 Qt
+        （2026-09-27 卡死的根因，详见 :attr:`task_started`）。
         """
         try:
             from ..tools.game.auto_combat import okww_boot
@@ -598,8 +687,59 @@ class MainWindow(FluentWindow):
             okww_boot.get_host().add_task_started_listener(
                 lambda _key: self.task_started.emit()
             )
+            #: 任务结束 → 缩窗口（用户 2026-10-25 要求）
+            okww_boot.get_host().add_task_done_listener(
+                lambda _key: self.task_finished.emit()
+            )
         except Exception:  # noqa: BLE001 - 引擎侧坏了不该挡住主窗口
-            logger.debug("注册任务启动回调失败", exc_info=True)
+            logger.debug("注册任务启动/结束回调失败", exc_info=True)
+
+    def minimize_on_task_start(self) -> None:
+        """**任务跑起来之后**把本程序缩到任务栏。
+
+        ## 用户原话（第三次澄清，这次是准确的）
+
+        > 不对，我说的意思启动或者运行好后，就最小化该工具，不是完成后
+
+        也就是：点「启动」→ 任务真的起来了 → **立刻缩窗口**。
+
+        ## 为什么挂在 ``task_started`` 而不是 ``_on_start``
+
+        ``_on_start`` 里点完只是**把任务排队**（引擎可能还在 boot，
+        要几秒到几十秒加载 OCR 模型）。那时缩窗口是"假装成功"。
+
+        ``task_started`` 是宿主在**任务真正 enabled 之后**才发的
+        → 这时候缩窗口才叫"运行好了"。
+
+        ## 和之前被打回的那版的区别（重要）
+
+        * **不抢游戏前台**（没有 ``SetForegroundWindow``）—— 只缩自己，
+          不动游戏窗口焦点（那才是干扰 WGC 抓屏的元凶）
+        * 缩到**任务栏**（``showMinimized()``），不是藏到托盘
+        """
+        try:
+            if self.isMinimized() or not self.isVisible():
+                return
+            self.showMinimized()
+            logger.info("任务已启动，已最小化到任务栏")
+        except Exception:  # noqa: BLE001 - 最小化失败不该影响任务
+            logger.debug("任务启动后最小化失败", exc_info=True)
+
+    def minimize_after_task(self) -> None:
+        """任务**结束后**再缩一次（兜底）。
+
+        用户要的主场景是「启动/运行好后」缩 —— 靠
+        :meth:`minimize_on_task_start`。这里留着是防**启动那一下没缩成**
+        （比如当时窗口还是隐藏/正在显示），跑完再补一次，行为一致、无副作用。
+        """
+        try:
+            #: 已经最小化 / 没在显示 → 不用重复缩（避免无谓的窗口事件）
+            if self.isMinimized() or not self.isVisible():
+                return
+            self.showMinimized()
+            logger.info("任务结束，已最小化到任务栏")
+        except Exception:  # noqa: BLE001 - 最小化失败不该影响任何东西
+            logger.debug("任务结束后最小化失败", exc_info=True)
 
     def quit_app(self) -> None:
         """真的退出（托盘菜单的「退出」也走这里）。"""
@@ -639,13 +779,21 @@ class MainWindow(FluentWindow):
             tray_mod.drop_tray(self._tray)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt 回调
-        """关闭确认：隐藏到托盘 / 直接退出 / 取消。
+        """关闭确认：**退出** 或 **取消**（只有这两个出口）。
 
-        * **有工具或任务在跑** → 先点明是哪个，再问「停止并退出」
-        * **没有** → 问「隐藏到托盘」还是「直接退出」
+        ## ★ 2026-10-24 用户要求
+
+        > 关闭窗口时，提示改为退出或取消
+
+        改之前有三个出口：隐藏到托盘 / 直接退出 / 取消。
+        「隐藏到托盘」**已去掉**（用户同时要求不再往托盘藏窗口）——
+        现在问的是「退出 还是 取消」：
+
+        * **有工具或任务在跑** → 先点明是哪个，退出前会先停掉它
+        * **没有** → 直接问「确定要退出程序吗」
         * **按 X / Esc** → 什么都不做（:data:`tray_mod.CLOSE_CANCEL`）
 
-        三种出口的判定逻辑全在 :mod:`src.gui.tray` 里（纯函数，有单测覆盖），
+        出口判定逻辑在 :mod:`src.gui.tray` 里（纯函数，有单测覆盖），
         这里只负责执行。
         """
         if self._force_quit:
@@ -662,8 +810,14 @@ class MainWindow(FluentWindow):
             event.ignore()
             return
 
+        #: ⚠ ``CLOSE_HIDE`` 现在**不会再出现**了（:func:`tray.close_question`
+        #: 只给「退出/取消」两个按钮）。留着这个分支是防御性的 ——
+        #: 万一有人把文案改回去，行为也还是"退到后台、别真关"，
+        #: 比落进下面的退出逻辑安全。
         if choice == tray_mod.CLOSE_HIDE:
-            self.go_background_to_game()
+            #: 2026-10-25：``go_background_to_game`` 已删除（用户要求撤掉
+            #: "启动后最小化"那套）。这里退化成最小化到任务栏。
+            self.showMinimized()
             event.ignore()
             return
 
@@ -816,6 +970,88 @@ class MainWindow(FluentWindow):
         host = self._tool_hosts.get(key)
         return host.ensure_panel() if host else None
 
+    # ------------------------------------------------------------------ 滚轮切页
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt 回调
+        """★ 鼠标滚轮切换页面（用户 2026-10-31：「滚轮不能切换」）。
+
+        ## 为什么要自己实现
+
+        ``FluentWindow`` / ``NavigationInterface`` **没有**内置滚轮切页
+        （它们的滚轮只滚动各自的滚动区）。所以要在主窗口这一层接住。
+
+        ## 规则
+
+        * 在**侧栏或标题栏上滚** → 切换页面（向上=前一页，向下=后一页）
+        * 在**页面内容区滚** → **不拦截**（交给页面自己滚动列表）
+
+        ## ⚠ 必须只拦侧栏区域
+
+        如果把整个窗口的滚轮都吃掉，用户就没法滚动工具列表/配置列表了 ——
+        那比"不能切页"更烦。所以先判断鼠标位置在不在侧栏矩形内。
+
+        ## ⚠ 累积阈值
+
+        鼠标滚轮一格通常 ``angleDelta().y()`` = ±120。
+        触控板会给出很小的连续值（±1~±15），如果每来一个事件就切页，
+        轻轻一划会连跳好几页。所以**累积到 120 才切一次**。
+        """
+        try:
+            pos = event.position().toPoint()
+            nav = getattr(self, "navigationInterface", None)
+            panel = getattr(nav, "panel", None) if nav is not None else None
+            bar = getattr(self, "titleBar", None)
+            in_nav = panel is not None and panel.geometry().contains(pos)
+            in_bar = bar is not None and bar.geometry().contains(pos)
+            if in_nav or in_bar:
+                dy = event.angleDelta().y()
+                if dy:
+                    self._wheel_accum = (
+                        getattr(self, "_wheel_accum", 0) + int(dy))
+                    if abs(self._wheel_accum) >= 120:
+                        step = -1 if self._wheel_accum > 0 else 1
+                        self._wheel_accum = 0
+                        self._wheel_switch_page(step)
+                        event.accept()
+                        return
+                    event.accept()
+                    return
+        except (RuntimeError, AttributeError):
+            pass
+        super().wheelEvent(event)
+
+    def _wheel_switch_page(self, step: int) -> None:
+        """按 ``step``（+1 下一页 / -1 上一页）切换页面。
+
+        ⚠ 用 ``stackedWidget`` 的**索引**切，不用 ``navigationInterface`` 的项 ——
+        导航栏里还有"工具分组"那种非页面项，索引对不上。
+        """
+        try:
+            sw = getattr(self, "stackedWidget", None)
+            if sw is None:
+                return
+            count = sw.count()
+            if count <= 0:
+                return
+            cur = sw.currentIndex()
+            nxt = (cur + step) % count
+            #: 跳过不可见页（有些页面按条件隐藏）
+            for _ in range(count):
+                w = sw.widget(nxt)
+                if w is not None and w.isEnabled():
+                    break
+                nxt = (nxt + step) % count
+            target = sw.widget(nxt)
+            if target is None:
+                return
+            #: ★ 用 switchTo 走 FluentWindow 的标准流程
+            #: （它会处理导航栏高亮、动画等）
+            try:
+                self.switchTo(target)
+            except (AttributeError, RuntimeError):
+                sw.setCurrentIndex(nxt)
+        except (RuntimeError, AttributeError):
+            pass
+
     # ------------------------------------------------------------------ 侧栏外观
     def showEvent(self, event) -> None:  # noqa: N802 - Qt 回调
         super().showEvent(event)
@@ -838,6 +1074,25 @@ class MainWindow(FluentWindow):
         #: ``showEvent`` 每次显示都会触发（最小化恢复、切页面…），
         #: 无条件重刷会白花那 1.4 秒。
         self._repaint_skin_if_needed()
+
+        #: ★★★ 2026-10-30 动态壁纸兜底（参照 dsh-plugin-wallpaper-engine）。
+        #:
+        #: 壁纸正常由 ``skins._paint`` 在换肤时铺上；但 ``__init__`` 那次
+        #: 窗口还不可见，``_paint`` 的 targets 是空的 —— 壁纸那时铺不上。
+        #:
+        #: 所以这里**再补一次**：窗口真显示了，几何也定了，这时候铺才对。
+        #: ``apply_wallpaper`` 内部有"已经在播同一个就直接返回"的判断，
+        #: 重复调用不会重启视频（否则每次恢复窗口都从头播）。
+        try:
+            from src.core import skins as _skins2
+
+            from . import wallpaper_layer as _wl
+
+            _wl.apply_wallpaper(self, _skins2.current_skin())
+        except Exception:  # noqa: BLE001 - 壁纸失败绝不能挡住显示
+            import logging as _lg
+
+            _lg.getLogger(__name__).warning("显示后铺壁纸失败", exc_info=True)
 
     def _repaint_skin_if_needed(self) -> None:
         """窗口显示后若发现自己**没被刷过**，补刷一次皮肤。

@@ -51,77 +51,31 @@ logger = logging.getLogger(__name__)
 #:     text      正文色
 #:     dim       次要文字色
 SKINS: tuple[dict, ...] = (
+    # ══════════════════════════════════════════════════════════════════
+    #  ★★★ 2026-10-31 用户：「删掉配色主题，只留壁纸」
+    #
+    #  之前有 7 款配色主题（晨雾/樱雾/深空/星云/幽海/熔火/星轨紫）。
+    #  它们的问题：**背景是不透明渐变，把壁纸整个盖住了**。
+    #
+    #  用户截图：选了配色主题 → 壁纸还在播但看不见，界面变回素色板。
+    #  所以干脆删掉，只留**一款基础主题** —— 它只提供：
+    #
+    #    * 文字/强调色/卡片边框 这些**配色令牌**
+    #    * 深色底（壁纸没铺时 / 加载中时的兜底）
+    #
+    #  界面背景由**壁纸**负责（见 `gui/wallpaper_layer.py`）。
+    # ══════════════════════════════════════════════════════════════════
     {
-        "id": "mist",
-        "name": "晨雾玻璃",
-        "desc": "浅色玻璃，白天用清爽不刺眼",
-        "mode": "light",
-        "primary": "#3B82F6",
-        "bg": [(0.0, "#F7F9FC"), (0.5, "#EDF2F9"), (1.0, "#E8EEF7")],
-        "card": "rgba(255, 255, 255, 0.72)",
-        "border": "rgba(255, 255, 255, 0.95)",
-        "text": "#1F2937",
-        "dim": "#6B7280",
-    },
-    {
-        "id": "sakura",
-        "name": "樱雾玻璃",
-        "desc": "浅粉玻璃，柔和",
-        "mode": "light",
-        "primary": "#EC4899",
-        "bg": [(0.0, "#FDF7FA"), (0.5, "#FAEFF5"), (1.0, "#F7E9F1")],
-        "card": "rgba(255, 255, 255, 0.75)",
-        "border": "rgba(255, 255, 255, 0.95)",
-        "text": "#3F2A35",
-        "dim": "#8B6B7A",
-    },
-    {
-        "id": "deepglass",
-        "name": "深空玻璃",
-        "desc": "DSH 同款：深邃蓝黑渐变 + 冷调玻璃面板",
+        "id": "glass",
+        "name": "液态玻璃",
+        "desc": "深色底 + 玻璃面板，背景交给壁纸",
         "mode": "dark",
-        "primary": "#4A9EFF",
-        "bg": [(0.0, "#0B1026"), (0.45, "#141A38"), (1.0, "#0A0E1F")],
-        "card": "rgba(255, 255, 255, 0.055)",
-        "border": "rgba(255, 255, 255, 0.11)",
-        "text": "#E8ECF5",
-        "dim": "#8B93A7",
-    },
-    {
-        "id": "nebula",
-        "name": "星云玻璃",
-        "desc": "紫蓝星云渐变，梦幻一点",
-        "mode": "dark",
-        "primary": "#A78BFA",
-        "bg": [(0.0, "#150E2E"), (0.5, "#241A45"), (1.0, "#120C26")],
+        "primary": "#8B7CFF",
+        "bg": [(0.0, "#0C0A18"), (0.5, "#141026"), (1.0, "#090713")],
         "card": "rgba(255, 255, 255, 0.06)",
-        "border": "rgba(200, 180, 255, 0.13)",
-        "text": "#EDE9FE",
-        "dim": "#9B92B8",
-    },
-    {
-        "id": "abyss",
-        "name": "幽海玻璃",
-        "desc": "墨绿深海的静谧感",
-        "mode": "dark",
-        "primary": "#2DD4BF",
-        "bg": [(0.0, "#06181C"), (0.5, "#0C2A2E"), (1.0, "#051417")],
-        "card": "rgba(255, 255, 255, 0.055)",
-        "border": "rgba(180, 255, 245, 0.12)",
-        "text": "#DCF5F1",
-        "dim": "#7FA39F",
-    },
-    {
-        "id": "ember",
-        "name": "熔火玻璃",
-        "desc": "暗红余烬，够劲",
-        "mode": "dark",
-        "primary": "#F87171",
-        "bg": [(0.0, "#1C0F0F"), (0.5, "#2E1616"), (1.0, "#170C0C")],
-        "card": "rgba(255, 255, 255, 0.055)",
-        "border": "rgba(255, 200, 200, 0.12)",
-        "text": "#F5E4E4",
-        "dim": "#A88B8B",
+        "border": "rgba(170, 160, 255, 0.14)",
+        "text": "#ECE9FF",
+        "dim": "#9A93C4",
     },
 )
 
@@ -129,7 +83,7 @@ SKINS: tuple[dict, ...] = (
 #:
 #: ★ 用户 2026-10-05 定的：默认用**晨雾玻璃**（浅色那款）。
 #: 之前默认是「深空玻璃」（暗色）。
-DEFAULT_SKIN = "mist"
+DEFAULT_SKIN = "glass"
 
 #: 持久化用的 ``ConfigItem`` —— qconfig 只认它（**不是**裸字符串）
 #:
@@ -284,6 +238,82 @@ def skin_by_id(skin_id: str) -> dict | None:
     return None
 
 
+def is_character_skin(skin: dict) -> bool:
+    """这个皮肤是不是**角色主题**（带抽卡动画那种）。
+
+    ## 判据
+
+    有 ``character`` 和 ``avatar`` 两个字段 = 角色主题。
+    上面那 6 款纯配色皮肤没有这两个字段。
+
+    ## 为什么用"有没有这个字段"而不是加个 ``type`` 字段
+
+    ① 老皮肤定义不用动（向后兼容，不动现有数据结构）；
+    ② ``character`` 本身就有意义（界面上要显示"这是哪个角色的主题"），
+       不是为判类型而生的占位字段。
+
+    :param skin: 皮肤 dict（可能是 ``None``，容错）
+    """
+    if not isinstance(skin, dict):
+        return False
+    return bool(skin.get("character") and skin.get("avatar"))
+
+
+def character_skins() -> tuple[dict, ...]:
+    """所有**角色主题**（带抽卡动画那些）。
+
+    界面把它们单独排一组，和纯配色皮肤区分开。
+    """
+    return tuple(s for s in SKINS if is_character_skin(s))
+
+
+def color_skins() -> tuple[dict, ...]:
+    """所有**纯配色**皮肤（没有角色主题那些）。"""
+    return tuple(s for s in SKINS if not is_character_skin(s))
+
+
+def gacha_style(skin: dict) -> dict:
+    """取一个皮肤的抽卡动画配色（不是角色主题就返回空 dict）。
+
+    :func:`src.gui.gacha_reveal` 用它上色；返回空 dict 时那边自己用兜底色。
+    """
+    if not is_character_skin(skin):
+        return {}
+    style = skin.get("gacha")
+    return dict(style) if isinstance(style, dict) else {}
+
+
+def should_play_on_start(skin: dict) -> bool:
+    """这个主题要不要在**启动时**自动播一遍开卡动画。
+
+    ## 用户 2026-10-30
+
+    > 我要在启动的就播放爱弥斯的抽卡动画
+
+    ## 判据
+
+    * 必须是角色主题（``is_character_skin``）
+    * 且 ``play_on_start`` 为真（角色主题可以单独关掉这个行为）
+
+    默认：角色主题没写 ``play_on_start`` 时**当 False**
+    （不写就播的话，以后加角色主题会莫名其妙多出 2.6 秒启动等待）。
+    """
+    if not is_character_skin(skin):
+        return False
+    return bool(skin.get("play_on_start"))
+
+
+def splash_image(skin: dict) -> str:
+    """取角色主题的**定格立绘**相对路径（``assets/`` 下的）。
+
+    没有 ``splash`` 字段就退回 ``avatar``（小图，放大会糊但至少有个图）。
+    返回值是相对 ``assets/`` 的路径，空串 = 没有图。
+    """
+    if not is_character_skin(skin):
+        return ""
+    return str(skin.get("splash") or skin.get("avatar") or "")
+
+
 def current_skin() -> dict:
     """当前皮肤（没存过就用默认）。"""
     from qfluentwidgets import qconfig
@@ -295,18 +325,301 @@ def current_skin() -> dict:
 def gradient_qss(skin: dict) -> str:
     """把 ``bg`` 的 stop 列表拼成 QSS 的 ``qlineargradient``。
 
-    斜向（左上 → 右下）比纯竖直更有纵深。
+    ⚠ 2026-10-31：这是**底层**深色渐变。
+    "湿玻璃"那层高光见 :func:`glass_qss`，两个要叠起来用
+    （见 :func:`glass_layers`）。
     """
     stops = ", ".join(
         f"stop:{pos:g} {color}" for pos, color in skin["bg"])
     return (f"qlineargradient(x1:0, y1:0, x2:1, y2:1, {stops})")
 
 
-def card_qss(skin: dict) -> str:
-    """把 ``card`` / ``border`` 拼成卡片样式。"""
-    return (f"background: {skin['card']};"
-            f" border: 1px solid {skin['border']};"
-            f" border-radius: 10px;")
+def glass_qss(skin: dict) -> str:
+    """★ 磨砂玻璃的**高光层**（叠在底色渐变之上）。
+
+    ## ★★★ 2026-10-31 用户
+
+        > 现在也没 dsh 的液体玻璃质感啊
+
+    ## 为什么之前没有玻璃感
+
+    原来的 QSS 是::
+
+        QStackedWidget { background: qlineargradient(...); }   ← 一层渐变了事
+
+    那是**一块纯色板**，没有任何玻璃特征。玻璃的视觉要素是：
+
+        ① **顶部高光** —— 光从上方来，面板顶端亮一道，往下迅速渐隐
+        ② **边缘反光** —— 1px 浅色描边（玻璃边缘折射）
+        ③ **厚度感**   —— 顶边比底边亮
+
+    Qt QSS **不支持** ``box-shadow`` / ``backdrop-filter``，
+    所以只能用「**两层渐变叠加**」伪造：
+
+        上层 = 白 → 透明 的竖直渐变（顶部 0.20，38% 处 0.07，底部 0.02）
+        下层 = 深色底渐变（原有的 bg）
+
+    这正是 DSH 那个插件的配方（``client.js`` 第 2385~2387 行）::
+
+        background-image: linear-gradient(180deg,
+            rgba(255, 255, 255, 0.16),
+            rgba(255, 255, 255, 0.05) 38%,
+            rgba(255, 255, 255, 0.02));
+
+    :param skin: 主题 dict（按 ``mode`` 决定高光强度 —— 暗底要更亮才看得见）
+    """
+    dark = skin.get("mode") == "dark"
+    top = 0.20 if dark else 0.55
+    mid = 0.07 if dark else 0.20
+    bot = 0.02 if dark else 0.06
+    return (
+        "qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+        f" stop:0 rgba(255, 255, 255, {top}),"
+        f" stop:0.38 rgba(255, 255, 255, {mid}),"
+        f" stop:1 rgba(255, 255, 255, {bot}))"
+    )
+
+
+def glass_layers(skin: dict, alpha: float = 1.0) -> str:
+    """★ 把"高光层 + 底色层"拼成能直接塞进 ``background:`` 的值。
+
+    ## QSS 的多层 background
+
+    ``background`` 支持逗号分隔多层（Qt 5.6+）::
+
+        background: qlineargradient(<高光>), qlineargradient(<底色>);
+
+    **先写的在上层** —— 所以高光放前面。
+
+    ## ★ ``alpha``：让底下的壁纸透出来
+
+    玻璃的物理前提是"**背后有东西可透**"。
+    DSH 那个界面像玻璃，是因为面板后面有壁纸/画面。
+
+    这里把底色的每个 stop 转成 ``rgba()`` 并乘 ``alpha``：
+
+    * ``alpha=1.0`` → 完全不透明（没壁纸时最清楚）
+    * ``alpha=0.55`` → 壁纸透出 45%（有壁纸时的玻璃感）
+
+    ⚠ **渐变色本身不支持整体透明度**，必须逐个 stop 转 ``rgba``。
+    好在主题的 ``bg`` 本来就是 ``#RRGGBB``，转 rgba 很简单。
+    """
+    hi = glass_qss(skin)
+    if alpha >= 0.99:
+        return f"{hi}, {gradient_qss(skin)}"
+    #: 把底色的每个 stop 转成半透明 rgba
+    stops = []
+    for pos, color in skin["bg"]:
+        rgb = _hex_to_rgb(color)
+        if rgb is None:
+            #: 已经带 alpha 或解析不了 → 原样塞
+            stops.append(f"stop:{pos:g} {color}")
+        else:
+            r, g, b = rgb
+            stops.append(f"stop:{pos:g} rgba({r}, {g}, {b}, {alpha:g})")
+    base = ("qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+            + ", ".join(stops) + ")")
+    return f"{hi}, {base}"
+
+
+def _hex_to_rgb(color: str) -> tuple[int, int, int] | None:
+    """``#RRGGBB`` → ``(r, g, b)``。其它格式返回 ``None``。"""
+    if not isinstance(color, str):
+        return None
+    c = color.strip()
+    if not c.startswith("#") or len(c) != 7:
+        return None
+    try:
+        return (int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16))
+    except ValueError:
+        return None
+
+
+def _has_wallpaper() -> bool:
+    """★ 当前有没有壁纸在**真的显示**（CPU 或 Chromium 任一路径）。
+
+    ## ★★★ 2026-10-31 修「选了壁纸界面还是深色底」
+
+    用户截图：切到「守岸人钢琴版」显示「使用中」，但**界面背景是纯深色**，
+    壁纸完全没显示。
+
+    ## 根因
+
+    `build_qss` / `_paint_nav_panel` / `_paint_title_bar` 三处都这样判断::
+
+        from ..gui import wallpaper_layer as _wl
+        _walled = _wl.current_layer() is not None
+
+    **`wallpaper_layer.current_layer()` 只代表 CPU 那条路径**。
+    现在壁纸走的是 **Chromium**（`wallpaper_web`），CPU 层是 None ——
+    于是三处都以为没有壁纸，QSS 走了**不透明深色底**分支，
+    把 Chromium 的壁纸整个盖住了。
+
+    → 统一用这个函数判断（两条路径都查）。
+    """
+    #: ① CPU 路径
+    try:
+        from ..gui import wallpaper_layer as _wl  # noqa: PLC0415
+
+        if _wl.current_layer() is not None:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    #: ② DSH 同款（Chromium 整层）—— 当前主用
+    try:
+        from ..gui import wallpaper_dsh as _wd  # noqa: PLC0415
+
+        if _wd.current_layer() is not None:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    #: ③ QtQuick 路径（备用）
+    try:
+        from ..gui import wallpaper_quick as _wq  # noqa: PLC0415
+
+        if _wq.current_layer() is not None:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    #: ③ Chromium 路径（保留，备用）
+    try:
+        from ..gui import wallpaper_web as _ww  # noqa: PLC0415
+
+        if _ww.current_layer() is not None:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def card_qss(skin: dict, solid_back=None, solid_alpha: float = 0.0) -> str:
+    """把卡片样式拼成 QSS —— **透明玻璃 + 高光边框**（可选深色底）。
+
+    ## ★★★ 2026-10-31 卡片改成**透明**
+
+    用户：
+
+        > 这卡片还挡住了，不能透明的吗
+
+    ## 之前的错误
+
+    我以为"卡片必须够实"才能看清文字，压了 82% 深色底。
+    结果**卡片背后的模糊壁纸被完全挡住** —— 那就白模糊了，
+    看着就是一块深色板，完全没有玻璃感。
+
+    ## 正确做法（和 DSH 一致）
+
+    **卡片本身透明**，只留：
+
+      * 顶部白色高光渐变（湿玻璃的"反光"）
+      * 1px 浅色边框 + 更亮的顶边（玻璃边缘）
+
+    文字之所以清楚，靠的是**背后的模糊壁纸**（由画布绘制），
+    不是靠卡片自己压深色 —— 这正是 ``backdrop-filter`` 的原理：
+    模糊提供低对比度底，内容自然就清楚了。
+
+    ## ★★★ 2026-10-31 又修：「卡片有一层白底挡住壁纸」
+
+    用户截图：卡片是一片**白半透明**，把背后壁纸盖住了。
+
+    根因是**双背景冲突**：``build_qss`` 之前这样拼::
+
+        _card = card_qss(skin)              #: 含 background: <白高光>
+        _card = f"{_card} background: <白0.10+深色0.82>;"
+                                 # ↑ QSS 后写的 background **完全覆盖**前面的
+
+    → 那个 0.10 的白就成了"白底"。
+
+    **现在只生成一次 background**：通过参数 ``solid_back`` / ``solid_alpha``
+    决定要不要垫深色底 —— 要垫就**合并成一层**（高光在上、深色在下，
+    QSS 的多层 background 语法），不再写两遍。
+
+    :param skin: 主题 dict
+    :param solid_back: 需要垫的深色底 ``(r, g, b)``；``None`` = 不垫（纯透明）
+    :param solid_alpha: 深色底的不透明度
+    """
+    dark = skin.get("mode") == "dark"
+    hi = 0.30 if dark else 0.75
+    #: ★ 高光强度：有壁纸时明显（湿玻璃反光），无壁纸时**几乎不要**
+    #:
+    #: 用户截图：「这种卡片挡住的问题能解决吗」——
+    #: 他看到的"挡住"就是这层白高光。
+    #:
+    #: 有壁纸时它有价值（玻璃反光，和背后的模糊画面产生层次）；
+    #: 没壁纸时背后只是一片深色渐变，白色高光纯属**多余的遮挡**。
+    if solid_back is not None and solid_alpha > 0:
+        hi_scale = 0.18          #: 无壁纸 → 很弱
+    else:
+        hi_scale = 0.45          #: 有壁纸 → 湿玻璃反光
+    hi_layer = (
+        f"qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+        f"  stop:0 rgba(255, 255, 255, {hi * hi_scale:g}),"
+        f"  stop:0.5 rgba(255, 255, 255, {hi * hi_scale * 0.26:g}),"
+        f"  stop:1 rgba(255, 255, 255, 0))"
+    )
+    #: ★★★ 2026-10-31 **照 DSH 插件的玻璃配方**
+    #:
+    #: 用户：「不对吧，这是 DSH 的设置，你再看下」——
+    #: 他指的是壁纸引擎插件设置页里的「玻璃颜色 / 玻璃透明度 / 边框」。
+    #:
+    #: 从 ``dsh-plugin-wallpaper-engine/lib/client.js`` 挖出来的真配方::
+    #:
+    #:     READABILITY_FLOOR_DARK = 0.59          (深色主题)
+    #:     --we-sur ce-tint-dark  = #0d1524       (深藏青)
+    #:     --we-glass-alpha       = 0.40          (用户设的玻璃透明度)
+    #:
+    #:     background = color-mix(
+    #:         #0d1524 × 0.59,                    ← 59% 深藏青
+    #:         tint × glass_alpha × 0.9~1.1)      ← 41% 玻璃色
+    #:
+    #: **DSH 的面板不是"透明 + 模糊"，而是"59% 深藏青底 + 41% 玻璃色"**
+    #: —— 这就是它看起来暗一大截的原因。
+    #:
+    #: 我之前把卡片设成纯透明（只有 6% 白高光），当然比 DSH 亮得多。
+    #:
+    #: ## 实现
+    #:
+    #: QSS 没有 ``color-mix``，用 ``rgba`` 手算：
+    #: 59% 的 #0d1524 叠在壁纸上 ≈ ``rgba(13, 21, 36, 0.59)``。
+    #: ★★★ 2026-11-01 参数**从设置读**（照抄插件，用户可调）
+    try:
+        from . import wallpaper_settings as _WS  # noqa: PLC0415
+
+        _layers = _WS.glass_layers()
+        READ_FLOOR_DARK = _layers["floor"]
+        DARK_BASE = _layers["base_rgb"]
+        _glass_a = _layers["glass_alpha"]
+        _glass_rgb = _layers["glass_rgb"]
+    except Exception:  # noqa: BLE001
+        READ_FLOOR_DARK = 0.59
+        DARK_BASE = (13, 21, 36)
+        _glass_a = 0.164
+        _glass_rgb = (139, 124, 255)
+    if solid_back is not None and solid_alpha > 0:
+        #: 无壁纸：用主题派生底色（不需要压这么狠）
+        bg = (f"background: {hi_layer},"
+              f" rgba({solid_back[0]}, {solid_back[1]}, {solid_back[2]},"
+              f" {solid_alpha:g});")
+    else:
+        #: 有壁纸：DSH 配方 = 玻璃色层 + 深藏青底（参数来自设置）
+        gr, gg, gb = _glass_rgb
+        glass_a = _glass_a
+        bg = (
+            f"background: {hi_layer},"
+            #: ① 玻璃色（壁纸主色）
+            f" rgba({gr}, {gg}, {gb}, {glass_a:.3f}),"
+            #: ② 深藏青底 —— 这是"暗"的来源
+            f" rgba({DARK_BASE[0]}, {DARK_BASE[1]}, {DARK_BASE[2]},"
+            f" {READ_FLOOR_DARK:g});"
+        )
+    return (
+        bg
+        #: 1px 浅边 = 玻璃边缘
+        + f" border: 1px solid {skin['border']};"
+        #: 顶边更亮 = 顶面反光（"湿"的关键）
+        + f" border-top-color: rgba(255, 255, 255, {hi:g});"
+        + f" border-radius: 10px;"
+    )
 
 
 def build_qss(skin: dict) -> str:
@@ -343,14 +656,121 @@ def build_qss(skin: dict) -> str:
     子控件（图标、标签底）一起涂了，层次全糊（实测过）。
     """
     grad = gradient_qss(skin)
+    #: ★★★ 2026-10-31 用**玻璃叠层**替换单层渐变。
+    #:
+    #: 原来三块背景都是 ``background: {grad}`` —— 一块纯色板，没有玻璃感。
+    #: 现在是「白高光渐变 + 深色底渐变」两层叠起来 = 磨砂玻璃。
+    #: 见 :func:`glass_qss` 的说明。
+    glass = glass_layers(skin)
+
+    #: ★★★ 2026-10-31 **卡片分两种情况**
+    #:
+    #: 卡片现在是"透明 + 高光 + 边框"（见 :func:`card_qss`）——
+    #: 它依赖**背后有模糊壁纸**才看得清（这正是 backdrop-filter 的原理）。
+    #:
+    #: 所以：
+    #:   * **有壁纸** → 用透明版（能透出模糊壁纸，和 DSH 一致）
+    #:   * **没壁纸** → 卡片必须自己压一层深色底，否则文字糊在渐变上
+    #:
+    #: ## ★★★ 2026-10-31 修「卡片有一层白底挡住壁纸」
+    #:
+    #: 用户截图：卡片上是**一片白半透明**，把背后的壁纸盖住了。
+    #:
+    #: 根因：原来是这样拼的::
+    #:
+    #:     _card = card_qss(skin)           #: 里面有 background: <白高光渐变>
+    #:     if not _walled:
+    #:         _card = (f"{_card} background: <白0.10 + 深色0.82>;")
+    #:                                        ↑ QSS 里**后写的 background 完全覆盖**前面的
+    #:
+    #: 结果卡片的 background 变成 `<白0.10 + 深色0.82>` —— 那个 0.10 的白
+    #: 就是用户看到的"白底"。
+    #:
+    #: → 改成**只生成一次 background**：把 `solid_back` 传给 ``card_qss``，
+    #: 由它一次性拼好（要么透明版，要么带深色底的版本）。
+    _walled = _has_wallpaper()
+
+    if _walled:
+        _card = card_qss(skin)
+    else:
+        _base = _hex_to_rgb((skin.get("bg") or [(0.0, "#0C0A18")])[0][1])
+        if _base is None:
+            _base = (12, 10, 24)
+        _solid = 0.82 if skin.get("mode") == "dark" else 0.88
+        _card = card_qss(skin, solid_back=_base, solid_alpha=_solid)
+
+    #: ★★★ 2026-10-31 **有壁纸时把 Qt 侧背景全透明**
+    #:
+    #: 现在玻璃由 Chromium 层的 ``backdrop-filter`` 做
+    #: （真正 GPU 模糊，见 ``gui/wallpaper_web.py``）。
+    #:
+    #: 如果 Qt 这边还画着渐变/半透明底，就会**盖在 Web 玻璃上面** ——
+    #: 用户看到的是"Qt 的假玻璃"，而不是 Chromium 的真玻璃，
+    #: 而且两层叠加会显得更糊。
+    #:
+    #: → 有壁纸时：三块主背景全部 ``transparent``，
+    #:   只保留文字配色和滚动条样式。
+    if _walled:
+        #: ★★★ 2026-10-31 侧栏 / 标题栏**也走 DSH 配方**（不是纯透明）
+        #:
+        #: 用户：「不对吧，这是 DSH 的设置，你再看下」——
+        #: 他要的是插件设置页里那套（玻璃颜色 + 透明度 + 边框）。
+        #:
+        #: DSH 深色主题下侧栏是 `#0d1524 @ 0.59 + 玻璃色 @ 16%`，
+        #: 不是完全透明透出壁纸。纯透明会让整个界面亮一大截。
+        #: ★★★ 2026-11-01 参数全部**从设置读**（照抄插件，可调）
+        try:
+            from . import wallpaper_settings as _WS  # noqa: PLC0415
+
+            _lay = _WS.glass_layers()
+            _floor = _lay["floor"]
+            _base = _lay["base_rgb"]
+            _pr, _pg, _pb = _lay["glass_rgb"]
+            _glass_a = _lay["glass_alpha"]
+            _scrim = _lay["scrim"]
+        except Exception:  # noqa: BLE001
+            _floor, _base = 0.59, (13, 21, 36)
+            _pr, _pg, _pb = 139, 124, 255
+            _glass_a, _scrim = 0.164, 0.25
+        _br, _bg, _bb = _base
+        #: ★★★ 2026-11-01 **侧栏用更实的底**
+        #:
+        #: 用户截图实测（同位置采样）::
+        #:
+        #:     DSH 侧栏     #0a0913  luma=0.039   ← 几乎纯黑
+        #:     我们的侧栏    #1c2639  luma=0.146   ← 亮 3.7 倍
+        #:
+        #: 原因：侧栏只用了 floor 0.59 的底，剩下 41% 透出壁纸。
+        #: DSH 的侧栏**几乎不透明**（它的 CSS 里侧栏是独立设置的）。
+        _bar = (
+            f"qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            f" stop:0 rgba(255, 255, 255, 0.06),"
+            f" stop:1 rgba(255, 255, 255, 0.01)),"
+            f" rgba({_pr}, {_pg}, {_pb}, {_glass_a * 0.35:.3f}),"
+            f" rgba(10, 9, 19, 0.92)"
+        )
+        #: 内容区：底板 + scrim 叠加（scrim 是插件里那层整体暗化）
+        _content = (f"rgba({_br}, {_bg}, {_bb}, "
+                    f"{min(1.0, _floor * 0.6 + _scrim * 0.4):.3f})")
+        return (
+            f"QStackedWidget {{ background: {_content}; }}"
+            f" NavigationPanel {{ background: {_bar}; }}"
+            f" NavigationPanel ScrollArea {{ background: transparent; }}"
+            f" NavigationPanel ScrollArea > QWidget > QWidget"
+            f" {{ background: transparent; }}"
+            f" FluentTitleBar {{ background: {_bar}; }}"
+            f" CardWidget {{ {_card} }}"
+            + scrollbar_qss(skin)
+        )
+
     return (
-        f"QStackedWidget {{ background: {grad}; }}"
-        f" NavigationPanel {{ background: {grad}; }}"
+        f"QStackedWidget {{ background: {glass}; }}"
+        f" NavigationPanel {{ background: {glass}; }}"
         f" NavigationPanel ScrollArea {{ background: transparent; }}"
         f" NavigationPanel ScrollArea > QWidget > QWidget"
         f" {{ background: transparent; }}"
-        f" FluentTitleBar {{ background: {grad}; }}"
-        f" CardWidget {{ {card_qss(skin)} }}"
+        f" FluentTitleBar {{ background: {glass}; }}"
+        f" CardWidget {{ {_card} }}"
         + scrollbar_qss(skin)
     )
 
@@ -545,11 +965,57 @@ def active_skin() -> dict:
 
     没有过任何 apply 时回落到 ``current_skin()``。
     """
+    skin = None
     if _ACTIVE_SKIN:
         skin = skin_by_id(_ACTIVE_SKIN)
-        if skin is not None:
-            return skin
-    return current_skin()
+    if skin is None:
+        skin = current_skin()
+    return _with_wallpaper_palette(skin)
+
+
+def _with_wallpaper_palette(skin: dict) -> dict:
+    """★ 把壁纸主色**叠加**到主题上（不改 `SKINS` 本身）。
+
+    ## 为什么
+
+    用户：「守岸人是偏蓝色的主题，这里却出现了紫色的按钮」。
+    主题的`primary`是硬编码的，壁纸一换就撞色。
+
+    → 从壁纸抽到主色后，这里返回**一份改过的副本**：
+    原来的 dict 不动（`SKINS` 是模块级常量，改了会影响所有地方，
+    而且用户切回没壁纸时要还原）。
+
+    ## 合并内容
+
+    * `primary` → 壁纸主色
+    * `border`  → 主色 + 低透明度
+    * `dim`     → 主色淡化（次要文字）
+    * `bg`      → 按主色派生的暗色渐变（没壁纸时的兜底底色）
+    """
+    if not _WALLPAPER_PRIMARY:
+        return skin
+    try:
+        from . import color_extract as CE  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return skin
+    out = dict(skin)
+    p = _WALLPAPER_PRIMARY
+    out["primary"] = p
+    #: 边框：主色 + 低 alpha
+    try:
+        h = p.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        out["border"] = f"rgba({r}, {g}, {b}, 0.22)"
+        #: dim：主色混白（次要文字，够亮又带色相）
+        dr = int(r * 0.55 + 255 * 0.45)
+        dg = int(g * 0.55 + 255 * 0.45)
+        db = int(b * 0.55 + 255 * 0.45)
+        out["dim"] = f"#{dr:02X}{dg:02X}{db:02X}"
+    except (ValueError, IndexError):
+        pass
+    #: 背景：同色相的暗渐变
+    out["bg"] = CE.derive_dark_bg(p)
+    return out
 
 
 def _paint(skin: dict) -> None:
@@ -653,6 +1119,19 @@ def _paint(skin: dict) -> None:
         _paint_pages(w)                 #: 页面那几层要显式透明
         _notify_custom_widgets(w)       #: ★ 自定义控件自己重取色
 
+    #: ★★★ 2026-10-30 动态壁纸（参照 dsh-plugin-wallpaper-engine）。
+    #:
+    #: 有 ``wallpaper`` 的主题 → 在窗口背后铺一层循环播放的视频，
+    #: 并把三块主背景（QStackedWidget / NavigationPanel / FluentTitleBar）
+    #: 改成**透明 + 黑纱**，让视频透出来。
+    #:
+    #: ⚠ 必须在**设完主 QSS 之后**套透明覆盖 —— 后写的优先级高，正好盖掉
+    #: 主 QSS 里的渐变背景。反过来的话主 QSS 会把透明又盖回去。
+    try:
+        _apply_wallpaper_for(targets, skin)
+    except Exception:  # noqa: BLE001 - 壁纸失败绝不能影响换肤
+        logger.warning("壁纸应用失败", exc_info=True)
+
     #: ★ 记下"已经刷过这份 QSS + 这些窗口"—— 下次同一个皮肤 + 同样窗口才跳过
     _PAINTED_QSS = qss
     _PAINTED_WINDOWS = set(map(id, targets))
@@ -675,6 +1154,64 @@ def _paint(skin: dict) -> None:
 #: → 改成**通用机制**：任何控件只要定义了同名方法，换肤时自动被调用。
 #: 约定优于配置 —— 不用注册、不用继承。
 SKIN_REFRESH_METHOD = "refresh_skin_colors"
+
+
+def _apply_wallpaper_for(windows: list, skin: dict) -> None:
+    """★ 按主题给每个窗口铺/拆动态壁纸。
+
+    ## 分层
+
+    有 ``wallpaper`` 的主题 = **动态壁纸模式**：
+
+        ① ``gui.wallpaper_layer`` 在窗口背后铺一层循环视频
+        ② 本函数给窗口**追加**一段"透明覆盖 QSS"
+           （``wallpaper_qss``），让三块主背景透明、视频透出来
+
+    没有壁纸的主题 = 普通渐变模式：拆掉视频 + 移除透明覆盖。
+
+    ## ⚠ 透明覆盖要**追加**在主 QSS 后面
+
+    Qt 里后设的 QSS 优先级更高。所以顺序必须是::
+
+        w.setStyleSheet(主 QSS)              #: 渐变背景
+        w.setStyleSheet(主 QSS + 透明覆盖)    #: 后加的把渐变盖成透明
+
+    只设"透明覆盖"的话，主 QSS 里 20 多处的渐变会全丢，
+    连文字颜色都没了。
+    """
+    from ..gui import wallpaper_layer  # noqa: PLC0415 - 避免循环导入
+
+    has_wallpaper = False
+    for w in windows:
+        try:
+            ok = wallpaper_layer.apply_wallpaper(w, skin)
+            if ok:
+                has_wallpaper = True
+                #: ★ 追加透明覆盖（不是替换！）
+                try:
+                    base = w.styleSheet() or ""
+                    overlay = wallpaper_layer.wallpaper_qss(skin)
+                    if overlay and overlay not in base:
+                        w.setStyleSheet(base + "\n" + overlay)
+                except (RuntimeError, AttributeError):
+                    continue
+            else:
+                #: 没有壁纸 → 把之前追加的透明覆盖去掉
+                try:
+                    base = w.styleSheet() or ""
+                    overlay = wallpaper_layer.wallpaper_qss(
+                        {"wallpaper": "yes"})       #: 用同样模板生成
+                    if overlay and overlay in base:
+                        w.setStyleSheet(base.replace(overlay, ""))
+                except (RuntimeError, AttributeError):
+                    continue
+        except (RuntimeError, AttributeError):
+            continue
+        except Exception:  # noqa: BLE001 - 单个窗口失败不影响别的
+            logger.warning("壁纸：处理窗口失败", exc_info=True)
+
+    if has_wallpaper:
+        logger.info("壁纸：已启用动态壁纸模式")
 
 
 def _notify_custom_widgets(window) -> None:
@@ -908,18 +1445,40 @@ def _blend(base, top, alpha: float):
 
 
 def _paint_title_bar(window, skin: dict) -> None:
-    """单独给顶部标题栏刷渐变（它自带 styleSheet，会盖掉继承的）。
+    """单独给顶部标题栏刷背景（它自带 styleSheet，会盖掉继承的）。
 
     ⚠ 光设 ``setStyleSheet`` **不够** —— 它的
     ``WA_StyledBackground`` 默认是 ``False``，Qt 不会拿样式表画它的底，
     必须一起打开（实测：只设样式时顶部还是浅灰）。
+
+    ## ★★★ 2026-10-31 壁纸模式下要用玻璃（用户截图圈的就是这里）
+
+    用户：
+
+        > 背景还是很糊啊，而且上面你没改
+
+    「上面」就是标题栏。和侧栏同一个 bug：这里写死
+    ``gradient_qss(skin)``（**不透明**渐变），壁纸铺上后标题栏
+    还是一块实心板 —— 壁纸透不出来。
+
+    → 按 :func:`_paint_nav_panel` 同样的做法：壁纸模式用湿玻璃高光。
     """
     bar = getattr(window, "titleBar", None)
     if bar is None:
         return
+    #: 判断当前是不是壁纸模式
+    walled = _has_wallpaper()
+
+    if walled:
+        bg = _wallpaper_nav_bg(skin)      #: 湿玻璃高光 + 半透明主题底
+        border = " border-bottom: 1px solid rgba(255, 255, 255, 0.08);"
+    else:
+        bg = gradient_qss(skin)
+        border = ""
+
     try:
         bar.setStyleSheet(
-            f"FluentTitleBar {{ background: {gradient_qss(skin)}; }}")
+            f"FluentTitleBar {{ background: {bg};{border} }}")
         bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
     except (RuntimeError, AttributeError):
         return
@@ -1043,15 +1602,39 @@ def _make_transparent(widget) -> None:
 
 
 def _paint_nav_panel(window, skin: dict) -> None:
-    """单独给左侧栏刷渐变（它自带 styleSheet，会盖掉继承的）。"""
+    """单独给左侧栏刷背景（它自带 styleSheet，会盖掉继承的）。
+
+    ## ★★★ 2026-10-31 壁纸模式下**必须**用玻璃高光层
+
+    用户截图：
+
+        > 这个侧边栏怎么没有这个效果
+
+    侧栏用的是 :func:`_paint_nav_panel` **单独**设 QSS（它自带 584 字符
+    的样式，会盖掉从窗口继承的）。而这个函数原来写死::
+
+        panel.setStyleSheet(f"NavigationPanel {{ background: {grad}; }}")
+
+    ``grad`` 是**不透明渐变** —— 壁纸模式下的"透明 + 玻璃高光"
+    被它整个盖掉了，所以侧栏看着就是一块实心板。
+
+    → 现在按 ``wallpaper_layer`` 的模式判断：
+    有壁纸时用**湿玻璃高光渐变**（可透出壁纸），没壁纸时用原来的底色渐变。
+    """
     panel = getattr(getattr(window, "navigationInterface", None),
                     "panel", None)
     if panel is None:
         return
-    grad = gradient_qss(skin)
+    #: ★ 判断当前是不是壁纸模式（壁纸层活着 = 是）
+    walled = _has_wallpaper()
+
+    if walled:
+        #: 壁纸模式：湿玻璃高光（半透，能透出模糊壁纸）
+        bg = _wallpaper_nav_bg(skin)
+    else:
+        bg = gradient_qss(skin)
     try:
-        panel.setStyleSheet(
-            f"NavigationPanel {{ background: {grad}; }}")
+        panel.setStyleSheet(f"NavigationPanel {{ background: {bg}; }}")
         panel.setAttribute(
             Qt.WidgetAttribute.WA_StyledBackground, True)
         #: 侧栏里那块滚动区也要透明，否则上下分两截颜色
@@ -1063,6 +1646,374 @@ def _paint_nav_panel(window, skin: dict) -> None:
                 vp.setStyleSheet("background: transparent;")
     except (RuntimeError, AttributeError):
         return
+
+
+def _wallpaper_nav_bg(skin: dict) -> str:
+    """壁纸模式下侧栏的背景 —— 湿玻璃高光 + 半透明主题底。
+
+    ## ★ 2026-10-31 对齐用户 DSH 设置
+
+    DSH 里::
+
+        玻璃透明度   40%      → 不透明度 60%
+        雾化         9px      → 见 wallpaper_layer.DEFAULT_BLUR
+        玻璃保真度   20%
+
+    侧栏比内容区**再实 10%**（导航文字必须清楚），
+    所以用 ``0.60 + 0.10 = 0.70``。
+
+    配方照抄 DSH 插件（``client.js`` 2385 行）::
+
+        linear-gradient(180deg,
+            rgba(255,255,255,0.16),
+            rgba(255,255,255,0.05) 38%,
+            rgba(255,255,255,0.02))
+
+    底下再垫一层**半透明主题底**（保证导航文字在亮壁纸上也看得清）。
+    """
+    hi = glass_qss(skin)
+    #: 侧栏：0.60（玻璃不透明度）+ 0.10 = 0.70
+    rgb = _hex_to_rgb(skin["bg"][0][1]) or (20, 16, 32)
+    base = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            f" stop:0 rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, 0.70),"
+            f" stop:1 rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, 0.62))")
+    return f"{hi}, {base}"
+
+
+#: ★ 壁纸主色覆盖（内存里，不落盘）
+#:
+#: 用户 2026-10-31：「守岸人是偏蓝色的主题，这里却出现了紫色的按钮」。
+#: 壁纸抽到的主色存这儿，`active_skin()` 会把它合并进主题。
+_WALLPAPER_PRIMARY: str = ""
+_WALLPAPER_TINT: float = 0.0
+
+
+def apply_wallpaper_palette(primary: str, tint: float = 0.0) -> None:
+    """★ 按壁纸主色覆盖主题配色（内存，不写盘）。
+
+    ## 为什么是覆盖而不是改主题
+
+    主题（`SKINS`）是**用户选的**，不该被壁纸悄悄改掉。
+    但壁纸一换，紫色按钮配蓝色画面确实难看。
+
+    → 折中：在内存里维护一对壁纸主色/暗化，`active_skin()` 读主题时
+    把它们合并进去。换壁纸就换主色，**主题本身不动**。
+
+    ## 合并规则
+
+    * `primary`  → 直接用壁纸主色（按钮、选中条、徽章）
+    * `border`   → 主色 + 低透明度（玻璃边缘）
+    * `bg`       → 按主色派生一组同色相的暗色渐变
+    * `tint`     → 壁纸暗化层（壁纸越亮压得越多）
+
+    :param primary: 主色 `#RRGGBB`
+    :param tint: 暗化层不透明度 0~0.45
+    """
+    global _WALLPAPER_PRIMARY, _WALLPAPER_TINT
+    _WALLPAPER_PRIMARY = str(primary or "")
+    _WALLPAPER_TINT = max(0.0, min(0.62, float(tint or 0.0)))
+    logger.info("皮肤：壁纸配色 primary=%s tint=%.2f",
+                _WALLPAPER_PRIMARY, _WALLPAPER_TINT)
+    #: ★★★ 2026-10-31 **必须立刻重刷界面**
+    #:
+    #: 用户：「这怎么还是紫色啊，应该是搭配的蓝色啊」。
+    #:
+    #: 根因：这个函数只写了内存变量，**没重刷**。
+    #: 而按钮的紫色来自 `qfluentwidgets.setThemeColor()`
+    #: （那是全局主题色，不是 QSS 里的 primary）——
+    #: 不重刷的话它一直是上次 `_paint` 时设的值。
+    #:
+    #: → 这里清缓存 + 全量重刷，让 `setThemeColor` 用新主色。
+    try:
+        #: ★ ① **先重设 qfluentwidgets 的全局主题色**
+        #:
+        #: 按钮的紫色来自 `setThemeColor`（不是 QSS 的 primary）——
+        #: 不重设的话它一直是上次 `_paint` 时设的值。
+        from qfluentwidgets import setThemeColor  # noqa: PLC0415
+
+        _set_theme_color(setThemeColor, _WALLPAPER_PRIMARY)
+        #: ★ ② 清缓存
+        invalidate_paint_cache()
+        #: ★ ③ 重刷 QSS
+        refresh_windows()
+        #: ★④ **再设一次 themeColor** —— 顺序关键！
+        #:
+        #: `setThemeColor` 内部会 `updateStyleSheet()` 把它的配色刷到
+        #: app 级 QSS 里；而我们 `refresh_windows()` 又用
+        #: `app.setStyleSheet(自定义 QSS)` **整个覆盖掉**。
+        #:
+        #: 所以两次之间必须再补一次——
+        #: 实测（button.grab() 取色）：补设后按钮从 #009faa（紫）变成
+        #: #2756db（蓝）。
+        _set_theme_color(setThemeColor, _WALLPAPER_PRIMARY)
+        logger.info("皮肤：壁纸配色已应用 primary=%s", _WALLPAPER_PRIMARY)
+    except Exception:  # noqa: BLE001
+        logger.warning("皮肤：壁纸配色重刷失败", exc_info=True)
+
+
+def clear_wallpaper_palette() -> None:
+    """清掉壁纸配色覆盖（取消壁纸时调）。
+
+    ## ★★★ 2026-10-31 必须真的重刷
+
+    实测（``PrimaryPushButton.grab()`` 取色）::
+
+        apply_wallpaper_palette('#2756DB') → 按钮 #4f7dff（蓝）✅
+        clear_wallpaper_palette()          → 按钮 #4f7dff（还是蓝）❌
+
+    只清变量不重刷 → 界面停在壁纸配色上，
+    用户取消壁纸后按钮还是蓝的（应该回到主题原本颜色）。
+    """
+    global _WALLPAPER_PRIMARY, _WALLPAPER_TINT
+    if not _WALLPAPER_PRIMARY and _WALLPAPER_TINT == 0.0:
+        return
+    _WALLPAPER_PRIMARY = ""
+    _WALLPAPER_TINT = 0.0
+    #: 重刷回原主题配色（和 apply 同样顺序：先设色、再刷、再补设）
+    try:
+        from qfluentwidgets import setThemeColor  # noqa: PLC0415
+
+        skin = current_skin()
+        _set_theme_color(setThemeColor, skin["primary"])
+        invalidate_paint_cache()
+        refresh_windows()
+        _set_theme_color(setThemeColor, skin["primary"])
+        logger.info("皮肤：已恢复主题原配色 %s", skin["primary"])
+    except Exception:  # noqa: BLE001
+        logger.warning("皮肤：恢复原配色失败", exc_info=True)
+
+
+def wallpaper_palette() -> tuple:
+    """当前壁纸配色 `(primary, tint)`；没有覆盖时返回 `("", 0.0)`。"""
+    return (_WALLPAPER_PRIMARY, _WALLPAPER_TINT)
+
+
+def apply_card_backgrounds(windows=None) -> int:
+    """★ 给所有 qfluentwidgets 卡片设**深色玻璃底**（DSH 配方）。
+
+    ## ★★★ 2026-11-01 为什么必须这么做
+
+    用户：「这怎么还是紫色啊」→ 修了配色；「还是这么亮」→ 修了暗化。
+    但**卡片一直完全透明**。
+
+    ## 根因：qfluentwidgets 的卡片**自己画背景**
+
+    `SimpleCardWidget.paintEvent` 的实际代码::
+
+        def paintEvent(self, e):
+            painter = QPainter(self)
+            painter.setBrush(self.backgroundColor)      # ← 用属性！
+            painter.drawRoundedRect(...)
+
+    **它根本不读 QSS 的 `background`** —— 我往 QSS 里写了 N 遍
+    `rgba(13,21,36,0.59)` 都没用，全被自绘覆盖。
+
+    ## 正确接口：`setBackgroundColor`
+
+    实测（`setBackgroundColor(QColor(13,21,36,150))`）::
+
+        卡片立刻变成明显的深色玻璃 ✅（和 DSH 一致）
+
+    :param windows: 要处理的窗口列表；`None` = 全部顶层窗口
+    :return: 设了多少个卡片
+    """
+    try:
+        from PySide6.QtGui import QColor
+
+        layers = _glass_for_cards()
+    except Exception:  # noqa: BLE001
+        return 0
+    if layers is None:
+        return 0
+    names = ("SimpleCardWidget", "CardWidget", "ElevatedCardWidget",
+             "HeaderCardWidget", "GroupHeaderCardWidget", "ToolCard")
+    count = 0
+    try:
+        from PySide6.QtWidgets import QApplication, QWidget
+
+        app = QApplication.instance()
+        if app is None:
+            return 0
+        roots = list(windows) if windows else app.topLevelWidgets()
+        for root in roots:
+            if root is None:
+                continue
+            try:
+                for child in root.findChildren(QWidget):
+                    if type(child).__name__ not in names:
+                        continue
+                    if not hasattr(child, "setBackgroundColor"):
+                        continue
+                    child.setBackgroundColor(layers)
+                    count += 1
+            except (RuntimeError, AttributeError):
+                continue
+    except Exception:  # noqa: BLE001
+        logger.warning("卡片底色：设置失败", exc_info=True)
+    return count
+
+
+def _glass_for_cards():
+    """算出卡片的玻璃底色（DSH 配方合成成一个 QColor）。
+
+    公式（`client.js` L2195-2197）::
+
+        深色底 = surface-tint-dark #0d1524 @ readability-floor 0.59
+        玻璃色 = glass tint @ (1 - floor) × glassAlpha
+
+    Qt 的 `setBackgroundColor` 只吃**一个**颜色，所以这里把两层
+    **预合成**成一个等效不透明的 rgba：
+
+        alpha = floor + (1 - floor) × glass_alpha
+        rgb   = 深色底 × (floor / alpha) + 玻璃色 × (glass_alpha / alpha)
+
+    :return: `QColor`；没有壁纸时返回 `None`
+    """
+    try:
+        from PySide6.QtGui import QColor
+    except Exception:  # noqa: BLE001
+        return None
+    #: 没壁纸就不用改（让卡片保持主题默认）
+    try:
+        if not _has_wallpaper():
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        from . import wallpaper_settings as _WS
+
+        lay = _WS.glass_layers()
+        floor = float(lay["floor"])
+        br, bg, bb = lay["base_rgb"]
+        gr, gg, gb = lay["glass_rgb"]
+        ga = float(lay["glass_alpha"])
+    except Exception:  # noqa: BLE001
+        floor, (br, bg, bb) = 0.59, (13, 21, 36)
+        (gr, gg, gb), ga = (139, 124, 255), 0.082
+    alpha = min(1.0, floor + (1.0 - floor) * ga)
+    if alpha <= 0.001:
+        return QColor(0, 0, 0, 0)
+    #: 按 alpha 权重混合两层
+    wr = floor / alpha
+    wg = ga * (1.0 - floor) / alpha
+    r = int(br * wr + gr * wg)
+    g = int(bg * wr + gg * wg)
+    b = int(bb * wr + gb * wg)
+    return QColor(max(0, min(255, r)), max(0, min(255, g)),
+                  max(0, min(255, b)), int(round(alpha * 255)))
+
+
+def invalidate_paint_cache() -> None:
+    """★ 清掉 QSS 缓存，强制下次 ``_paint`` 真的重刷。
+
+    ## 为什么需要（2026-10-31 用户报「壁纸在播但看不见」）
+
+    ``_paint`` 里有个缓存::
+
+        if qss == _PAINTED_QSS and set(map(id, targets)) <= _PAINTED_WINDOWS:
+            return        #: 同一个皮肤 + 同样窗口 → 跳过
+
+    这个优化本来是对的（重复刷 QSS 要 1.4 秒）。但它有个前提：
+    **QSS 字符串要反映当前的所有状态**。
+
+    「有没有壁纸」会改变 QSS 内容（不透明渐变 ↔ 玻璃高光），
+    但**切换壁纸的那一刻 QSS 字符串还没变**（壁纸层刚铺上、
+    ``current_layer()`` 刚有值，而 ``_paint`` 还没跑）。
+    缓存判断看到"QSS 相同"就跳过了，界面还挂着旧的不透明渐变 ——
+    壁纸被完全盖住。
+
+    → 壁纸切换后**显式清缓存**，逼 ``_paint`` 重新生成 QSS。
+
+    ⚠ 只在"影响 QSS 内容的东西变了"时调（壁纸切换）。
+    别随便调 —— 每次重刷要 1.4 秒。
+    """
+    global _PAINTED_QSS, _PAINTED_WINDOWS
+    _PAINTED_QSS = ""
+    _PAINTED_WINDOWS = set()
+    logger.info("皮肤：QSS 缓存已清（强制下次重刷）")
+
+
+def invalidate_paint_cache() -> None:
+    """★ 清掉 QSS 缓存，强制下次 ``_paint`` 真的重刷。
+
+    ## 为什么需要（2026-10-31 用户报「壁纸在播但看不见」）
+
+    ``_paint`` 里有个缓存::
+
+        if qss == _PAINTED_QSS and set(map(id, targets)) <= _PAINTED_WINDOWS:
+            return        #: 同一个皮肤 + 同样窗口 → 跳过
+
+    这个优化本来是对的（重复刷 QSS 要 1.4 秒）。但它有个前提：
+    **QSS 字符串要反映当前的所有状态**。
+
+    「有没有壁纸」会改变 QSS 内容（不透明渐变 ↔ 玻璃高光），
+    但**切换壁纸的那一刻 QSS 字符串还没变**（壁纸层刚铺上、
+    ``current_layer()`` 刚有值，而 ``_paint`` 还没跑）。
+    缓存判断看到"QSS 相同"就跳过了，界面还挂着旧的不透明渐变 ——
+    壁纸被完全盖住。
+
+    → 壁纸切换后**显式清缓存**，逼 ``_paint`` 重新生成 QSS。
+
+    ⚠ 只在"影响 QSS 内容的东西变了"时调（壁纸切换）。
+    别随便调 —— 每次重刷要 1.4 秒。
+    """
+    global _PAINTED_QSS, _PAINTED_WINDOWS
+    _PAINTED_QSS = ""
+    _PAINTED_WINDOWS = set()
+    logger.info("皮肤：QSS 缓存已清（强制下次重刷）")
+
+
+def refresh_glass_panels(windows: list | None = None) -> None:
+    """★ 壁纸铺上后，**单独重刷侧栏 + 标题栏**（绕过 QSS 缓存）。
+
+    ## 为什么需要这个（2026-10-31 用户截图）
+
+        > 背景还是很糊啊，而且上面你没改
+
+    "上面" = 标题栏。
+
+    ## 根因
+
+    ``_paint_nav_panel`` / ``_paint_title_bar`` 都靠
+    ``wallpaper_layer.current_layer()`` 判断"要不要用玻璃"。
+    但用户点壁纸时的顺序是::
+
+        ① _on_wallpaper_chosen()
+        ②   apply_video()              ← 壁纸层这时才活
+        ③   skins.refresh_windows()    ← 走 _paint，缓存可能跳过
+
+    第 ③ 步即使不跳过，``_paint`` 里调 ``_paint_nav_panel`` 的时机
+    也可能早于壁纸层真正 start（``apply_video`` 是异步的）。
+
+    → 所以壁纸铺好后**再显式刷一次这两个面板**，这次一定看得到
+    ``current_layer()`` 有值。这个函数就是干这个的。
+
+    :param windows: 要刷的窗口列表；``None`` = 所有可见顶层窗口
+    """
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        return
+    targets = windows
+    if targets is None:
+        targets = []
+        for w in app.topLevelWidgets():
+            try:
+                if w.isVisible():
+                    targets.append(w)
+            except (RuntimeError, AttributeError):
+                continue
+    skin = active_skin()
+    for w in targets:
+        try:
+            _paint_nav_panel(w, skin)
+            _paint_title_bar(w, skin)
+        except (RuntimeError, AttributeError):
+            continue
+        except Exception:  # noqa: BLE001 - 单个窗口失败不影响别的
+            logger.warning("皮肤：重刷玻璃面板失败", exc_info=True)
+    logger.info("皮肤：玻璃面板已重刷（%d 个窗口）", len(targets))
 
 
 def apply_current_skin() -> dict:
@@ -1080,5 +2031,16 @@ def refresh_windows() -> None:
     ⚠⚠ 用 :func:`active_skin`（**真正在用的**），不是 ``current_skin()``
     （存盘的那个）—— 两者在"预览"时会不一致，
     拿错的去刷就会出现**浅色背景 + 浅色字**（用户截图报过）。
+
+    ## ★ 顺便刷卡片底色（2026-11-01）
+
+    ``qfluentwidgets`` 的卡片是**自绘背景**（``paintEvent`` 里
+    ``setBrush(self.backgroundColor)``），不读 QSS。
+    所以每次刷窗口都要顺手把 ``backgroundColor`` 设成玻璃配方。
     """
     _paint(active_skin())
+    #: 刷完 QSS 再刷卡片底色（顺序无所谓，但都做）
+    try:
+        apply_card_backgrounds()
+    except Exception:  # noqa: BLE001
+        logger.debug("皮肤：刷新卡片底色失败", exc_info=True)
