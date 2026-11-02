@@ -807,6 +807,12 @@ class WebShell(QObject):
         self._view.activateWindow()
         #: ★ 窗口真的显示出来了，现在设圆角才不会被冲掉
         self.apply_window_corner()
+        #: ★★★ 2026-11-02 补回 WS_THICKFRAME —— **必须在 show() 之后**
+        #:
+        #: Qt 在 show() 时按 FramelessWindowHint 重建窗口样式，
+        #: 把 WS_CAPTION / WS_THICKFRAME 都清掉了。
+        #: 不补的话 Windows 拒绝拖动（用户：「这整个窗口还是不能拖拽」）。
+        self._restore_drag_style()
 
     def close(self) -> None:
         """主动关窗口（置了 _really_close，closeEvent 不再拦）。
@@ -900,6 +906,87 @@ class WebShell(QObject):
                 hwnd, 0x00A2, 0x0002, 0)     #: WM_NCLBUTTONDOWN, HTCAPTION
         except Exception:  # noqa: BLE001 - 拖不了不该崩
             logger.warning("start_window_drag 失败", exc_info=True)
+
+    #: ★★★ 2026-11-02 **补回 ``WS_THICKFRAME`` / ``WS_CAPTION``**
+    #:
+    #: ## 症状（用户第二轮反馈「这整个窗口还是不能拖拽」）
+    #:
+    #: 实测窗口样式：
+    #:
+    #: .. code:: text
+    #:
+    #:     GWL_STYLE       = 0x-69F50000
+    #:     WS_POPUP        = True
+    #:     WS_CAPTION      = False   ← 缺
+    #:     WS_THICKFRAME   = False   ← 缺
+    #:
+    #: ## 为什么这会导致拖不动
+    #:
+    #: ``WM_NCLBUTTONDOWN + HTCAPTION`` 的拖动是**窗口管理器**实现的，
+    #: 它要求窗口有 ``WS_CAPTION``（可拖动）或 ``WS_THICKFRAME``（可缩放）。
+    #:
+    #: ``FramelessWindowHint`` 加上去之后 Qt 把这两个都清掉了 ——
+    #: 于是 Windows 认为"这窗口既没有标题栏也没有可拉边框"，**拒绝拖动**。
+    #:
+    #: ## 修法
+    #:
+    #: 只补**样式位**（影响窗口管理器的行为判断），
+    #: 不补 ``WS_CAPTION`` 的"非客户区"（那会重新画出原生标题栏）。
+    #:
+    #: ⚠ 关键是把 ``WS_THICKFRAME`` 补回来 —— 它同时给：
+    #:   * 拖动（配合 ``HTCAPTION``）
+    #:   * 边缘缩放（我们的 ``WM_NCHITTEST`` 才有意义）
+    #:   * Aero Snap（拖到屏幕边缘分屏）
+    #:
+    #: 而**不会**画出标题栏（那个由 ``WS_CAPTION`` 决定，我们不补）。
+    SWP_FRAMECHANGED = 0x0020
+    SWP_NOMOVE = 0x0002
+    SWP_NOSIZE = 0x0001
+    SWP_NOZORDER = 0x0004
+    GWL_STYLE = -16
+    WS_THICKFRAME = 0x00040000
+    WS_MINIMIZEBOX = 0x00020000
+    WS_MAXIMIZEBOX = 0x00010000
+
+    def _restore_drag_style(self) -> bool:
+        """给无边框窗口补回「可拖动 / 可缩放」的样式位。
+
+        :return: 是否成功（非 Windows 或失败返回 False）
+        """
+        import sys  # noqa: PLC0415
+
+        if sys.platform != "win32":
+            return False
+        view = self._view
+        if view is None:
+            return False
+        try:
+            import ctypes  # noqa: PLC0415
+
+            user32 = ctypes.windll.user32
+            hwnd = int(view.winId())
+            if not hwnd:
+                return False
+
+            style = user32.GetWindowLongW(hwnd, self.GWL_STYLE)
+            #: 已经是 32 位有符号数，先转成无符号再看位
+            style &= 0xFFFFFFFF
+            want = (self.WS_THICKFRAME | self.WS_MINIMIZEBOX
+                    | self.WS_MAXIMIZEBOX)
+            if (style & want) == want:
+                return True                      #: 已经齐了
+
+            user32.SetWindowLongW(hwnd, self.GWL_STYLE, style | want)
+            #: 必须让 Windows 重新算一遍窗口框架，否则样式不生效
+            user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0,
+                self.SWP_FRAMECHANGED | self.SWP_NOMOVE
+                | self.SWP_NOSIZE | self.SWP_NOZORDER)
+            logger.info("web_shell：已补回 WS_THICKFRAME（可拖动 / 可缩放）")
+            return True
+        except Exception:  # noqa: BLE001 - 补不上不该崩
+            logger.warning("_restore_drag_style 失败", exc_info=True)
+            return False
 
     def toggle_maximize(self) -> None:
         """最大化 / 还原（双击标题栏、点 #btn-max 都走这里）。"""
@@ -1008,9 +1095,23 @@ class WebShell(QObject):
                     import ctypes  # noqa: PLC0415
                     from ctypes import wintypes  # noqa: PLC0415
 
-                    #: message 是 sip.voidptr，先转成整数地址
-                    addr = int(message) if isinstance(message, int) \
-                        else message.__int__()
+                    #: ★★★ 2026-11-02 **`message` 是 sip.voidptr，取值方式很绕**
+                    #:
+                    #: ⚠ 试过都不行：
+                    #:
+                    #: * ``message.__int__()`` → ``AttributeError: 'c_void_p'
+                    #:   object has no attribute '__int__'``
+                    #: * ``int(message)`` → ``ValueError: invalid literal for
+                    #:   int() with base 10: b' \xfd\x01I_\x02\x00\x00'``
+                    #:   （它把 this 当成 bytes 在解析）
+                    #:
+                    #: 正确做法：``sip.voidptr`` 转成整数要用 ``.asstring()``
+                    #: 拿原始字节，再 ``int.from_bytes``；但更稳的是直接用
+                    #: ``ctypes.cast(message, c_void_p).value``。
+                    addr = ctypes.cast(message, ctypes.c_void_p).value
+                    if not addr:
+                        return False, 0
+
                     msg = ctypes.cast(
                         addr, ctypes.POINTER(wintypes.MSG)).contents
                     if msg.message != 0x0084:      #: WM_NCHITTEST
@@ -1020,7 +1121,21 @@ class WebShell(QObject):
                             or self._view.isFullScreen():
                         return False, 0
                     hwnd = int(self._view.winId())
-                    if int(msg.hwnd or 0) != hwnd:
+                    #: ★★★ 2026-11-02 **字段名是 ``hWnd`` 不是 ``hwnd``**
+                    #:
+                    #: ``ctypes.wintypes.MSG`` 的结构体字段沿用 Win32 的
+                    #: 匈牙利命名：``hWnd`` / ``message`` / ``wParam`` /
+                    #: ``lParam``。写成小写 ``hwnd`` 会
+                    #: ``AttributeError: 'MSG' object has no attribute 'hwnd'``。
+                    #:
+                    #: ⚠⚠ **这个异常被外层 ``except`` 吞了整整三轮** ——
+                    #: 表现就是「过滤器永远返回 (False, 0)、拖拽完全无效」，
+                    #: 而代码看上去完全正确。加 ``logger.debug(..., exc_info=True)``
+                    #: 之后才看见。
+                    #:
+                    #: 教训：**`except: return 默认值` 是排查地狱**。
+                    #: 至少要打一条 debug 日志。
+                    if int(msg.hWnd or 0) != hwnd:
                         return False, 0
 
                     #: 屏幕坐标 → 窗口内坐标
@@ -1031,44 +1146,78 @@ class WebShell(QObject):
                     right, bottom = geo.right(), geo.bottom()
                     m = self._margin
 
-                    #: ★★★ 2026-11-02 **标题栏区域不做边缘命中**
+                    #: ★★★ 2026-11-02 **标题栏区域完全放行给 Windows**
                     #:
-                    #: ## 症状（用户反馈）
+                    #: ## 症状（用户反馈两轮都没修好）
                     #:
-                    #: 「工具启动后为什么不能拖拽移动了？」
+                    #: 「这整个窗口还是不能拖拽」「工具启动后不能拖拽」
                     #:
-                    #: ## 根因
+                    #: ## 实测证据（手动发 WM_NCHITTEST）
                     #:
-                    #: 下面 ``on_top`` 的判定是「离窗口上边 6px 内」——
-                    #: 而**标题栏本身就在窗口最顶上**（``#titlebar`` 从 y=0 开始，
-                    #: 高 44px）。于是鼠标一进标题栏就命中 ``HTTOP``，
-                    #: Windows 把它当成「拉上边框」，``HTCAPTION``（拖动）
-                    #: **永远轮不到**。
+                    #: .. code:: text
                     #:
-                    #: 改之前的表现：整个标题栏拖不动（不只是启动后）。
-                    #: 用户可能之前一直在拖别的地方、或者没注意；
-                    #: 也可能是启动任务后窗口位置变了才注意到。
+                    #:     标题栏 y+20  → 0x0000   ← 0！既不是 HTCLIENT 也不是 HTCAPTION
+                    #:     内容区 y+200 → 0x0001   ← 正常的 HTCLIENT
                     #:
-                    #: ## 修法
+                    #: ``0`` 表示「没人处理」—— 页面收不到 mousedown
+                    #: （因为不是 HTCLIENT），系统也不拖（因为不是 HTCAPTION），
+                    #: **两头落空**。
                     #:
-                    #: **顶部 6px 只在「左右两边」时才算拉伸**，
-                    #: 中段留给标题栏拖动。
+                    #: ## 试过但无效的方案
                     #:
-                    #:   窗口顶边：  [HTTOPLEFT][  HTCAPTION  ][HTTOPRIGHT]
-                    #:                ← 角可以拉 →   ← 中段给拖拽 →
+                    #: 1. ``return False, 0``（不拦，让页面自己调 startWindowDrag）
+                    #:    → 实测就是上面那个 0
+                    #: 2. ``return True, 2``（HTCAPTION）
+                    #:    → 过滤器**没被调用到**：``SendMessage(WM_NCHITTEST)``
+                    #:      是同步直调，不经过 Qt 事件循环，native filter 拦不到
                     #:
-                    #: 这样角上还能拉对角线缩放，中间能拖窗口 —— 和原生一致。
+                    #: ## 最终方案：标题栏区域**彻底不干预**
                     #:
-                    #: ⚠ 只用 ``on_top`` 不再参与 HTTOP 判定，**但保留它**给角用。
+                    #: ``FramelessWindowHint`` 的窗口，Qt 自己对 WM_NCHITTEST
+                    #: 返回 ``HTCLIENT``（内容区行为）—— 页面能收到 mousedown，
+                    #: 走页面自己的 ``startWindowDrag()``（Win32
+                    #: ``ReleaseCapture + WM_NCLBUTTONDOWN``，系统接管拖动）。
+                    #:
+                    #: 所以**只要别在这里返回任何东西**就行。
+                    #:
+                    #: ⚠ 关键：下面所有 ``return`` 都必须是「**确实在边缘**」
+                    #:   的情况。标题栏中段直接跳过、落到最后的 ``return False, 0``
+                    #:   —— 那个 ``False`` 的含义是「我不处理，Qt/Windows 自己定」，
+                    #:   和中间那些 ``return True, HTxxx`` 不同。
                     header_h = getattr(self, "TITLEBAR_HIT_HEIGHT", 44)
                     in_header = top <= y < top + header_h
                     #: 角例外：左右两边落在角上仍然算拉伸（否则角拉不了）
                     corner_for_top = in_header and (
                         x < left + m or x > right - m)
                     if in_header and not corner_for_top:
-                        #: 标题栏中段 —— 交还给页面（``HTCAPTION`` 由
-                        #: 页面 mousedown → ``startWindowDrag()`` 触发）
-                        return False, 0
+                        #: 标题栏中段 → **必须返回 HTCLIENT，不能返回 0**
+                        #:
+                        #: ## ⚠⚠⚠ 2026-11-02 三轮才修对
+                        #:
+                        #: 用户两次反馈「不能拖拽」。实测链条：
+                        #:
+                        #: 1. 页面埋点 ``mousedown`` 计数 = **0**
+                        #:    → 页面根本没收到鼠标事件
+                        #: 2. 但 ``SendMessage(WM_LBUTTONDOWN)`` 直接发给窗口
+                        #:    → 页面**收到了** ``{x:480, y:16}``
+                        #: 3. 手动发 ``WM_NCHITTEST``：
+                        #:    标题栏 → ``0x0000``，内容区 → ``0x0001``（HTCLIENT）
+                        #:
+                        #: **区别就在这**：``SendInput``（真实鼠标）走硬件输入
+                        #: 队列，Windows **先问 WM_NCHITTEST**；返回 ``0`` 会被
+                        #: 解读成「这块区域不接受鼠标」，于是**事件被直接丢弃**，
+                        #: 页面永远收不到。``SendMessage`` 绕过了那个判断，
+                        #: 所以能收到 —— 这就是「看起来能收到但实际不行」的原因。
+                        #:
+                        #: ## 为什么之前返回 ``False, 0`` 是错的
+                        #:
+                        #: ``nativeEventFilter`` 返回 ``(False, 0)`` 的意思是
+                        #: 「我不处理，交给 Qt」，但 Qt 对无边框窗口的
+                        #: ``WM_NCHITTEST`` 处理结果是 ``0``，不是 ``HTCLIENT``。
+                        #:
+                        #: → **自己明确返回 ``HTCLIENT(1)``**，
+                        #:   页面才能收到 mousedown，进而调 ``startWindowDrag()``。
+                        return True, 1           #: HTCLIENT
 
                     on_left = x < left + m
                     on_right = x > right - m
@@ -1093,6 +1242,11 @@ class WebShell(QObject):
                     if on_bottom:
                         return True, 15          #: HTBOTTOM
                 except Exception:  # noqa: BLE001 - 命中测试失败不该崩
+                    #: ⚠⚠ 2026-11-02 这里以前是裸 ``return False, 0``，
+                    #: 把异常**静默吞掉**了 —— 结果「拖拽失效」查了三轮
+                    #: 才靠手工复算发现「代码是对的但入口没走到」。
+                    #: 现在打日志，下次一眼看见。
+                    logger.debug("WM_NCHITTEST 处理失败", exc_info=True)
                     return False, 0
                 return False, 0
 
