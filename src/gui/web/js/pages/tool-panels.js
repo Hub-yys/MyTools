@@ -3746,12 +3746,7 @@
       class: 'enh-switch-title',
       text: '满' + ENHANCE_CRIT + ' / 满爆伤 自动锁定'
     }));
-    left.appendChild(P.el('div', {
-      class: 'enh-switch-hint',
-      text: '出现满值词条（暴击 10.5 / 爆伤 21）时：不看别的条件，' +
-        '一律强化到满级并上锁，不弃置。判定排在双爆下限与有效词条之前 —— ' +
-        '出了满值就保住。'
-    }));
+    //: ★ 2026-11-02 用户要求「这些说明都要删掉」—— 说明文字不再渲染
     row.appendChild(left);
 
     //: ★ 开关顶部对齐

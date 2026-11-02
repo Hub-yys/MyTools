@@ -396,16 +396,22 @@ def main() -> int:
             s = structure if isinstance(structure, dict) else {}
 
             #: ① summary 必须在 content **之前**
+            #:
+            #: ★ 2026-11-02 用户要求「这些说明都要删掉」—— ``coll-hint``
+            #:   已经不渲染了，所以不断言它存在，只要求**如果存在**就在
+            #:   summary 之前（保持旧界面的相对位置语义）。
             order = s.get("coreOrder") or []
             def _idx(name):
                 return order.index(name) if name in order else -1
+            hint_i = _idx("coll-hint")
             ok_order = (_idx("coll-head") == 0
-                        and _idx("coll-hint") == 1
-                        and _idx("coll-summary") == 2
-                        and _idx("coll-content") == 3)
+                        and _idx("coll-summary") > 0
+                        and _idx("coll-content") > _idx("coll-summary")
+                        #: hint 可选；有的话必须在 summary 前
+                        and (hint_i < 0 or hint_i < _idx("coll-summary")))
             check(f"{short}.P4d", ok_order,
                   f"{name}：CollapsibleCard 顺序 = {order}"
-                  f"（期望 head→hint→summary→content，摘要在内容**上方**）")
+                  f"（期望 head→[hint]→summary→content，摘要在内容**上方**）")
 
             #: ② 4 列**按列填充**
             flow = str(s.get("gridFlow") or "")

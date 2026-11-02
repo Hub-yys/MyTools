@@ -557,8 +557,13 @@
 .sw-track {
   position: relative;
   flex: 0 0 auto;
-  width: 30px;
-  height: 17px;
+  /*: ★ 2026-11-02 用户：「有点小，调大一点」—— 30×17 → 40×22
+   *
+   * 旧界面 ``SwitchButton`` 实测约 40×22（qfluentwidgets 默认尺寸）。
+   * 原来按 30×17 做偏小，在 4K/高 DPI 下更难看清。
+   */
+  width: 40px;
+  height: 22px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.10);
   border: 1px solid rgba(255, 255, 255, 0.10);
@@ -570,8 +575,12 @@
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 11px;
-  height: 11px;
+  /*: 跟着轨道放大：11 → 16（轨道 22 高，上下各 2，剩 18；留 1px 余量）
+   *
+   * ⚠ ``translateX`` 要同步改：40 - 16 - 2*2 = 20px（下面那条规则里）
+   */
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   background: var(--dim);
   transition: transform 150ms var(--ease),
@@ -584,7 +593,8 @@
 }
 
 .sw-input:checked + .sw-track .sw-thumb {
-  transform: translateX(13px);
+  /*: 40(轨道) - 16(滑块) - 2(左) - 2(右) = 20 */
+  transform: translateX(20px);
   background: var(--primary);
 }
 
@@ -2388,6 +2398,34 @@
   width: 90px;
   flex: 0 0 90px;
   text-align: center;
+}
+
+/*: ★★★ 2026-11-02 **`.numfield` 上加 `.cfg-number` 时不能限宽**
+ *
+ * ## 症状（用户截图圈出）
+ *
+ * 「定时关机」那张卡：
+ *
+ *     [启用] [−] [120] 分钟后关机      [+]      ← + 跑到「分钟后关机」后面去了
+ *
+ * ## 根因
+ *
+ * JS 里给 ``.numfield`` 容器加了 ``cfg-number`` 类想复用宽度，
+ * 但上面那条规则是**为单个输入框写的**（90px）。
+ * ``.numfield`` 里是 ``[−30px] [输入框 76px] [+]30px`` + 两处 6px 间距 = **148px**，
+ * 被强行压到 90px 后 ``+`` 按钮**溢出到容器外**，位置就乱了。
+ *
+ * ## 修法
+ *
+ * 容器上的 ``.numfield.cfg-number`` 去掉宽度约束（让内容自己撑开）。
+ * 宽度交给 ``.numfield .numfield-edit`` 的 76px。
+ *
+ * ⚠ 两个类选择器 ``.numfield.cfg-number`` 优先级比 ``.cfg-number`` 高，能覆盖它。
+ */
+.numfield.cfg-number {
+  width: auto;
+  flex: 0 0 auto;
+  text-align: left;
 }
 
 /* 下拉（战斗方式）*/
