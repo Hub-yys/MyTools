@@ -1,0 +1,886 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   pages/_panels.js —— ★ 工具面板公共层（P4 新增）
+
+   ## 为什么需要它
+
+   7 个工具面板长得不一样，但**骨架高度相似**：
+
+   .. code:: text
+
+     ┌─ 页头（名字 / 说明 / 运行·停止 按钮）───────┐
+     ├─ 参数区（每个工具自己画）───────────────────┤
+     ├─ 状态条（空闲 / 运行中 / 完成 / 失败）──────┤
+     ├─ 进度条 ────────────────────────────────────┤
+     └─ 日志区（等宽字体，滚动）───────────────────┘
+
+   如果把「状态条的四种形态」「日志追加 + 自动滚动」「按钮启用/禁用联动」
+   在每个面板里各写一遍，7 份就会长出 7 种不一致的行为 ——
+   这正是 P1→P2 阶段「任务页按钮永久 disabled」那类 bug 的温床。
+
+   所以这里抽出三样东西：
+
+   * :func:`createPanel` —— 画骨架，返回一个带 ``setState`` / ``log`` 的句柄
+   * :func:`stateText` / :func:`stateTone` —— 状态 → 文案 / 色调的统一映射
+   * :func:`runGuard` —— 「同一时刻只能跑一个」的通用守卫
+
+   ## 和 ``_shared.js`` 的分工
+
+   ``_shared.js`` 是**页面级**公共层（DOM 构造、bridge 调用、格式化）；
+   本文件是**工具面板级**（状态机、日志区、运行守卫）。
+   面板模块两个都 use。
+
+   ## ⚠ 加载顺序
+
+   本文件**必须在 ``_shared.js`` 之后**（它用 ``Pages.el`` 等）。
+   所以同样由 index.html 的 script 清单保证 —— 见该文件的说明。
+   如果顺序错了，这里的 ``P.ready`` 会在 DOM 就绪后才跑，
+   而 ``_shared.js`` 那时一定已经执行完（它同步执行），所以仍然安全。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+(function () {
+  'use strict';
+
+  const P = window.Pages;
+  if (!P) {
+    console.error('[panels] _shared.js 没先加载');
+    return;
+  }
+
+  //: 日志上限（和任务页一致，防长时间运行吃内存）
+  const MAX_LOG_LINES = 500;
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  状态机：7 个工具共用同一套状态语义
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 状态取值（全部小写，和 CSS 的 ``[data-state]`` 对应）。
+   *
+   * .. code:: text
+   *
+   *   idle       空闲（可以点运行）
+   *   preparing  准备中（引擎在 boot / 请求已发出但还没开始）
+   *   running    运行中（可以点停止）
+   *   done       完成（可以再点运行）
+   *   failed     失败 / 被拒（显示原因）
+   *   blocked    被前置条件拦下（游戏没开 / 没权限）—— 和 failed 分开，
+   *              因为它不是"出错"，是"还没准备好"
+   */
+  const STATES = ['idle', 'preparing', 'running', 'done', 'failed', 'blocked'];
+
+  /** 状态 → 中文文案 */
+  function stateText(state) {
+    switch (state) {
+      case 'preparing': return '准备中';
+      case 'running': return '运行中';
+      case 'done': return '已完成';
+      case 'failed': return '失败';
+      case 'blocked': return '未就绪';
+      default: return '空闲';
+    }
+  }
+
+  /** 状态 → 色调（喂给 data-tone，CSS 据此上色） */
+  function stateTone(state) {
+    switch (state) {
+      case 'preparing': return 'warn';
+      case 'running': return 'run';
+      case 'done': return 'ok';
+      case 'failed': return 'error';
+      case 'blocked': return 'warn';
+      default: return 'idle';
+    }
+  }
+
+  /** 这个状态下，运行按钮该不该可点 */
+  function canRun(state) {
+    return state === 'idle' || state === 'done' || state === 'failed'
+        || state === 'blocked';
+  }
+
+  /** 这个状态下，停止按钮该不该可点 */
+  function canStop(state) {
+    return state === 'running' || state === 'preparing';
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  面板骨架
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 画一个工具面板的骨架，返回句柄。
+   *
+   * ## 用法
+   *
+   * .. code:: js
+   *
+   *   const panel = Panels.create(container, {
+   *     key: 'wuwa_library_update',
+   *     title: '资源库更新',
+   *     desc: '从库街区拉取最新图鉴数据',
+   *     onRun: () => doCheck(),
+   *     onStop: () => doStop()
+   *   });
+   *
+   *   panel.body.appendChild(myControls);   // 参数区
+   *   panel.setState('running', '正在检查更新…');
+   *   panel.log('拉到 37 套套装', 'ok');
+   *   panel.setProgress(42, '对比差异');
+   *
+   * @param {HTMLElement} container
+   * @param {object} spec - {key, title, desc, onRun, onStop, runLabel, stopLabel}
+   * @returns {object} 面板句柄
+   */
+  function createPanel(container, spec) {
+    spec = spec || {};
+
+    // ── 页头 ──
+    const head = P.pageHead({
+      title: spec.title || '工具',
+      subtitle: spec.desc || ''
+    });
+
+    const stopBtn = P.button(spec.stopLabel || '停止', {
+      kind: 'danger',
+      size: 'sm',
+      onClick: function () {
+        if (typeof spec.onStop === 'function') spec.onStop();
+      }
+    });
+    stopBtn.disabled = true;
+
+    const runBtn = P.button(spec.runLabel || '运行', {
+      kind: 'primary',
+      size: 'sm',
+      onClick: function () {
+        if (typeof spec.onRun === 'function') spec.onRun();
+      }
+    });
+
+    head.actions.appendChild(stopBtn);
+    head.actions.appendChild(runBtn);
+    container.appendChild(head.head);
+
+    // ── 提示条槽（警告 / 降级说明 / 前置条件都插这儿）──
+    const noticeHost = P.el('div');
+    container.appendChild(noticeHost);
+
+    // ── 参数区（由各工具自己填）──
+    const body = P.el('div', { class: 'tool-panel-body' });
+    container.appendChild(body);
+
+    // ── 状态卡 ──
+    const statusPill = P.el('span', {
+      class: 'flow-state',
+      dataset: { state: 'idle' },
+      text: stateText('idle')
+    });
+    const statusText_ = P.el('div', {
+      class: 'run-name',
+      text: '尚未开始'
+    });
+    const statusPct = P.el('div', { class: 'run-percent', text: '' });
+
+    const statusCard = P.el('div', { class: 'card-glass run-panel' }, [
+      P.el('div', {
+        class: 'run-head',
+        style: 'padding:15px 18px 0'
+      }, [statusPill, statusText_, statusPct]),
+      P.el('div', { style: 'padding:10px 18px 15px' }, [
+        P.el('div', { class: 'progress' }, [
+          P.el('div', { class: 'progress-bar' })
+        ]),
+        P.el('div', { class: 'run-step', text: '' })
+      ])
+    ]);
+    const progressBar = statusCard.querySelector('.progress-bar');
+    const stepLine = statusCard.querySelector('.run-step');
+    container.appendChild(statusCard);
+
+    // ── 日志区 ──
+    const logCard = P.el('div', { class: 'card-glass', style: 'padding:15px 18px' });
+    const logHead = P.el('div', {
+      style: 'display:flex;align-items:center;gap:10px;margin-bottom:9px'
+    }, [
+      P.el('div', { class: 'panel-title', text: '日志' }),
+      P.el('div', { class: 'log-count', text: '0 行' }),
+      P.el('div', { style: 'margin-left:auto' }, [
+        P.button('清空', {
+          size: 'sm',
+          onClick: function () { handle.clearLog(); }
+        })
+      ])
+    ]);
+    const logBox = P.el('div', {
+      class: 'log-box',
+      id: 'tool-log-' + (spec.key || 'x'),
+      style: 'height:220px;max-height:32vh'
+    });
+    logCard.appendChild(logHead);
+    logCard.appendChild(logBox);
+    container.appendChild(logCard);
+
+    const logCount = logHead.querySelector('.log-count');
+
+    // ════════════════════════════════════════════════════════════════════
+    //  句柄
+    // ════════════════════════════════════════════════════════════════════
+    const state = { value: 'idle', lines: 0, autoScroll: true };
+
+    const handle = {
+      key: spec.key || '',
+      head: head.head,
+      actions: head.actions,
+      noticeHost: noticeHost,
+      body: body,
+      runBtn: runBtn,
+      stopBtn: stopBtn,
+      logBox: logBox,
+
+      /** 当前状态值 */
+      get state() { return state.value; },
+
+      /**
+       * 设置状态。
+       *
+       * @param {string} value - idle / preparing / running / done / failed / blocked
+       * @param {string} [text] - 状态行文案
+       * @param {object} [opts] - {step, percent, runDisabled}
+       */
+      setState: function (value, text, opts) {
+        opts = opts || {};
+        if (STATES.indexOf(value) < 0) {
+          console.warn('[panels] 未知状态:', value);
+          value = 'idle';
+        }
+        state.value = value;
+
+        //: ★ ``data-state`` 必须**如实**写状态机的值。
+        //:
+        //: 第一版这里写的是 ``value === 'preparing' ? 'idle' : value``，
+        //: 理由是「preparing 没有对应的 CSS」。结果是：
+        //: 面板确实显示"准备中"，但 DOM 里 ``data-state`` 是 ``idle`` ——
+        //: 任何靠 data-state 判断状态的代码（验证脚本、将来的自动化）
+        //: 都会把"引擎正在启动"读成"空闲"，进而误判成"已经结束"。
+        //:
+        //: 视觉差异改用 ``data-tone`` 表达（CSS 按 tone 上色），
+        //: 这样"状态语义"和"视觉呈现"各走各的，互不污染。
+        statusPill.dataset.state = value;
+        statusPill.dataset.tone = stateTone(value);
+        statusPill.textContent = stateText(value);
+
+        if (text != null) statusText_.textContent = text;
+
+        //: 按钮联动 —— 这是最容易写错的地方（P1 的按钮永久 disabled 就是漏了恢复）
+        runBtn.disabled = !canRun(value);
+        stopBtn.disabled = !canStop(value);
+
+        if (opts.percent != null) {
+          handle.setProgress(opts.percent, opts.step);
+        } else if (opts.step != null) {
+          stepLine.textContent = opts.step;
+        }
+
+        //: 完成 / 空闲时把进度条归零，别留着上一次的 100%
+        if (value === 'idle' && opts.percent == null) {
+          handle.setProgress(0, '');
+        }
+      },
+
+      /** 进度（0~100）+ 当前动作说明 */
+      setProgress: function (percent, stepText) {
+        const v = Math.max(0, Math.min(100, Number(percent) || 0));
+        if (progressBar) progressBar.style.width = v + '%';
+        if (statusPct) statusPct.textContent = v > 0 ? Math.round(v) + '%' : '';
+        if (stepText != null && stepLine) stepLine.textContent = stepText;
+      },
+
+      /**
+       * 追加一行日志。
+       *
+       * @param {string} text
+       * @param {string} [level] - info / ok / warn / error / debug
+       */
+      log: function (text, level) {
+        const content = String(text == null ? '' : text);
+        if (!content) return;
+
+        const line = P.el('div', {
+          class: 'log-line',
+          dataset: { level: level || 'info' }
+        }, [
+          P.el('span', { class: 'log-time', text: clock() }),
+          P.el('span', { class: 'log-text', text: content })
+        ]);
+        logBox.appendChild(line);
+        state.lines += 1;
+
+        while (logBox.childElementCount > MAX_LOG_LINES) {
+          logBox.removeChild(logBox.firstElementChild);
+          state.lines -= 1;
+        }
+        logCount.textContent = state.lines + ' 行';
+
+        if (state.autoScroll) logBox.scrollTop = logBox.scrollHeight;
+      },
+
+      /** 清空日志 */
+      clearLog: function () {
+        logBox.innerHTML = '';
+        state.lines = 0;
+        logCount.textContent = '0 行';
+      },
+
+      /**
+       * 在提示区显示一条说明（降级 / 前置条件 / 错误）。
+       *
+       * @param {string} html
+       * @param {string} [level] - info / warn / error / ok
+       * @param {string} [tag] - 同 tag 的旧提示会被替换（避免堆叠）
+       */
+      notice: function (html, level, tag) {
+        const selector = tag
+          ? '.notice[data-tag="' + tag + '"]'
+          : '.notice';
+        const old = noticeHost.querySelector(selector);
+        if (old) old.remove();
+        const box = P.notice(html, level || 'info');
+        if (tag) box.dataset.tag = tag;
+        noticeHost.appendChild(box);
+        return box;
+      },
+
+      /** 移除某个 tag 的提示 */
+      clearNotice: function (tag) {
+        const old = noticeHost.querySelector('.notice[data-tag="' + tag + '"]');
+        if (old) old.remove();
+      },
+
+      /** 便捷：绑定一个事件源，自动在面板销毁时退订（这里不销毁，只记录）*/
+      track: function (offs) {
+        (container._offs || (container._offs = [])).push(offs);
+      }
+    };
+
+    return handle;
+  }
+
+  function clock() {
+    const now = new Date();
+    function pad(n) { return n < 10 ? '0' + n : String(n); }
+    return pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':'
+         + pad(now.getSeconds());
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  运行守卫：同一时刻只能跑一个（7 个工具共用）
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 把一个后端的「运行结果」翻译成面板状态 + 日志。
+   *
+   * ## 为什么统一处理
+   *
+   * 7 个工具的后端返回结构**本该一致**（``{ok, reason, message}``），
+   * 但历史原因各不相同。这个函数把已知的 reason 都吃下来，
+   * 保证用户在任何面板上看到的失败原因**格式一致**。
+   *
+   * @param {object} panel - createPanel 的句柄
+   * @param {object} result - P.call 的返回值
+   * @param {string} label - 工具名（拼日志用）
+   * @returns {boolean} 是否成功开始
+   */
+  function handleRunResult(panel, result, label) {
+    // ── 桥接层调用失败 ──
+    if (!result || !result.ok) {
+      const detail = result && result.missing
+        ? '桥接缺少对应接口'
+        : String((result && result.error && result.error.message)
+                 || (result && result.error) || '未知错误');
+      panel.setState('failed', '调用失败');
+      panel.log('✗ ' + detail, 'error');
+      panel.notice(P.esc(detail), 'error', 'runfail');
+      return false;
+    }
+
+    const data = result.data || {};
+
+    // ── 后端明确拒绝 ──
+    if (data.ok === false) {
+      const reason = data.reason || '';
+      //: 后端 message 是写给用户看的，优先用
+      const message = data.message || data.hint || '';
+
+      // ── 忙 ──
+      if (reason === 'busy') {
+        panel.setState('failed', '已有任务在运行');
+        panel.log('✗ ' + (message || '已有任务在运行（' + (data.running || '?') + '）'),
+          'warn');
+        //: ★ 也要弹出来 —— 否则用户只看到一个"失败"徽标，不知道是被谁占着
+        panel.notice(
+          P.esc(message) ||
+          ('已有任务在运行（<b>' + P.esc(data.running || '未知') + '</b>）— ' +
+           '同一时刻只能跑一个任务，请先停止它。'),
+          'warn', 'runfail'
+        );
+        return false;
+      }
+
+      // ── 前置条件没满足 ──
+      if (reason === 'precheck' || reason === 'blocked'
+          || reason === 'permission' || reason === 'not_ready') {
+        //: 这不是"出错"，是"还没准备好"
+        panel.setState('blocked', '前置条件未满足');
+        panel.log('⚠ ' + (message || '前置检查未通过'), 'warn');
+        if (message) panel.notice(P.esc(message), 'warn', 'runfail');
+        return false;
+      }
+
+      // ── 其它启动失败（含 start_failed）──
+      //
+      //: ★ 这类 message 往往**带排查线索**（日志路径、具体原因），
+      //: 只写进日志区是不够的 —— 日志区可能已经滚上去了，用户看不见。
+      //: 必须同时弹到提示区。
+      panel.setState('failed', '启动失败');
+      const text = message || (label + ' 启动失败：' + (reason || '未知原因'));
+      panel.log('✗ ' + text, 'error');
+      panel.notice(P.esc(text), 'error', 'runfail');
+      return false;
+    }
+
+    // ── 成功受理 ──
+    panel.clearNotice('runfail');
+    panel.setState('running', label + ' 运行中');
+    return true;
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  参数控件（几个面板共用的表单件）
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 一行表单：标签 + 控件 + 说明。
+   *
+   * @returns {object} {row, controlHost}
+   */
+  function field(label, control, hint) {
+    const row = P.el('div', { class: 'field' });
+    const labelEl = P.el('div', { class: 'field-label', text: label });
+    const controlHost = P.el('div', { class: 'field-control' });
+    if (control) controlHost.appendChild(control);
+    row.appendChild(labelEl);
+    row.appendChild(controlHost);
+    if (hint) {
+      row.appendChild(P.el('div', { class: 'field-hint', text: hint }));
+    }
+    return row;
+  }
+
+  /** 下拉框 → {el, get(), set(value)} */
+  function select(options, current) {
+    const box = P.el('select', { class: 'input' });
+    for (const opt of options) {
+      const value = typeof opt === 'string' ? opt : opt.value;
+      const label = typeof opt === 'string' ? opt : opt.label;
+      const el = P.el('option', { value: value, text: label });
+      if (value === current) el.selected = true;
+      box.appendChild(el);
+    }
+    return {
+      el: box,
+      get: function () { return box.value; },
+      set: function (v) { box.value = v; },
+      setOptions: function (list, keep) {
+        box.innerHTML = '';
+        for (const opt of list) {
+          const value = typeof opt === 'string' ? opt : opt.value;
+          const label = typeof opt === 'string' ? opt : opt.label;
+          box.appendChild(P.el('option', { value: value, text: label }));
+        }
+        if (keep) box.value = keep;
+      }
+    };
+  }
+
+  /**
+   * 数字输入 → ``{el, get(), set(v)}``
+   *
+   * ## ★ 结构照抄旧界面 ``NumberField``（``gui/widgets.py`` L176+）
+   *
+   * .. code:: python
+   *
+   *   self.minus = ToolButton(FluentIcon.REMOVE, self)
+   *   self.minus.setFixedSize(30, 30)
+   *   self.edit = LineEdit(self)
+   *   self.edit.setFixedWidth(76)                            # ← 76px
+   *   self.edit.setAlignment(Qt.AlignmentFlag.AlignCenter)   # ← 居中
+   *   self.plus = ToolButton(FluentIcon.ADD, self)
+   *   self.plus.setFixedSize(30, 30)
+   *   layout.setSpacing(6)                                   # ← 间距 6px
+   *
+   * 即 ``[−] [76px 输入框] [+]`` —— 可以点加减，也可以直接敲。
+   *
+   * ⚠ 2026-11-02 用户圈「加减号呢」—— 我原来只做了裸输入框。
+   *
+   * ## ``step`` 默认 1（照抄旧界面 ``step=1.0``）
+   *
+   * 双爆下限是小数（7.5 / 15.0），但旧界面**就是 1**，
+   * 所以照抄（点两下 6.9 → 8.9，想填精确值就直接敲）。
+   */
+  function numberInput(value, opts) {
+    opts = opts || {};
+    const step = opts.step != null ? Number(opts.step) : 1;
+    const min = opts.min != null ? Number(opts.min) : null;
+    const max = opts.max != null ? Number(opts.max) : null;
+
+    const wrap = P.el('div', { class: 'numfield' });
+
+    const minus = P.el('button', {
+      class: 'numfield-btn',
+      type: 'button',
+      text: '−',
+      title: '减 ' + step,
+      onClick: function () { bump(-step); }
+    });
+    wrap.appendChild(minus);
+
+    const input = P.el('input', {
+      class: 'input numfield-edit',
+      type: 'text',
+      inputmode: 'decimal',
+      value: value == null ? '' : String(value),
+      placeholder: opts.placeholder || ''
+    });
+    wrap.appendChild(input);
+
+    const plus = P.el('button', {
+      class: 'numfield-btn',
+      type: 'button',
+      text: '＋',
+      title: '加 ' + step,
+      onClick: function () { bump(step); }
+    });
+    wrap.appendChild(plus);
+
+    function clamp(n) {
+      let out = n;
+      if (min != null && out < min) out = min;
+      if (max != null && out > max) out = max;
+      return out;
+    }
+
+    /** 去掉末尾多余的 0（7.00 → 7，6.90 → 6.9）—— 旧界面 ``_fmt_number`` */
+    function fmt(n) {
+      return String(Math.round(Number(n) * 100) / 100);
+    }
+
+    function current() {
+      const n = Number(input.value);
+      return isFinite(n) ? n : 0;
+    }
+
+    function bump(delta) {
+      const next = clamp(current() + delta);
+      input.value = fmt(next);
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    //: 失焦时把非法内容纠正成合法值（旧界面靠 ``QDoubleValidator`` 拦在输入阶段）
+    input.addEventListener('blur', function () {
+      input.value = fmt(clamp(current()));
+    });
+
+    return {
+      el: wrap,
+      input: input,
+      get: function () {
+        const n = Number(input.value);
+        return isFinite(n) ? n : 0;
+      },
+      set: function (v) {
+        input.value = v == null ? '' : fmt(Number(v));
+      }
+    };
+  }
+
+  /** 文本输入 → {el, get(), set(s)} */
+  function textInput(value, placeholder) {
+    const input = P.el('input', {
+      class: 'input',
+      type: 'text',
+      value: value == null ? '' : String(value),
+      placeholder: placeholder || ''
+    });
+    return {
+      el: input,
+      get: function () { return input.value; },
+      set: function (v) { input.value = v == null ? '' : String(v); }
+    };
+  }
+
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  ★ 运行追踪：区分「受理了」和「真的跑起来了」
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 创建一个"本轮运行"追踪器。
+   *
+   * ## 为什么必须是公共组件（2026-11-02，7 个工具里 5 个会用到）
+   *
+   * 走 ok-ww 的 3 个工具（``echo_change`` / ``auto_combat`` / ``nest_sweep``）
+   * 和走异步线程的 2 个（``wuwa_library_update`` / ``gacha``）都有同一个陷阱：
+   *
+   * .. code:: text
+   *
+   *   后端返回 {"ok": true}   ← 这只表示"受理了"
+   *   但用户以为           ← "开始跑了"
+   *
+   * 实测（``echo_change``）：``runOkwwTask`` 返回 ``ok:true`` 之后，
+   * 状态可能**全程停在 ready 且 runningTask 为空** —— 因为
+   * ``input_permission_error()`` 在游戏没开时返回 ``None``（不拦），
+   * 引擎起来了但任务跑不动。这个状态和"刚跑完"**完全一样**。
+   *
+   * 如果面板直接把「runningTask 空」当"结束"，用户会看到一闪而过的
+   * 「已完成」—— 而实际一次都没跑。这比显示"失败"糟糕得多。
+   *
+   * ## 用法
+   *
+   * .. code:: js
+   *
+   *   const tracker = Panels.trackRun({
+   *     onGiveUp: function () { panel.setState('blocked', '没能真正启动'); }
+   *   });
+   *
+   *   await P.call('runOkwwTask', ...);        // 受理
+   *   tracker.accept();                        // 标记"本轮已受理"
+   *
+   *   // 轮询里：
+   *   tracker.observe({running: runningTask === MY_TASK});
+   *   if (tracker.isFinished()) { ...done... }
+   *   if (tracker.gaveUp())     { ...blocked... }
+   *
+   * @param {object} [opts]
+   * @param {number} [opts.timeoutMs] - 受理后多久没进 running 就放弃（默认 8s）
+   * @param {function} [opts.onGiveUp] - 放弃时的回调
+   * @param {function} [opts.onFinish] - 判定结束时的回调
+   * @returns {object} 追踪器
+   */
+  function trackRun(opts) {
+    opts = opts || {};
+    const baseTimeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 8000;
+
+    const st = {
+      /** 本轮是否已受理（点了运行、后端返回 ok） */
+      accepted: false,
+      /** 本轮是否**真的**看到过 running */
+      sawRunning: false,
+      /** 受理的时间戳（会被 extend/booting 重置） */
+      acceptedAt: 0,
+      /** 当前生效的超时（可被 extend 拉长） */
+      timeoutMs: baseTimeoutMs,
+      /** 已判定结束（防止重复回调） */
+      finished: false,
+      /** 已判定放弃（防止重复回调） */
+      gaveUpFlag: false
+    };
+
+    const tracker = {
+      /** 标记"本轮已受理"（在 runTask/runOkwwTask 返回 ok 之后调）*/
+      accept: function () {
+        st.accepted = true;
+        st.sawRunning = false;
+        st.acceptedAt = Date.now();
+        st.timeoutMs = baseTimeoutMs;
+        st.finished = false;
+        st.gaveUpFlag = false;
+      },
+
+      /** 复位（新一次运行开始前调，或运行失败时）*/
+      reset: function () {
+        st.accepted = false;
+        st.sawRunning = false;
+        st.acceptedAt = 0;
+        st.timeoutMs = baseTimeoutMs;
+        st.finished = false;
+        st.gaveUpFlag = false;
+      },
+
+      /**
+       * ★ 延长超时并**重置计时起点**。
+       *
+       * ## 为什么需要（2026-11-02，lead 指出的真缺陷）
+       *
+       * 第一版从"受理时刻"硬算 N 秒。但引擎**首次**启动是懒加载，
+       * 冷启动可能 10 秒以上 —— 而 ``runOkwwTask`` 明确会返回
+       * ``engineState: "booting"`` 表示"别判死，我还在起"。
+       *
+       * 硬算的结果是：引擎正常启动中，8 秒一到 trackRun 判 ``blocked``，
+       * 用户看到「没能真正启动」，1 秒后战斗却真的开始了 —— 自己打自己脸。
+       *
+       * @param {number} [ms] - 新的超时（不传就沿用当前）
+       */
+      extendTimeout: function (ms) {
+        if (Number(ms) > 0) st.timeoutMs = Number(ms);
+        //: 重置起点：从"确认还在启动"这一刻重新计时
+        st.acceptedAt = Date.now();
+        //: 如果之前已经判过放弃，撤销它（引擎后来确实起来了）
+        st.gaveUpFlag = false;
+      },
+
+      /**
+       * ★ 感知后端上报的引擎状态，自动调整等待策略。
+       *
+       * @param {string} engineState - 'booting' | 'running' | 'ready' | 'error'
+       * @returns {boolean} 是否识别并处理了
+       */
+      noteEngineState: function (engineState) {
+        const value = String(engineState || '');
+        if (value === 'booting') {
+          //: 引擎还在起 —— 这是**正常**的，给足时间，别判死
+          tracker.extendTimeout(Math.max(st.timeoutMs * 2, 20000));
+          return true;
+        }
+        if (value === 'running') {
+          st.sawRunning = true;
+          st.gaveUpFlag = false;
+          return true;
+        }
+        return false;
+      },
+
+      /**
+       * 喂一次观测结果。
+       *
+       * @param {object} obs - {running: boolean, engineState?: string}
+       *   ``running`` = 后端此刻是否报告"本任务在跑"
+       *   ``engineState`` = 可选，后端上报的引擎状态（有就自动处理）
+       */
+      observe: function (obs) {
+        if (!st.accepted) return;
+
+        //: 有引擎状态就先让它调参（booting 会延长超时）
+        if (obs && obs.engineState) {
+          tracker.noteEngineState(obs.engineState);
+        }
+
+        if (obs && obs.running) {
+          st.sawRunning = true;
+          st.gaveUpFlag = false;    //: 一旦真跑起来，就不再算"放弃"
+          return;
+        }
+
+        //: 跑起来过、现在不跑了 → 结束
+        if (st.sawRunning) {
+          if (!st.finished) {
+            st.finished = true;
+            if (typeof opts.onFinish === 'function') opts.onFinish();
+          }
+          return;
+        }
+
+        //: 受理了但迟迟没进 running → 放弃
+        //
+        //: ⚠ 必须用 **st.timeoutMs**（可变），不能用闭包里的
+        //: ``timeoutMs`` —— 否则 extendTimeout() 改了 st 却不生效，
+        //: 「booting 时延长」等于没做。（这里踩过一次）
+        if (Date.now() - st.acceptedAt > st.timeoutMs && !st.gaveUpFlag) {
+          st.gaveUpFlag = true;
+          if (typeof opts.onGiveUp === 'function') opts.onGiveUp();
+        }
+      },
+
+      /** 本轮是否真的跑起来过 */
+      everRan: function () { return st.sawRunning; },
+      /** 是否已判定结束（跑过之后又停了）*/
+      isFinished: function () { return st.finished; },
+      /** 是否已判定放弃（从来没跑起来）*/
+      gaveUp: function () { return st.gaveUpFlag; },
+      /** 内部状态（调试/测试用）*/
+      state: function () { return Object.assign({}, st); }
+    };
+
+    return tracker;
+  }
+
+  /**
+   * ★ 处理 ``mayNotRun`` —— 后端在启动瞬间就能判断"大概率跑不起来"。
+   *
+   * ## 为什么需要它（2026-11-02，替代"盲等 8 秒"）
+   *
+   * 第一版只能靠**猜**：受理后等 8 秒还没看到 running，才判定"没能启动"。
+   * 用户白白等 8 秒才知道游戏没开。
+   *
+   * 现在 ``runOkwwTask`` 起任务后会等 1.2 秒（够引擎 ``booting → ready``），
+   * 然后如实回报：
+   *
+   * .. code:: text
+   *
+   *   engineStarted: true,  engineState: "running"   → 真的跑起来了
+   *   engineStarted: true,  engineState: "ready"     → 引擎起来了但任务没跑（mayNotRun）
+   *   engineStarted: false, engineState: "booting"   → 首次启动慢，继续等
+   *   engineState: "error"                            → 引擎挂了
+   *
+   * **``mayNotRun`` 和 ``sawRunning`` 是互补的**：
+   * 前者判断"启动瞬间"，后者跟踪"运行过程中"。两个都要留。
+   *
+   * @param {object} panel - createPanel 的句柄
+   * @param {object} data - runOkwwTask 的返回体
+   * @returns {string} 'running' | 'booting' | 'stalled' | 'error' | ''
+   *   ``stalled`` = 受理了但没跑起来（应立即提示，不用等超时）
+   */
+  function applyWindow(panel, data) {
+    const d = data || {};
+    const engineState = String(d.engineState || d.engine_state || '');
+    const warning = String(d.warning || '');
+
+    if (d.mayNotRun) {
+      //: ★ 立刻提示 —— 不必等 8 秒超时
+      if (warning) {
+        panel.log('⚠ ' + warning, 'warn');
+      }
+      panel.notice(
+        P.esc(warning) ||
+        ('引擎没有进入运行状态。多半是：游戏没开着 / 界面不在正确位置 / ' +
+         '不是管理员权限。<br>请逐条检查上面的「运行前提」后重试。'),
+        'warn', 'maynotrun'
+      );
+      panel.setProgress(0, '');
+      return engineState === 'error' ? 'error' : 'stalled';
+    }
+
+    panel.clearNotice('maynotrun');
+
+    if (engineState === 'running') return 'running';
+    if (engineState === 'booting' || d.engineStarted === false) {
+      //: 首次启动引擎慢，属于正常 —— 继续轮询
+      panel.log('引擎正在启动（首次启动会慢一些）…', 'debug');
+      return 'booting';
+    }
+    if (engineState === 'error') {
+      if (warning) panel.notice(P.esc(warning), 'error', 'engine');
+      return 'error';
+    }
+    return '';
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  导出
+  // ════════════════════════════════════════════════════════════════════════
+
+  window.Panels = {
+    STATES: STATES,
+    stateText: stateText,
+    stateTone: stateTone,
+    canRun: canRun,
+    canStop: canStop,
+    create: createPanel,
+    handleRunResult: handleRunResult,
+    trackRun: trackRun,
+    applyWindow: applyWindow,
+    field: field,
+    select: select,
+    numberInput: numberInput,
+    textInput: textInput
+  };
+})();

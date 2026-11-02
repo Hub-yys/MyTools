@@ -83,6 +83,25 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _now_ordered() -> str:
+    """**带微秒**的时间戳 —— 专门给 ``updated_at`` 排序用。
+
+    ## 为什么不能直接用 :func:`_now`
+
+    ``_now()`` 只精确到**秒**。用户在配置页连续点「新增」加两条时，
+    两次调用很可能落在同一秒里 → ``updated_at`` 完全相同 →
+    ``sorted(..., reverse=True)`` 遇到相等值时保持**原顺序** →
+    新加的那条反而排在后面（2026-10-29 实测：加 A/B/C 三条，
+    期望 C,B,A，实际还是 A,B,C）。
+
+    加上微秒后必定单调递增，排序结果可预测。
+
+    ⚠ ``created`` 仍用 ``_now()``（秒精度）—— 那个字段只是给人看的，
+    不改它的格式免得影响已经在盘上的老数据。
+    """
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+
+
 def _pick(value, allowed: tuple[str, ...]) -> tuple[str, ...]:
     """只留允许的值，其余丢掉（设置改版后的老数据别把界面搞崩）。"""
     if not isinstance(value, (list, tuple)):
@@ -120,6 +139,20 @@ class EchoProfile:
     #: 老数据（文件里没有 id）在 :meth:`EchoProfileStore.load` 里补发并落盘，
     #: 之后就一直稳定。
     id: str = ""
+    #: ★ 最近一次改动的时间（2026-10-29 加）。
+    #:
+    #: ## 用户 2026-10-29
+    #:
+    #: > 最近新增的应该排到最前面
+    #:
+    #: 配置页原来按**文件里的存储顺序**列（= 创建顺序），
+    #: 新加的排在最后，用户要滚到底才看得见。
+    #: 现在 :meth:`EchoProfileStore.all` 按这个字段**倒序**返回。
+    #:
+    #: 用 ``updated_at`` 而不是 ``created``：改过的配置也该顶上来
+    #: （用户刚调完判定条件，多半要马上用）。老数据没有这个字段时
+    #: 回落到 ``created``（见 ``__post_init__`` 与 ``from_dict``）。
+    updated_at: str = ""
 
     def __post_init__(self) -> None:
         # ⚠ 名字**不再**兜底成「默认」——名字就是角色名，空名字在这里是"坏数据"，
@@ -131,6 +164,10 @@ class EchoProfile:
             self.settings = {}
         if not self.created:
             self.created = _now()
+        #: 老数据没有 updated_at → 用 created 顶上（否则排序时全是空串，
+        #: Python 的 ``sorted`` 会保持原顺序，等于没排）
+        if not self.updated_at:
+            self.updated_at = self.created
 
     # ------------------------------------------------------------------ 展示
     def is_legacy_default(self) -> bool:
@@ -165,6 +202,8 @@ class EchoProfile:
     # ------------------------------------------------------------------ 存取
     def to_dict(self) -> dict:
         return {"id": self.id, "name": self.name, "created": self.created,
+                #: ★ 2026-10-29：配置页按它倒序排（最近改的/新增的在最前）
+                "updated_at": self.updated_at,
                 "settings": dict(self.settings)}
 
     @classmethod
@@ -181,6 +220,8 @@ class EchoProfile:
             settings=data.get("settings") if isinstance(data.get("settings"), dict) else {},
             created=str(data.get("created") or ""),
             id=str(data.get("id") or ""),
+            #: 老数据没有这个字段 → 空串，由 ``__post_init__`` 回落到 created
+            updated_at=str(data.get("updated_at") or ""),
         )
 
 
@@ -194,6 +235,36 @@ class EchoProfileStore:
     def __init__(self, path: Path | str | None = None):
         self._path = Path(path) if path is not None else None
         self._items: list[EchoProfile] = []
+        #: ★★★ 2026-11-02 修（**数据丢失级 bug**）
+        #:
+        #: ## 症状
+        #:
+        #: 用户的 5 条角色声骸强化配置**整个文件被清空**成
+        #: ``{"profiles": []}``。
+        #:
+        #: ## 根因
+        #:
+        #: 这个类的 ``__init__`` 原来**不读盘**（只有 ``self._items = []``），
+        #: 而 ``LoadoutStore`` / ``TaskStore`` 的 ``__init__`` 结尾都有
+        #: ``self.load()``。于是：
+        #:
+        #: .. code:: python
+        #:
+        #:     store = EchoProfileStore()   # _items 是空的！
+        #:     store.add(new)               # 往空列表里加 1 条
+        #:     # add() 内部调 save() → 把「只有 1 条」写回文件
+        #:     # → 用户原有 N 条全部消失
+        #:
+        #: 而 ``add()`` 还返回 ``True``，调用方以为成功了。
+        #:
+        #: ## 为什么加在这里而不是让调用方记得 load()
+        #:
+        #: 「记得 load()」是靠人记性，迟早再踩（我自己就踩了）。
+        #: 和另外两个 Store 行为一致才是根治。
+        #:
+        #: ⚠ 显式传 ``path=`` 时也照样 load —— 语义统一。
+        #: 需要"空仓库"的话调 :meth:`clear`，不要靠不 load 来实现。
+        self.load()
 
     # ------------------------------------------------------------------ 路径
     @property
@@ -228,8 +299,39 @@ class EchoProfileStore:
                 self.save()
 
     def save(self) -> None:
+        """全量写回文件（``*.tmp`` 再 ``replace``，不会写坏）。
+
+        ## ★ 2026-11-02 加的护栏：拒绝「把非空文件写成空」
+
+        ``__init__`` 补了 ``self.load()`` 之后，正常路径不会再有
+        「空 ``_items`` 覆盖真实数据」了。但为了**万一**（别处有人
+        ``_items.clear()`` 之后直接 save、或 load 失败后继续走），
+        这里再加一道：
+
+        文件**现在有内容** 而 ``_items`` 为空 → 拒绝写，只记警告。
+
+        真正想清空的话调 :meth:`clear`（它会先置一个标记放行）。
+        """
         path = self.path
         try:
+            #: ★ 护栏：磁盘上有数据、内存里是空 → 大概率是"没 load 就写"，
+            #: 直接拒掉。用户的配置比"这次保存成功"重要得多。
+            if not self._items and not getattr(self, "_allow_empty_save", False):
+                if path.is_file():
+                    try:
+                        existing = json.loads(path.read_text(encoding="utf-8"))
+                        have = existing.get("profiles") if isinstance(
+                            existing, dict) else None
+                        if isinstance(have, list) and have:
+                            logger.error(
+                                "角色声骸强化配置：内存里是空的但文件里有 %d 条"
+                                "（%s）—— **拒绝覆盖**，防止用户数据丢失。"
+                                "确实要清空请调 clear()。",
+                                len(have), path)
+                            return
+                    except (OSError, json.JSONDecodeError):
+                        pass   #: 文件读不出来就按原逻辑走
+
             path.parent.mkdir(parents=True, exist_ok=True)
             payload = {"profiles": [p.to_dict() for p in self._items]}
             tmp = path.with_name(path.name + ".tmp")
@@ -239,10 +341,39 @@ class EchoProfileStore:
         except OSError as exc:
             # 写不下来不该让功能不可用（和 tool_settings 一个态度）
             logger.warning("角色声骸强化配置写不进去（%s）：%s", path, exc)
+        finally:
+            #: 一次性放行标记，用完就撤销
+            self._allow_empty_save = False
+
+    def clear(self) -> None:
+        """清空所有配置（**显式**操作，会真的写到空）。"""
+        self.load()
+        self._items = []
+        self._allow_empty_save = True
+        self.save()
 
     # ------------------------------------------------------------------ 查询
     def all(self) -> list[EchoProfile]:
-        return list(self._items)
+        """全部配置，**最近改动/新增的在最前**。
+
+        ## 用户 2026-10-29
+
+        > 最近新增的应该排到最前面
+
+        原来直接 ``list(self._items)`` —— 那是**文件里的存储顺序**，
+        等于创建顺序。新加的配置掉在列表最底下，用户每次都要滚到底才看见。
+
+        改成按 :attr:`EchoProfile.updated_at` 倒序。用 ``updated_at``
+        而不是 ``created``：刚改过判定条件的配置也该顶上来
+        （用户改完通常马上就要跑它）。
+
+        ⚠ 排序要**稳定**（同一时间的按原顺序），所以用 ``sorted``
+        而不是 ``list.sort`` 反着排 —— ``sorted`` 本身稳定，
+        时间相同的会保持它们在文件里的先后。
+        """
+        return sorted(self._items,
+                      key=lambda x: str(getattr(x, "updated_at", "") or ""),
+                      reverse=True)
 
     def names(self) -> list[str]:
         return [p.name for p in self._items]
@@ -285,6 +416,8 @@ class EchoProfileStore:
         if not profile.name or self.has(profile.name):
             return False
         profile.name = profile.name[:MAX_NAME_LENGTH]
+        #: ★ 2026-10-29：打上"刚改过"的时间戳，列表靠它把新配置排到最前
+        profile.updated_at = _now_ordered()
         self._items.append(profile)
         self.save()
         return True
@@ -292,6 +425,8 @@ class EchoProfileStore:
     def update(self, profile: EchoProfile) -> bool:
         for i, p in enumerate(self._items):
             if p.name == profile.name:
+                #: ★ 同上：改过的配置也顶到最前（用户刚调完通常要马上跑）
+                profile.updated_at = _now_ordered()
                 self._items[i] = profile
                 self.save()
                 return True

@@ -212,8 +212,87 @@ def main(argv: list[str] | None = None) -> int:
 
     setTheme(Theme.AUTO)
 
-    window = MainWindow()
-    window.show()
+    #: ★★★ 2026-10-30 用户：
+    #:
+    #: > 什么情况，现在都进不去了，另外先不做这个动画了，壁纸功能按这个实现
+    #:
+    #: 启动画面**去掉了**（``startup_splash`` 那段不调了）。
+    #:
+    #: ## 为什么去掉
+    #:
+    #: 日志证据（23:04 那次启动）::
+    #:
+    #:     23:04:15  启动画面：就绪 aemis_wallpaper.mp4（6 秒上限）
+    #:     23:04:21  启动画面：到 6 秒上限，强制关闭   ← 卡了 6 秒
+    #:     23:04:24  壁纸：开始播放                     ← 才进主界面
+    #:
+    #: 用户看到的就是"点了没反应，6 秒后才出来" —— 观感上就是"进不去"。
+    #: 壁纸本身是好的（下面 ``wallpaper_layer`` 在 ``showEvent`` 里铺）。
+    #:
+    #: 模块 ``src/gui/startup_splash.py`` **保留着**（没删），
+    #: 以后想启用把它调回来就行。
+
+    # ★★★ 2026-11-01 新增：**整个窗口 = 一个 HTML 页面**（DSH 架构）
+    #
+    # 用户：「完全按 DSH 那样做」。
+    #
+    # ## 两种界面并存，用开关切
+    #
+    # * **旧界面**（默认）—— ``MainWindow``，Qt 控件画的，功能完整
+    # * **新界面**（``MYTOOLS_WEB_SHELL=1``）—— 一个 ``QWebEngineView``
+    #   里跑 ``src/gui/web/index.html``，壁纸/玻璃/UI 全在 HTML 里
+    #
+    # ⚠ **默认仍然是旧界面**。新外壳是 P1 骨架（页面是占位的），
+    #   功能还没迁完，默认切过去会让用户以为功能退化。等功能补齐再翻默认值。
+    #
+    # ⚠ 开关读取见 :func:`src.gui.web_shell.is_enabled`：
+    #   环境变量 ``MYTOOLS_WEB_SHELL``（1/true/yes/on）优先，
+    #   其次 ``config.json`` 的 ``UI.WebShell``，都没有 → False。
+    #
+    # ⚠⚠ 新外壳起不来时**必须**退回旧界面 —— 不能因为一个实验性开关
+    #   让用户开不了程序。
+    use_web_shell = False
+    try:
+        from src.gui.web_shell import create_shell, is_enabled as web_shell_enabled
+
+        use_web_shell = web_shell_enabled()
+    except Exception:  # noqa: BLE001 - QtWebEngine 缺失时这里会炸
+        logging.getLogger(__name__).warning(
+            "Web 外壳不可用（QtWebEngine 缺失？），使用旧界面", exc_info=True)
+
+    window = None
+    if use_web_shell:
+        try:
+            window = create_shell(window_icon=app_icon())
+        except Exception:  # noqa: BLE001
+            logging.getLogger(__name__).exception(
+                "Web 外壳构建异常，退回旧界面")
+            window = None
+        if window is not None:
+            logging.getLogger(__name__).info(
+                "界面：Web 外壳（整个窗口是一个 HTML 页面）")
+            #: ★ 托盘（2026-11-02 加）：旧界面靠 ``MainWindow._setup_tray()``，
+            #: Web 外壳要**自己挂** —— 否则「关窗口」变成直接退出，
+            #: 正在跑的任务会被中断（旧界面是弹确认框的）。
+            #:
+            #: 复用 :mod:`src.gui.tray` 的现成实现（菜单配色/气泡通知都调好了）。
+            #: 拿不到系统托盘时返回 False —— 无害，只是关闭不加确认。
+            try:
+                window.setup_tray()
+            except Exception:  # noqa: BLE001 - 托盘失败不该挡住启动
+                logging.getLogger(__name__).warning(
+                    "Web 外壳托盘初始化失败", exc_info=True)
+            window.show()
+        else:
+            logging.getLogger(__name__).warning(
+                "Web 外壳起不来，退回旧界面")
+
+    if window is None:
+        #: 旧界面（默认路径，也是新外壳的兜底）
+        window = MainWindow()
+        window.show()
+        #: 旧界面的托盘由 ``MainWindow.__init__`` 里的 ``_setup_tray()`` 负责，
+        #: 这里什么都不用做。
 
     # ★ 主线程卡死看门狗（2026-09-27 用户报「应用卡死」后加的）。
     #   GUI 卡住时日志只会停在**某一行**，说明不了卡在哪个线程的哪一行 ——

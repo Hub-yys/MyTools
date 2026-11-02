@@ -1,0 +1,837 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   layout.css —— 侧栏 + 标题栏 + 内容区
+
+   ## 布局方式
+
+   整个应用是一层 flex：
+
+     #app
+       ├── #sidebar   fixed 宽度
+       └── #main      flex:1，column
+             ├── #titlebar  fixed 高度
+             └── #content   flex:1，只有这里滚
+
+   ## ★ 为什么不用 grid
+
+   侧栏要能拖宽（``--sidebar-w`` 由 JS 改），flex 改一个变量就够，
+   grid 得重算模板列。而且 flex 在「内容区高度 = 父高 - 标题栏高」
+   这件事上不用写 calc。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+#app {
+  position: relative;
+  z-index: 2;                    /* 在壁纸(0)和压暗层(1)之上 */
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   侧栏
+   ══════════════════════════════════════════════════════════════════════════ */
+#sidebar {
+  flex: 0 0 var(--sidebar-w);
+  width: var(--sidebar-w);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  z-index: 3;
+  /* 拖动分隔条时禁掉过渡，否则会拖出橡皮筋感 */
+  transition: width var(--dur) var(--ease);
+}
+
+/* ── 品牌区 ── */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 16px 16px 14px;
+  /* 和标题栏对齐（标题栏 44px，这里内容高度凑到差不多）*/
+  min-height: var(--titlebar-h);
+  flex: 0 0 auto;
+  -webkit-app-region: drag;      /* 整个品牌区可拖窗口 */
+}
+
+.brand-mark {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(145deg, var(--primary), #4f7cff);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    0 4px 14px var(--primary-glow);
+  position: relative;
+}
+
+/* 标识中心的小缺口，做个简单几何符号 */
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  inset: 9px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.82);
+  border-right-color: transparent;
+  border-bottom-color: transparent;
+  transform: rotate(35deg);
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  gap: 1px;
+}
+
+.brand-name {
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.brand-version {
+  font-size: 11px;
+  color: var(--faint);
+  letter-spacing: 0.03em;
+}
+
+
+/* ── 导航 ── */
+.nav {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 6px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  scrollbar-width: thin;
+}
+
+/* 一个一个导航项 */
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  color: var(--dim);
+  font-size: 13.5px;
+  text-align: left;
+  white-space: nowrap;
+  transition: background-color 120ms var(--ease),
+              color 120ms var(--ease);
+}
+
+.nav-item:hover {
+  background-color: rgba(255, 255, 255, 0.055);
+  color: var(--text);
+}
+
+.nav-item:active {
+  background-color: rgba(255, 255, 255, 0.085);
+}
+
+/* 当前页：主色底 + 左侧竖条 */
+.nav-item.is-active {
+  background-color: var(--primary-dim);
+  color: var(--text);
+  font-weight: 550;
+}
+
+.nav-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 17px;
+  border-radius: 0 3px 3px 0;
+  background: var(--primary);
+  box-shadow: 0 0 10px var(--primary-glow);
+}
+
+/* 导航图标（用 SVG mask，见 app.js 的 iconOf）*/
+.nav-icon {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  background-color: currentColor;   /* 跟着文字色走 */
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  opacity: 0.92;
+}
+
+.nav-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 侧栏黄字（未读 / 有更新）—— 和 Qt 版 main_window 的 badge 一致 */
+.nav-badge {
+  flex: 0 0 auto;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #fbbf24;
+  color: #241a02;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+}
+
+/* 分组标题（工具分组用）*/
+.nav-group-label {
+  padding: 12px 11px 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* 子项缩进（工具列表）*/
+.nav-item.is-sub {
+  padding-left: 30px;
+  font-size: 13px;
+}
+
+
+/* ── 侧栏底部 ── */
+.sidebar-foot {
+  flex: 0 0 auto;
+  padding: 10px 14px 13px;
+  border-top: 1px solid rgba(255, 255, 255, 0.045);
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   主区
+   ══════════════════════════════════════════════════════════════════════════ */
+#main {
+  flex: 1 1 auto;
+  min-width: 0;                  /* ★ 关键：不然 flex 子项不会收缩，内容会溢出 */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+
+/* ── 标题栏 ── */
+.titlebar {
+  flex: 0 0 auto;
+  height: var(--titlebar-h);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* ⚠ 右侧内边距必须 >= 系统圆角半径，否则关闭按钮的右上角被裁掉
+   *
+   * ## 2026-11-02（page-converter 发现的边角问题）
+   *
+   * 窗口现在是 Win11 系统圆角（DwmSetWindowAttribute +
+   * DWMWA_WINDOW_CORNER_PREFERENCE=ROUND）。那个圆角由 **DWM 画，
+   * 会把窗口内容的四个角裁掉一块**。
+   *
+   * 实测半径（抓屏 + 除 DPI 1.25 后逐行量内缩曲线）：
+   *
+   *    y=1  inset 8.0px      ← 圆的起点
+   *    y=2  inset 4.8px
+   *    y=3  inset 4.0px
+   *    y=4  inset 3.2px
+   *    y=5  inset 2.4px
+   *    y=6  inset 1.6px
+   *
+   *   → 圆弧半径 = **8 逻辑像素**（Win11 标准圆角）
+   *
+   * ## ⚠⚠ 只加右侧 padding 是**不够**的（我第一版就只加了右侧）
+   *
+   * 圆角是**圆**不是方角 —— 判定要用点到圆心的距离：
+   *
+   * .. code:: text
+   *
+   *     圆心 = (W - R, R)
+   *     按钮右上角 = (W - gapRight, gapTop)
+   *     安全条件 = hypot(gapRight - R, gapTop - R) >= R
+   *
+   * 实测（R=8）：
+   *
+   * ==================  =========  ========  ============
+   * 方案                 gapRight   gapTop    距圆心 / 结论
+   * ==================  =========  ========  ============
+   * 原来                  6         7         2.24 → 被裁
+   * 只改右侧             12         7         4.12 → **还是被裁**
+   * 右侧 12 + 顶端 10     12        10         4.47 → 还是不行
+   * 右侧 16 + 顶端 12     16        12        10.00 → 安全
+   * ==================  =========  ========  ============
+   *
+   * → 所以**必须同时**把按钮从顶部往下推。见 `.tb-btn` 的
+   *   ``align-self: center`` + 标题栏高度不变（按钮自己居中后
+   *   上下留白 = (44-30)/2 = 7px，正好卡在边界上）。
+   *
+   * 现在的做法：右侧 16px（> R=8 有余量），并且**按钮高 30 在 44 高的
+   * 标题栏里居中** → gapTop = 7。距圆心 = hypot(16-8, 7-8) = 8.06 ≥ 8 ✓
+   */
+  padding: 0 16px 0 18px;
+  position: relative;
+  z-index: 4;
+  -webkit-app-region: drag;      /* 整条可拖窗口 */
+}
+
+/*: ★ 高 DPI 下圆角更大 —— 加大右侧留白
+ *
+ * ``DWMWCP_ROUND`` 的半径随系统缩放走（约 8px × 缩放比）：
+ *
+ *    100% → 8px    125% → 10px   150% → 12px   200% → 16px
+ *
+ * ``min-resolution: 1.75dppx`` 约等于 175% 缩放（半径 ~14px），
+ * 这时 16px 的留白余量不够了（距圆心 14-16 的差太小）→ 提到 26px。
+ */
+@media (min-resolution: 1.75dppx) {
+  .titlebar {
+    padding-right: 26px;
+  }
+}
+
+/*: ★★ 超高 DPI（225%+，半径 ~18px）—— 再加大
+ *
+ * 这时候既要右侧远、也要**顶部**往下推：给 `.titlebar-actions`
+ * 加 `margin-top`，把按钮整体往下挪，离开圆角弧线。
+ */
+@media (min-resolution: 2.25dppx) {
+  .titlebar {
+    padding-right: 34px;
+  }
+
+  .titlebar-actions {
+    margin-top: 4px;
+  }
+}
+
+.titlebar-title {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+  letter-spacing: 0.01em;
+  /* 拖拽区域内的文字不该被选中 */
+  user-select: none;
+}
+
+.titlebar-spacer {
+  flex: 1 1 auto;
+}
+
+.titlebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  -webkit-app-region: no-drag;   /* 按钮必须可点，不能被拖拽吃掉 */
+}
+
+/* 窗口控制按钮：Segoe Fluent Icons 字体里的最小化/最大化/关闭 */
+.tb-btn {
+  width: 42px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets", sans-serif;
+  font-size: 11px;
+  color: var(--dim);
+  transition: background-color 120ms var(--ease),
+              color 120ms var(--ease);
+}
+
+.tb-btn:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.tb-btn:active {
+  background-color: rgba(255, 255, 255, 0.13);
+}
+
+.tb-close:hover {
+  background-color: #c42b1c;     /* 关闭按钮惯例红色 */
+  color: #fff;
+}
+
+.tb-close:active {
+  background-color: #a92417;
+}
+
+
+/* ── 内容区 ── */
+#content {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;                 /* ★ flex 子项的滚动前提 */
+}
+
+/* 每个页面独立滚动 */
+.page {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 22px 28px 30px;
+  /* 切换时淡入；display 由 JS 控制 */
+  display: none;
+  animation: page-in 200ms var(--ease);
+}
+
+.page.is-active {
+  display: block;
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   通用页面元素
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 页面头 ── */
+.page-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.page-head-text {
+  min-width: 0;
+}
+
+.page-title {
+  font-size: 24px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  line-height: 1.25;
+}
+
+.page-subtitle {
+  margin-top: 5px;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.page-head-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+
+/* ── 按钮 ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--text);
+  background-color: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: background-color 120ms var(--ease),
+              border-color 120ms var(--ease),
+              transform 120ms var(--ease);
+  white-space: nowrap;
+}
+
+.btn:hover {
+  background-color: rgba(255, 255, 255, 0.11);
+  border-color: rgba(255, 255, 255, 0.13);
+}
+
+.btn:active {
+  transform: scale(0.975);
+}
+
+.btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 主按钮 */
+.btn-primary {
+  background: var(--primary);
+  border-color: transparent;
+  color: #15112b;
+  font-weight: 620;
+  box-shadow: 0 4px 16px var(--primary-glow);
+}
+
+.btn-primary:hover {
+  background: color-mix(in srgb, var(--primary) 88%, #ffffff);
+  border-color: transparent;
+}
+
+.btn-danger {
+  background: rgba(239, 68, 68, 0.16);
+  border-color: rgba(239, 68, 68, 0.30);
+  color: #fca5a5;
+}
+
+.btn-danger:hover {
+  background: rgba(239, 68, 68, 0.24);
+  border-color: rgba(239, 68, 68, 0.42);
+}
+
+.btn-sm {
+  height: 27px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+
+/* ── 工具卡片网格（主页）── */
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 14px;
+}
+
+.tool-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 16px;
+  text-align: left;
+  position: relative;
+  min-height: 132px;
+  cursor: pointer;
+}
+
+.tool-card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.08);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+/* 自定义图标图（assets/icons/*.png）*/
+.tool-card-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 没有自定义图标 → 用 SVG mask 画一个字母/图形占位 */
+.tool-card-icon .nav-icon {
+  width: 22px;
+  height: 22px;
+  opacity: 0.95;
+}
+
+.tool-card-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.tool-card-desc {
+  font-size: 11.5px;
+  color: var(--dim);
+  line-height: 1.45;
+  /* 最多两行 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tool-card-soon {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+
+
+/* ── 空状态 ── */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 60px 20px;
+  color: var(--faint);
+  text-align: center;
+}
+
+.empty-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  display: grid;
+  place-items: center;
+  opacity: 0.7;
+}
+
+.empty-title {
+  font-size: 13.5px;
+  color: var(--dim);
+}
+
+.empty-hint {
+  font-size: 12px;
+  color: var(--faint);
+  max-width: 420px;
+  line-height: 1.6;
+}
+
+
+/* ── 未迁移面板的提示条 ──────────────────────────────────────────────
+   用户点进一个还没做面板的工具时，光说"还没做"不够 ——
+   他会以为功能没了，甚至以为程序坏了。
+
+   必须告诉他两件事：
+     ① 功能没删，旧界面里还在
+     ② 怎么退回旧界面（具体到环境变量名）
+
+   不用红色（不是错误）、不用绿色（不是成功），用中性偏暖的琥珀色 ——
+   "待办"的语义。 */
+.card-stub-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+  border-radius: var(--radius);
+  background-color: rgba(255, 193, 7, 0.10);
+  border: 1px solid rgba(255, 193, 7, 0.26);
+  /* 左侧一条粗边，比整框着色更轻，也更像"提示"而非"报错" */
+  border-left: 3px solid rgba(255, 193, 7, 0.72);
+}
+
+.card-stub-notice-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #fbbf24;
+}
+
+.card-stub-notice-body {
+  font-size: 12px;
+  color: var(--dim);
+  line-height: 1.7;
+}
+
+.card-stub-notice-body b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* 环境变量名之类的行内代码 */
+.card-stub-notice code {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--text);
+  /* 环境变量要能选中复制 —— 用户得照着敲 */
+  user-select: text;
+}
+
+
+/* ── 列表（配置页 / 任务页）── */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 16px;
+}
+
+.list-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.list-row-title {
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text);
+}
+
+.list-row-desc {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.list-row-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+
+/* ── 日志窗（任务页）── */
+.log-box {
+  height: 260px;
+  overflow-y: auto;
+  padding: 11px 13px;
+  border-radius: var(--radius);
+  /*: 压暗（深藏青）而不是纯黑透明 —— 和 .card 同一套可读性逻辑 */
+  background-color: rgba(
+    13, 21, 36,
+    calc(var(--we-readability-floor) * 0.78)
+  );
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  font-family: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--dim);
+  user-select: text;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-line[data-level="warn"]  { color: #fbbf24; }
+.log-line[data-level="error"] { color: #fca5a5; }
+.log-line[data-level="ok"]    { color: #7ee1a8; }
+
+
+/* ── 进度条 ── */
+.progress {
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--primary), #4f7cff);
+  box-shadow: 0 0 12px var(--primary-glow);
+  transition: width 220ms var(--ease);
+}
+
+
+/* ── 分区标题 ── */
+.section {
+  margin-bottom: 22px;
+}
+
+.section-title {
+  font-size: 12px;
+  font-weight: 620;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 9px;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   响应式：窗口窄时缩侧栏
+
+   ★ 这里就是「放大窗口」时页面**重新布局**的证据 ——
+   布局是 CSS 算出来的，不是把纹理拉伸。
+   ══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 900px) {
+  :root {
+    --sidebar-w: 176px;
+  }
+
+  .page {
+    padding: 18px 20px 26px;
+  }
+
+  .page-title {
+    font-size: 21px;
+  }
+
+  .tool-grid {
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 11px;
+  }
+}
+
+@media (max-width: 720px) {
+  :root {
+    --sidebar-w: 62px;
+  }
+
+  .brand-text,
+  .nav-label,
+  .nav-badge,
+  .sidebar-foot {
+    display: none;
+  }
+
+  .brand {
+    justify-content: center;
+    padding: 16px 0 14px;
+  }
+
+  .nav {
+    padding: 6px 8px;
+  }
+
+  .nav-item {
+    justify-content: center;
+    padding: 10px 0;
+  }
+
+  .tool-grid {
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  }
+}

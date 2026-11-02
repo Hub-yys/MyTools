@@ -1,0 +1,398 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   glass.css —— ★ 液态玻璃（DSH 配方）
+
+   ## 配方来源
+
+   全部逆向自 ``dsh-plugin-wallpaper-engine/lib/client.js``
+   （厂商预设 ``lib/glass-presets/factory-*.json`` + 样式模板 2130~2450 行）。
+
+   ## DSH 的玻璃不是「一张模糊图」
+
+   它由 **4 层**叠出来，缺一层就「不像玻璃」：
+
+     ① background-image   顶部白高光渐变（"湿玻璃"的反射）
+     ② background-color   主题底色 @ 可读性下限（保证文字对比度）
+     ③ backdrop-filter    ★ GPU 实时模糊面板背后的壁纸
+     ④ box-shadow         内高光 + 内阴影 + 0.5px 描边 + 外投影（"厚度"）
+
+   ## ★ 可读性下限（readability floor）—— DSH 最精妙的一处
+
+   纯透明的玻璃面板压在亮壁纸上，文字就看不清了。DSH 的解法不是
+   「提高面板不透明度」（那样玻璃就没了），而是：
+
+   .. code:: css
+
+     background-color: color-mix(in srgb,
+       var(--we-readability-base) calc(var(--we-readability-floor) * 100%),
+       rgba(var(--tint-rgb), var(--we-glass-alpha)) calc((1 - floor) * 100%));
+
+   ``color-mix`` 在**预乘空间**按权重插值，权重会乘上操作数自身的 alpha，
+   所以这条声明恰好等于「主题底色 @floor 压在玻璃色之上」：
+
+   .. code:: text
+
+     effective alpha = floor + a_glass × (1 − floor) ≥ floor
+
+   玻璃透明度滑杆只改 ``a_glass``（另一项权重），**floor 那项固定不动** ——
+   下限因此不可能被滑杆削弱。
+
+   这个项目的简化版：直接算好 ``--we-glass-fill`` 的 rgba ——
+   因为我们的皮肤系统只给一个不透明度，不需要可调的滑杆。
+   公式见下方 ``.glass``。
+
+   ## 为什么这里能只用 backdrop-filter
+
+   整个窗口就是一个 Chromium 页面，玻璃背后**就是**同一页面里的壁纸
+   ``<video>``。浏览器可以直接做 GPU 模糊。
+   （以前 Qt 里需要 CPU 卷积整张图 —— 相差 235 倍，见
+    ``src/gui/wallpaper_web.py`` 的模块文档。）
+   ══════════════════════════════════════════════════════════════════════════ */
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ① 玻璃基类
+
+   任何元素加 ``class="glass"`` 就是一块玻璃面板。
+   ══════════════════════════════════════════════════════════════════════════ */
+.glass {
+  /* ── ② 底色：主题底色 @ 可读性下限 + 玻璃色 @ (1-floor) ──
+     等价于 DSH 那条 color-mix。这里用 rgba 直接算好：
+       floor = 0.59，alpha = 0.40
+       effective = 0.59 + 0.40 × 0.41 = 0.754
+     也就是说玻璃面板最终大约 75% 不透明 —— 既透得出来，
+     又保证壁纸再亮也不吃字。 */
+  background-color: rgba(
+    13, 21, 36,
+    calc(var(--we-readability-floor) + var(--we-glass-alpha) * (1 - var(--we-readability-floor)))
+  );
+
+  /* ── ① 顶部白高光：让平面变成「湿玻璃」，这是灵魂 ──
+     上亮下暗的三档渐变（0.10 → 0.02），DO NOT 改成纯色。 */
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.10) 0%,
+    rgba(255, 255, 255, 0.045) 42%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+
+  /* ── ③ ★ 真正的魔法：GPU 模糊面板背后那块壁纸 ──
+     blur 负责「霜」，saturate 让壁纸的颜色渗上来不发灰，
+     brightness/contrast 微微提亮，避免玻璃显得脏。 */
+  backdrop-filter: blur(var(--we-blur))
+                   saturate(var(--we-saturate))
+                   brightness(var(--we-glass-brightness))
+                   contrast(1.01);
+  /* Chromium 需要 -webkit- 前缀（QtWebEngine 是上游 Chromium，
+     前缀支持比 Chrome 品牌版更保守）*/
+  -webkit-backdrop-filter: blur(var(--we-blur))
+                           saturate(var(--we-saturate))
+                           brightness(var(--we-glass-brightness))
+                           contrast(1.01);
+
+  /* ── ④ 玻璃厚度 ──
+     内顶高光 + 内底暗边 + 0.5px 发丝描边 + 外投影。
+     四层缺一层就"像塑料"。 */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, var(--we-glass-highlight)),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.08),
+    0 12px 40px rgba(0, 0, 0, var(--we-glass-shadow));
+
+  /* 圆角 + 裁剪（backdrop-filter 会被子元素溢出破坏）*/
+  border-radius: var(--radius);
+  /* ⚠ 不能写 overflow:hidden —— 会把 box-shadow 的内高光也裁掉 */
+}
+
+/* 玻璃的 hover / active 变体（卡片用）*/
+.glass-hover {
+  transition: background-color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease),
+              transform var(--dur) var(--ease);
+}
+
+.glass-hover:hover {
+  /* 只提亮高光层，不动底色 —— 底色一动就会「闪」*/
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.15) 0%,
+    rgba(255, 255, 255, 0.07) 42%,
+    rgba(255, 255, 255, 0.03) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.42),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.12),
+    0 16px 48px rgba(0, 0, 0, 0.18);
+  transform: translateY(-2px);
+}
+
+.glass-hover:active {
+  transform: translateY(0);
+  transition-duration: 60ms;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ② 侧栏专用玻璃
+
+   DSH 实测侧栏色 ``#0a0913``（几乎纯黑，比内容区更深）——
+   侧栏是「骨架」不是「内容」，压得更实，内容区、玻璃才显得透。
+   ══════════════════════════════════════════════════════════════════════════ */
+.glass-sidebar {
+  /* 侧栏不用 backdrop-filter（它背后是壁纸边缘，模糊了也看不出来），
+     用接近实色 + 极低透明度 —— 性能更好，观感更"沉"。 */
+  background-color: var(--sidebar-bg);
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.045) 0%,
+    rgba(255, 255, 255, 0.012) 22%,
+    rgba(255, 255, 255, 0.00) 60%
+  );
+  border-right: 1px solid var(--sidebar-border);
+  box-shadow:
+    inset -1px 0 0 rgba(255, 255, 255, 0.04),
+    2px 0 24px rgba(0, 0, 0, 0.24);
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ③ 标题栏玻璃
+
+   比侧栏更透一点（它横跨整个窗口宽度，太实会像一条横幅）。
+   ══════════════════════════════════════════════════════════════════════════ */
+.glass-titlebar {
+  background-color: rgba(
+    13, 21, 36,
+    calc(var(--we-readability-floor) * 0.72)
+  );
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.07) 0%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  backdrop-filter: blur(calc(var(--we-blur) * 0.75))
+                   saturate(var(--we-saturate))
+                   brightness(var(--we-glass-brightness));
+  -webkit-backdrop-filter: blur(calc(var(--we-blur) * 0.75))
+                           saturate(var(--we-saturate))
+                           brightness(var(--we-glass-brightness));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ④ 卡片玻璃（工具卡片 / 配置卡 / 任务卡）
+
+   ⚠ 卡片数量多（7 张工具卡 + 一堆配置卡），每张都开 backdrop-filter
+   会很费 GPU。DSH 的做法也一样：**只有真正需要「透出壁纸」的卡片**
+   才开模糊，纯信息卡用低透明度底色即可。
+
+   所以：
+   * ``.card-glass``  = 真玻璃（开 backdrop-filter）→ 工具卡片、主面板
+   * ``.card``        = 薄底（不开模糊）→ 列表项、设置行
+   ══════════════════════════════════════════════════════════════════════════ */
+.card-glass {
+  background-color: rgba(
+    13, 21, 36,
+    calc(var(--we-readability-floor) * 0.80)
+  );
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.09) 0%,
+    rgba(255, 255, 255, 0.03) 100%
+  );
+  backdrop-filter: blur(var(--we-blur))
+                   saturate(var(--we-saturate));
+  -webkit-backdrop-filter: blur(var(--we-blur))
+                           saturate(var(--we-saturate));
+  border-radius: var(--radius-lg);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.07),
+    0 8px 28px rgba(0, 0, 0, 0.14);
+  transition: background-image var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease),
+              transform var(--dur) var(--ease);
+}
+
+.card-glass:hover {
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.14) 0%,
+    rgba(255, 255, 255, 0.05) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.34),
+    inset 0 0 0 0.5px rgba(255, 255, 255, 0.11),
+    0 14px 36px rgba(0, 0, 0, 0.20);
+  transform: translateY(-3px);
+}
+
+/* 薄底卡（不模糊）
+   ⚠ 底色必须是**压暗**（深藏青 @ 低 alpha），不能用白色半透明 ——
+   白色叠在亮壁纸上会把对比度拉低（"白字压浅底"），这正是 DSH 那个
+   readability floor 要解决的问题。列表行用的就是这个类。 */
+.card {
+  background-color: rgba(
+    13, 21, 36,
+    calc(var(--we-readability-floor) * 0.55)
+  );
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius);
+  transition: background-color var(--dur) var(--ease),
+              border-color var(--dur) var(--ease);
+}
+
+.card:hover {
+  background-color: rgba(
+    13, 21, 36,
+    calc(var(--we-readability-floor) * 0.68)
+  );
+  border-color: rgba(255, 255, 255, 0.10);
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ⑤ 壁纸层 + 压暗层
+
+   壁纸层是 ``position: fixed; inset: 0`` —— 它跟着 **viewport** 走，
+   窗口一放大就重新铺满，这是「无平铺」的根本保证。
+   ══════════════════════════════════════════════════════════════════════════ */
+#wallpaper-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  /* 壁纸本身给个深色底 —— 视频没加载出来时不至于白屏 */
+  background: #090713;
+}
+
+#wallpaper-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  /* ★ object-fit: cover —— 让视频按比例铺满并裁掉多余部分。
+     只写 width/height:100% 会把视频**拉伸变形**。 */
+  object-fit: cover;
+  object-position: center;
+  /* 视频是背景，不要拦鼠标（页面其它元素要能点）*/
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 700ms var(--ease);
+}
+
+#wallpaper-video.is-playing {
+  opacity: 1;
+}
+
+/* 没壁纸时的兜底：用皮肤主色做一个柔和径向光斑 */
+#wallpaper-fallback {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1200px 700px at 22% 12%, rgba(139, 124, 255, 0.20), transparent 62%),
+    radial-gradient(900px 620px at 82% 88%, rgba(80, 160, 255, 0.14), transparent 60%),
+    linear-gradient(160deg, #0C0A18 0%, #141026 52%, #090713 100%);
+}
+
+/* ── 压暗层 ──
+   DSH 的 ``wallpaperBlur`` / 亮度滑杆本质上就是这一层。
+   压在壁纸之上、UI 之下：只暗化壁纸，不影响 UI 自身的颜色。 */
+#scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: #050409;
+  opacity: var(--we-scrim);
+  transition: opacity var(--dur) var(--ease);
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ⑥ 状态药丸 / 徽章（玻璃小件）
+   ══════════════════════════════════════════════════════════════════════════ */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 12px;
+  color: var(--dim);
+  transition: color var(--dur) var(--ease),
+              border-color var(--dur) var(--ease);
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+  transition: background var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease);
+}
+
+/* 运行中：绿点 + 呼吸光晕 */
+.status-pill[data-state="running"] {
+  color: #7ee1a8;
+  border-color: rgba(126, 225, 168, 0.30);
+}
+
+.status-pill[data-state="running"] .status-dot {
+  background: #4ade80;
+  box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.55);
+  animation: status-pulse 1.8s var(--ease) infinite;
+}
+
+@keyframes status-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.50); }
+  70%  { box-shadow: 0 0 0 7px rgba(74, 222, 128, 0.00); }
+  100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.00); }
+}
+
+.status-pill[data-state="error"] {
+  color: #fca5a5;
+  border-color: rgba(252, 165, 165, 0.30);
+}
+
+.status-pill[data-state="error"] .status-dot {
+  background: #ef4444;
+}
+
+/* 即将到来角标 */
+.badge-soon {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(255, 193, 7, 0.16);
+  border: 1px solid rgba(255, 193, 7, 0.30);
+  color: #fbbf24;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ⑦ 玻璃降级
+
+   ``backdrop-filter`` 不可用时（老驱动 / 软件渲染），把面板加深到能看清字 ——
+   宁可不好看，也不能看不清。用 ``@supports`` 探测，不靠 UA 嗅探。
+   ══════════════════════════════════════════════════════════════════════════ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass,
+  .card-glass,
+  .glass-titlebar {
+    background-color: rgba(13, 21, 36, 0.94);
+    background-image: none;
+  }
+
+  #scrim {
+    opacity: calc(var(--we-scrim) + 0.18);
+  }
+}

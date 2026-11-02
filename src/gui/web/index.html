@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!--
+  ★ 鸣潮工具箱 —— Web UI 骨架
+
+  ## 和 DSH 一样的架构
+  整个窗口就是这一个 HTML 页面。壁纸、玻璃、UI 全在 Chromium 里画，
+  Qt 不再渲染任何界面元素 —— 所以不存在「两套渲染器打架」的平铺问题。
+
+  ## 层次自下而上
+    #wallpaper-layer   壁纸 <video>（fixed inset:0）
+    #scrim             压暗层（保证文字对比度）
+    #app               侧栏 + 标题栏 + 内容区
+-->
+<title>鸣潮工具箱</title>
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/glass.css">
+<link rel="stylesheet" href="css/layout.css">
+</head>
+<body>
+
+<!-- ══════════════ 壁纸层（最底） ══════════════ -->
+<div id="wallpaper-layer" aria-hidden="true">
+  <video id="wallpaper-video" muted loop playsinline preload="auto"></video>
+  <div id="wallpaper-fallback"></div>
+</div>
+<!-- 压暗层：壁纸很亮时压暗，保证玻璃面板上的字看得清 -->
+<div id="scrim" aria-hidden="true"></div>
+
+<!-- ══════════════ 应用外壳 ══════════════ -->
+<div id="app">
+
+  <!-- ── 侧栏 ── -->
+  <aside id="sidebar" class="glass-sidebar">
+    <div class="brand" id="brand">
+      <div class="brand-mark" aria-hidden="true"></div>
+      <div class="brand-text">
+        <span class="brand-name">鸣潮工具箱</span>
+        <span class="brand-version" id="brand-version">v—</span>
+      </div>
+    </div>
+
+    <nav id="nav" class="nav" role="navigation" aria-label="主导航">
+      <!-- js/app.js 填充 -->
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="status-pill" id="status-pill" data-state="idle">
+        <span class="status-dot" aria-hidden="true"></span>
+        <span class="status-text" id="status-text">就绪</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── 主区 ── -->
+  <div id="main">
+
+    <!-- 标题栏（可拖动窗口） -->
+    <header id="titlebar" class="titlebar">
+      <div class="titlebar-title" id="titlebar-title">主页</div>
+      <div class="titlebar-spacer"></div>
+      <div class="titlebar-actions">
+        <button class="tb-btn" id="btn-min" title="最小化" aria-label="最小化">&#xE921;</button>
+        <button class="tb-btn" id="btn-max" title="最大化" aria-label="最大化">&#xE922;</button>
+        <button class="tb-btn tb-close" id="btn-close" title="关闭" aria-label="关闭">&#xE8BB;</button>
+      </div>
+    </header>
+
+    <!-- 内容区：每个页面一个 .page，切页只切 active 类 -->
+    <main id="content" role="main">
+      <section class="page" id="page-home"    data-page="home"></section>
+      <section class="page" id="page-tasks"   data-page="tasks"></section>
+      <section class="page" id="page-config"  data-page="config"></section>
+      <section class="page" id="page-skin"    data-page="skin"></section>
+      <section class="page" id="page-update"  data-page="update"></section>
+      <section class="page" id="page-notice"  data-page="notice"></section>
+      <section class="page" id="page-library" data-page="library"></section>
+      <!-- 工具详情页由 js 动态创建（data-page="tool:<key>"） -->
+    </main>
+  </div>
+</div>
+
+<!-- ══════════════ 脚本 ══════════════ -->
+<!-- QWebChannel 的 JS 端由 Qt 从 qrc: 提供（file/http 页面都能加载） -->
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+
+<!--
+  ★ 加载顺序是硬要求：app.js **必须在页面模块之前**。
+
+  app.js 定义 window.App 和 App.registerPage()；pages/*.js 要调用它。
+  第一次写成 pages 在前 —— 页面模块一句 `if (!window.App) return;`
+  直接静默退出，表现是「主页一片空白，但侧栏正常、工具有 7 个」
+  （因为侧栏是 app.js 自己画的）。找不到报错，只能靠数 DOM 发现。
+
+  app.js 自己的启动挂在 DOMContentLoaded 上，所以它并不要求一定是
+  最后一个脚本 —— 只要在 pages 之前就行。
+
+  ★ _shared.js 在 app.js 之后、页面模块之前：
+    它是 P2 的公共层（转义 / 建元素 / 面板 / 按钮 ...），
+    页面模块依赖它，所以必须排在 home.js 等之前。
+
+  ★ P4 工具面板（2026-11-02）：
+    _panels.js       工具面板公共层（状态机 / 日志区 / 运行守卫）
+    tool-*.js        每个工具一个文件，用 App.registerPage('tool:<key>') 注册
+
+    ⚠ **不要**为此加 App.registerToolPanel() —— 工具面板就是
+    ``tool:<key>`` 这个页面，registerPage 完全够用。多一个入口只会
+    让"面板到底注册在哪"变得不一致（这个多余 API 加过又撤了）。
+
+    ⚠ 顺序：_panels.js 必须在 tool-*.js 之前（后者依赖它的 P.panel 等）。
+-->
+<script src="js/bridge.js"></script>
+<script src="js/app.js"></script>
+
+<script src="js/pages/_shared.js"></script>
+<script src="js/pages/_panels.js"></script>
+<script src="js/pages/tool-panels.js"></script>
+<script src="js/pages/home.js"></script>
+<script src="js/pages/tasks.js"></script>
+<script src="js/pages/config.js"></script>
+<script src="js/pages/library.js"></script>
+<script src="js/pages/skin.js"></script>
+<script src="js/pages/simple.js"></script>
+</body>
+</html>
