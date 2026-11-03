@@ -115,6 +115,79 @@
   //
   //  ## ⚠ 说明文字是**纯文本**
   //
+  // ════════════════════════════════════════════════════════════════════════
+  /**
+   * ★ 把 ``<select>`` 的宽度设成「最长选项文字宽 + 一点余量」（2026-11-03）。
+   *
+   * ## 为什么要手动量
+   *
+   * 用户：「还是长了…准则是比字的最大长度大一点就行」。
+   *
+   * 试过 ``width: fit-content`` —— **不可行**：Chromium 里 ``select`` 的
+   * ``fit-content`` 不按最宽 ``option`` 算，而是塌成内容区最小宽度，
+   * 实测量出来 **79px**，「导电伤害加成」显示不全、箭头压字。
+   *
+   * 所以用 canvas ``measureText`` 自己算：**最宽那条选项的文字宽**
+   * + 左右内边距（26px × 2，右侧是给箭头的）+ 8px 余量。
+   *
+   * ## 边界
+   *
+   * ``min = 168px``（再窄放不下箭头），``max = 300px``（旧界面上限）。
+   *
+   * @param {HTMLElement} selectEl - ``<select>`` 元素
+   * @param {Array<string|object>} options - 选项（字符串或 ``{value,label}``）
+   */
+  function sizeSelectToLongestOption(selectEl, options) {
+    if (!selectEl || typeof document === 'undefined') return;
+    try {
+      const list = Array.isArray(options) ? options : [];
+      const labels = list.map(function (o) {
+        return typeof o === 'string' ? o : String((o && o.label) || '');
+      }).filter(Boolean);
+      //: 元素自己已有的 <option> 也算上（``setOptions`` 之后可能变多）
+      for (const optEl of selectEl.options) {
+        const t = String(optEl.textContent || '').trim();
+        if (t && labels.indexOf(t) < 0) labels.push(t);
+      }
+      //: 没有选项 → 用 CSS 的 min/max 兜底（不写内联宽度即可）。
+      //: 这不是"操作失败"，是"本来就没有可量的内容"，所以不是静默失败。
+      if (!labels.length) {
+        selectEl.style.removeProperty('width');
+        return;
+      }
+
+      const cs = window.getComputedStyle(selectEl);
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      //: 字体必须取**元素当前算出来的**，否则量出来偏小/偏大
+      ctx.font = (cs.fontWeight || '400') + ' ' +
+        (cs.fontSize || '12.5px') + ' ' +
+        (cs.fontFamily || 'sans-serif');
+      let widest = 0;
+      for (const label of labels) {
+        const w = ctx.measureText(label).width;
+        if (w > widest) widest = w;
+      }
+      //: 左右各 26px 内边距（右侧是箭头位）+ 10px 呼吸余量。
+      //:
+      //: ★ 2026-11-03 用户两轮都说「有点长」—— 余量从 8px 收到 **6px**，
+      //: 并把下限从 168 降到 **96px**（原来那个下限会把「智能切换」
+      //: 这种四字选项硬撑到 168，白白多出 60px 空白）。
+      //:
+      //: 96px 只是**防塌缩**的下限（再窄下拉箭头就压到字上了），
+      //: 正常选项都会大于它。
+      const total = Math.ceil(widest + 26 + 26 + 6);
+      const clamped = Math.max(96, Math.min(300, total));
+      selectEl.style.width = clamped + 'px';
+      //: ★ 让 flex 别把这个宽度又拉回去（``.cfg-select`` 有 ``flex: 0 0 160px``）
+      selectEl.style.flex = '0 0 auto';
+    } catch (err) {
+      //: 量不出来就退回 CSS 的 min/max 兜底 —— 不该因此白屏
+      console.debug('[tool-panels] sizeSelectToLongestOption 失败', err);
+    }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
   //  旧界面的 hint 里有 ``**智能切换**`` 这种 markdown 符号 ——
   //  旧界面**不渲染 markdown**，原样显示。所以这里必须用 ``textContent``。
   //
@@ -334,6 +407,15 @@
       DEFAULT_COMBAT_STYLE
     );
     COMBAT_STATE.style.el.classList.add('cfg-select');
+    //: ★ 2026-11-03 用户：「这个下拉框也有点长了」
+    //:
+    //: 原来 ``.cfg-select`` 写死 160px（旧界面 ``setMinimumWidth(160)``），
+    //: 但「智能切换」四个字量出来只要 ~110px —— 160 就显得空。
+    //: 改成和「目标属性」下拉一样的**按最长选项量宽度**。
+    sizeSelectToLongestOption(COMBAT_STATE.style.el,
+      COMBAT_STYLES_FALLBACK.map(function (s) {
+        return { value: s.value, label: s.label };
+      }));
     row.appendChild(COMBAT_STATE.style.el);
     //: ★★★ 2026-11-03 用户圈图「去掉」——删掉了下拉框右边那行说明：
     //:
@@ -1071,6 +1153,9 @@
     }));
     CHANGE_STATE.target = Panels.select(TARGET_STATS, DEFAULT_TARGET);
     CHANGE_STATE.target.el.classList.add('cfg-select-wide');
+    //: ★ 2026-11-03 宽度按**最长选项文字**算（``fit-content`` 在 select 上
+    //: 会塌成 79px，见 CSS 里的说明）
+    sizeSelectToLongestOption(CHANGE_STATE.target.el, TARGET_STATS);
     targetRow.appendChild(CHANGE_STATE.target.el);
     targetRow.appendChild(P.el('div', { style: 'flex:1 1 auto' }));
     built.body.appendChild(targetRow);
@@ -1881,8 +1966,6 @@
     rolesHost: null,
     detailHost: null,
     summaryEl: null,
-    logHost: null,
-    logOpen: false,
     //: ★ P6：① 登录卡（照抄旧界面外观）
     loginStatus: null,
     loginFields: null
@@ -1998,8 +2081,23 @@
 
     const panel = {
       setState: function (state, text) {
-        //: 旧界面的反馈只有一个出口：日志（``self._say(...)``）
-        if (text) buildLog(String(text), state === 'blocked' ? 'warn' : 'info');
+        //: ★★★ 2026-11-03 日志卡删掉之后，**反馈必须换出口**
+        //:
+        //: 原来反馈只写 ``buildLog()``（写进⑤日志卡）。日志卡按用户要求
+        //: 删了，``BUILD_STATE.logHost`` 恒为 null → ``buildLog`` 直接
+        //: return → **所有失败提示静默消失**。
+        //:
+        //: 这正是交接文档点名的「静默失败」形态 ②：提示容器失效，
+        //: ``if (!host) return`` 把话吞掉。
+        //:
+        //: 所以这里加一个**可见出口**：② 账号概览卡片顶部那行提示位
+        //: （``BUILD_STATE.noticeEl``）。失败/警告都写到那儿，
+        //: 常态（idle / preparing）不显示 —— 只有真有事才出现。
+        if (!text) return;
+        buildLog(String(text), state === 'blocked' ? 'warn' : 'info');
+        if (state === 'blocked' || state === 'error') {
+          setBuildNotice(String(text), state === 'error' ? 'error' : 'warn');
+        }
       },
       setProgress: function () { /* 只读页面，没有进度条（旧界面也没有）*/ }
     };
@@ -2044,11 +2142,20 @@
     loginHead.appendChild(BUILD_STATE.loginStatus);
     loginHead.appendChild(P.el('div', { style: 'flex:1 1 auto' }));
     //: 「退出登录」在**标题行最右**（旧界面 head.addWidget)
-    //: ⚠ Web 版禁用 —— 登出会破坏旧界面保存的登录态
+    //
+    //: ★★★ 2026-11-03 用户：「退出登录怎么不能点？」
+    //:
+    //: 之前这里 ``disabled: true``，理由是"会破坏旧界面保存的登录态"——
+    //: 那是**保守猜测，不是事实约束**。登出是用户的合法操作，
+    //: 旧界面一直可点，Web 版没理由拦着。
+    //:
+    //: ## 二次确认
+    //:
+    //: 登出会**删掉令牌 + 练度缓存**（不可逆），所以点第一下变成
+    //: 「确认退出？」，再点才真做 —— 和项目里其他危险按钮一致。
     const logoutBtn = P.button('退出登录', {
       size: 'sm',
-      disabled: true,
-      title: 'Web 版不支持登录/登出（会破坏旧界面保存的登录态）'
+      onClick: function () { buildLogout(logoutBtn); }
     });
     logoutBtn.dataset.action = 'logout';
     loginHead.appendChild(logoutBtn);
@@ -2098,19 +2205,24 @@
     loginBtnRow.appendChild(refreshBtn);
     loginCard.appendChild(loginBtnRow);
 
-    //: 说明（旧界面 L745-747，**逐字照抄**）
-    loginCard.appendChild(P.el('div', {
-      class: 'build-card-hint',
-      text: '验证码在任意官方入口获取（库街区 App / 网页登录框）—— 两边通用。' +
-        '　**登录后会自动拉取数据**；之后想重拉点「刷新数据」。'
-    }));
-    //: ★ Web 版补充说明（用户需要知道为什么不能登录）
-    loginCard.appendChild(P.el('div', {
-      class: 'build-card-hint build-cache-note',
-      id: 'build-cache-note',
-      text: 'Web 版不支持登录，字段来自上次在旧界面保存的缓存。' +
-        '要更新请用旧界面：MYTOOLS_WEB_SHELL=0 python main.py'
-    }));
+    //: ★★★ 2026-11-03 用户圈图：「干掉」——删掉两块说明文字：
+    //:
+    //:   ① 「验证码在任意官方入口获取（库街区 App / 网页登录框）——
+    //:       两边通用。**登录后会自动拉取数据**；之后想重拉点「刷新数据」。」
+    //:   ② 「Web 版不支持登录，字段来自上次在旧界面保存的缓存。
+    //:       要更新请用旧界面：MYTOOLS_WEB_SHELL=0 python main.py」
+    //:
+    //: ## 为什么可以删
+    //:
+    //: * 第 ① 条是**旧界面的说明**（那里真能登录，需要教用户去哪拿验证码）。
+    //:   Web 版登录按钮是**禁用的**，这段说明对用户毫无用处。
+    //: * 第 ② 条是**开发者信息**（告诉你自己用旧界面刷新）。
+    //:   用户已经知道 Web 版不支持登录（看「已登录」状态和禁用的按钮就明白）。
+    //:
+    //: ⚠ 保留了**功能性的状态显示**：「已登录（手机号 ****6241）」
+    //:   和「最后更新：…」仍在——那些是数据状态，不是说明。
+    //:   ``setBuildCacheNote()`` 函数**保留**（它还负责在出错时写提示位），
+    //:   只是不再有常驻的说明 div 可写。
     container.appendChild(loginCard);
 
     // ══════════════════════════════════════════════════════════════════════
@@ -2141,6 +2253,13 @@
       P.el('div', { class: 'build-overview-empty', text: '尚未拉取数据' })
     ]);
     overviewCard.appendChild(BUILD_STATE.summaryEl);
+
+    //: ★ 2026-11-03 反馈提示位（日志卡删掉后的新出口 —— 见 ``panel.setState``）
+    BUILD_STATE.noticeEl = P.el('div', { class: 'build-notice' });
+    BUILD_STATE.noticeEl.hidden = true;
+    BUILD_STATE.noticeEl.classList.add('hidden');
+    overviewCard.appendChild(BUILD_STATE.noticeEl);
+
     container.appendChild(overviewCard);
 
     // ══════════════════════════════════════════════════════════════════════
@@ -2155,24 +2274,159 @@
         return hint;
       })(),
       P.el('div', { class: 'build-card-actions' }, [
-        //: 搜索框（旧界面 ``_search_edit``，宽 200）
+        //: ★★★ 2026-11-03 用户圈图：
+        //:   「只搜索角色，也是下拉列表，也可输入搜索
+        //:     检查其它地方的角色搜索是不是有图片吗，还有角色搜索都是这种
+        //:     下拉列表+输入关键词模糊搜索」
+        //:
+        //: ## 旧界面本来就要的是这个
+        //:
+        //: ``tool.py`` L774 的注释写着用户原话：
+        //:   「加个下拉列表搜索」
+        //: 但实现成了一个**纯输入框**（``LineEdit``）—— 没有候选可点。
+        //:
+        //: ## 现在
+        //:
+        //: 做成「输入框 + 下拉候选」：
+        //:   * 点输入框 → 展开候选（带**角色头像**，用户要"有图片"）
+        //:   * 打字即过滤（模糊：名字 / 拼音首字母 / 属性 / 武器）
+        //:   * 点候选 → 直接选中那个角色（= 筛选 + 切详情）
+        //:
+        //: ⚠ 和「筛选下拉」（全部/达标/未达标）是**两个独立控件** ——
+        //:   那个筛状态，这个定位角色。
         (function () {
-          const box = P.el('div', { class: 'search build-search' });
+          const box = P.el('div', { class: 'search build-search build-char-search' });
           const icon = P.el('span', { class: 'nav-icon' });
           const m = App.icon('DOCUMENT');
           icon.style.maskImage = m;
           icon.style.webkitMaskImage = m;
           icon.style.backgroundColor = 'currentColor';
           box.appendChild(icon);
+
           const inp = P.el('input', {
             type: 'search',
             placeholder: '搜索角色名 / 属性 / 武器',
-            onInput: function () {
-              BUILD_STATE.filter = inp.value.trim().toLowerCase();
-              buildRenderRoles();
-            }
+            autocomplete: 'off'
           });
           box.appendChild(inp);
+
+          //: 候选面板
+          const panel = P.el('div', { class: 'build-char-panel' });
+          panel.hidden = true;
+          panel.classList.add('hidden');
+          box.appendChild(panel);
+
+          /** 候选来源：当前缓存里的全部角色 */
+          function pool() {
+            const data = BUILD_STATE.data || {};
+            const all = Array.isArray(data.characters) ? data.characters : [];
+            return all.slice().reverse();
+          }
+
+          /** 模糊匹配（名字 / 拼音首字母 / 属性 / 武器 / 等级）*/
+          function match(role, kw) {
+            if (!kw) return true;
+            const hay = [
+              role.name, role.attribute, role.weaponType,
+              role.level, role.acronym
+            ].join(' ').toLowerCase();
+            return hay.indexOf(kw) >= 0;
+          }
+
+          function render() {
+            P.fill(panel, null);
+            const kw = inp.value.trim().toLowerCase();
+            const list = pool().filter(function (r) {
+              return match(r, kw);
+            }).slice(0, 40);
+            if (!list.length) {
+              panel.appendChild(P.el('div', {
+                class: 'build-char-empty', text: '没有匹配的角色'
+              }));
+              return;
+            }
+            for (const role of list) {
+              const row = P.el('div', {
+                class: 'build-char-opt'
+                  + (String(role.roleId || '') === BUILD_STATE.selectedId
+                     ? ' is-current' : '')
+              });
+              //: 头像（用户明确要求「有图片」）
+              const face = P.el('span', { class: 'build-char-face' });
+              const pic = role.iconUrl || role.picUrl || '';
+              if (pic) {
+                const img = P.el('img', { src: pic, alt: '', loading: 'lazy' });
+                img.addEventListener('error', function () {
+                  P.fill(face, null);
+                  face.textContent = String(role.name || '?').slice(0, 1);
+                }, { once: true });
+                face.appendChild(img);
+              } else {
+                face.textContent = String(role.name || '?').slice(0, 1);
+              }
+              row.appendChild(face);
+              row.appendChild(P.el('span', {
+                class: 'build-char-name', text: String(role.name || '')
+              }));
+              row.appendChild(P.el('span', {
+                class: 'build-char-meta',
+                text: 'Lv.' + (role.level || '?') + '　' +
+                  String(role.attribute || '')
+              }));
+              //: ⚠ 用 mousedown —— click 会先触发 input 的 blur 把面板收掉
+              row.addEventListener('mousedown', function (ev) {
+                ev.preventDefault();
+                selectRole(role);
+              });
+              panel.appendChild(row);
+            }
+          }
+
+          function open() {
+            render();
+            panel.hidden = false;
+            panel.classList.remove('hidden');
+            box.classList.add('is-open');
+          }
+          function close() {
+            panel.hidden = true;
+            panel.classList.add('hidden');
+            box.classList.remove('is-open');
+          }
+
+          /** 选中一个角色：切详情 + 清掉文字筛选 */
+          function selectRole(role) {
+            const id = String(role.roleId || '');
+            inp.value = String(role.name || '');
+            BUILD_STATE.filter = '';
+            close();
+            if (id) buildSelectRole(id);
+            buildRenderRoles();
+          }
+
+          inp.addEventListener('focus', open);
+          inp.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            open();
+          });
+          inp.addEventListener('input', function () {
+            BUILD_STATE.filter = inp.value.trim().toLowerCase();
+            buildRenderRoles();
+            if (panel.hidden) open(); else render();
+          });
+          inp.addEventListener('keydown', function (ev) {
+            if (ev.key === 'Escape') { close(); inp.blur(); }
+            if (ev.key === 'Enter') {
+              const first = panel.querySelector('.build-char-opt');
+              if (first) { ev.preventDefault(); first.dispatchEvent(
+                new MouseEvent('mousedown', { bubbles: true })); }
+            }
+          });
+          //: 点外部关闭
+          document.addEventListener('click', function (ev) {
+            if (!box.contains(ev.target)) close();
+          });
+
           return box;
         })(),
         //: 「达标/未达标」筛选（旧界面 ``_filter_box``，宽 120）
@@ -2217,54 +2471,146 @@
     container.appendChild(detailCard);
 
     // ══════════════════════════════════════════════════════════════════════
-    //  ⑤ 日志（默认折叠，旧界面 ``_log_toggle``）
+    //  ⑤ 日志 —— ★★★ 2026-11-03 **用户圈图：「干掉」**
+    //
+    //  整张日志卡片删掉了。理由：
+    //
+    //  * 这个页面是**只读缓存展示**，日志里只有「读取角色练度缓存…」
+    //    「✓ 读到 21 个角色，缓存于 …」这两三行 —— 用户看一眼就够，
+    //    不值得占一整张卡（而且默认还是折叠的，等于白占位）。
+    //  * 旧界面确实有这块，但用户现在明确要求去掉。
+    //
+    //  ## ⚠ 保留了 ``buildLog()`` 函数
+    //
+    //  它还被 ``buildLoad`` / ``buildSelectRole`` / ``panel.setState``
+    //  （shim）调用着 —— 那些调用是**失败反馈**的唯一出口
+    //  （例如「✗ 接口未就绪」「✗ 读取缓存失败」），不能删。
+    //
+    //  ``buildLog`` 里第一行就是 ``if (!host) return;``，
+    //  日志容器不再创建 → ``buildLog`` 只往控制台写。
+    //
+    //  ⚠ 但失败反馈不能就此消失！所以 ``panel.setState`` 的 shim 改成
+    //    **同时**往「结果提示位」写（见上面 shim 的实现）。
     // ══════════════════════════════════════════════════════════════════════
-    const logCard = P.el('div', { class: 'build-card card-glass' });
-    const logHead = P.el('div', { class: 'build-card-head' }, [
-      P.el('div', { class: 'build-card-title', text: '日志' }),
-      P.el('div', { class: 'build-card-actions' }, [
-        (function () {
-          const btn = P.button('展开', {
-            size: 'sm',
-            onClick: function () {
-              BUILD_STATE.logOpen = !BUILD_STATE.logOpen;
-              if (BUILD_STATE.logHost) {
-                BUILD_STATE.logHost.hidden = !BUILD_STATE.logOpen;
-              }
-              btn.textContent = BUILD_STATE.logOpen ? '收起' : '展开';
-            }
-          });
-          return btn;
-        })()
-      ])
-    ]);
-    logCard.appendChild(logHead);
-    BUILD_STATE.logHost = P.el('div', {
-      class: 'log-box',
-      id: 'build-log',
-      style: 'height:120px;max-height:22vh',
-      hidden: true
-    });
-    logCard.appendChild(BUILD_STATE.logHost);
-    container.appendChild(logCard);
 
     buildLoad();
     void app;
   });
 
-  /** 往日志区写一行（旧界面 ``_log`` 是只读 QTextEdit）*/
+  /**
+   * ★ 退出登录（2026-11-03，两段确认）。
+   *
+   * ## 为什么要二次确认
+   *
+   * 登出会**删掉令牌 + ``kuro_练度.json`` 缓存**（旧界面
+   * ``_on_logout`` 就是 ``clear_account() + clear_cache()``），
+   * 不可逆。误点一次的代价是"得重新用旧界面登录一次"。
+   *
+   * 所以：第一次点 → 按钮变「确认退出？」并标红；
+   * 5 秒内再点一次才真执行；超时或点别处自动还原。
+   *
+   * @param {HTMLElement} btn - 「退出登录」按钮
+   */
+  function buildLogout(btn) {
+    if (!btn) return;
+
+    //: 第一段：变成确认态
+    if (btn.dataset.confirming !== '1') {
+      btn.dataset.confirming = '1';
+      const original = btn.textContent;
+      btn.textContent = '确认退出？';
+      btn.classList.add('is-confirming');
+      const timer = setTimeout(function () {
+        btn.dataset.confirming = '';
+        btn.textContent = original;
+        btn.classList.remove('is-confirming');
+      }, 5000);
+      btn._cancelTimer = timer;
+      return;
+    }
+
+    //: 第二段：真执行
+    if (btn._cancelTimer) {
+      clearTimeout(btn._cancelTimer);
+      btn._cancelTimer = null;
+    }
+    btn.dataset.confirming = '';
+    btn.textContent = '退出登录';
+    btn.classList.remove('is-confirming');
+    btn.disabled = true;
+
+    (async function () {
+      const r = await P.call('kuroLogout');
+      if (!r.ok) {
+        btn.disabled = false;
+        setBuildNotice('退出登录失败（接口未就绪）', 'error');
+        return;
+      }
+      const d = r.data || {};
+      if (d.ok === false) {
+        btn.disabled = false;
+        setBuildNotice('退出登录失败：' +
+          String(d.message || d.reason || '后端拒绝'), 'error');
+        return;
+      }
+      //: 清空页面上的数据（旧界面也是 ``self._render({})``）
+      BUILD_STATE.data = null;
+      BUILD_STATE.selectedId = '';
+      if (BUILD_STATE.rolesHost) P.fill(BUILD_STATE.rolesHost, null);
+      if (BUILD_STATE.detailHost) P.fill(BUILD_STATE.detailHost, null);
+      if (BUILD_STATE.summaryEl) {
+        P.fill(BUILD_STATE.summaryEl, [P.el('div', {
+          class: 'build-overview-empty', text: '尚未拉取数据'
+        })]);
+      }
+      if (BUILD_STATE.loginStatus) {
+        BUILD_STATE.loginStatus.textContent = '未登录';
+      }
+      if (BUILD_STATE.loginFields) {
+        for (const key of Object.keys(BUILD_STATE.loginFields)) {
+          const el = BUILD_STATE.loginFields[key];
+          if (el) el.value = '';
+        }
+      }
+      setBuildNotice(String(d.message ||
+        '已退出登录（令牌 + 缓存都已删除）'), 'warn');
+      //: 退出成功后按钮就该消失（没登录了）
+      btn.style.display = 'none';
+    })();
+  }
+
+  /**
+   * 记录一行日志（旧界面 ``_log`` 是只读 QTextEdit）。
+   *
+   * ## ★ 2026-11-03 日志卡删掉后，这里改成**只往控制台写**
+   *
+   * 用户圈图要求删掉「⑤ 日志」那张卡。卡没了，日志容器也就不再存在。
+   *
+   * ⚠ 这个函数**不能删** —— 十几处调用（读缓存 / 选角色 / 接口失败）
+   * 都走它。而且它是**排查问题的唯一线索**（用户报"没数据"时，
+   * 日志里那句「✓ 读到 21 个角色」是判断"接口没问题、是渲染问题"的关键）。
+   *
+   * 所以：保留调用点，实现改成 ``console.info`` —— 界面上不占地方，
+   * 但 ``debug_js`` / 开发者工具里仍然查得到。
+   *
+   * **用户可见的失败反馈**走另一个出口 :func:`setBuildNotice`
+   * （② 账号概览卡里那行提示），见 ``panel.setState``。
+   *
+   * ⚠ 老实现是「取容器 → 没容器就 return」，删卡后那段代码就成了
+   *   「引用了但从未赋值的字段」，``js_sanity`` 的静默失败检查会
+   *   （正确地）报出来 —— 所以整个实现换成控制台输出。
+   */
   function buildLog(text, level) {
-    const host = BUILD_STATE.logHost;
-    if (!host) return;
-    host.appendChild(P.el('div', {
-      class: 'log-line',
-      dataset: { level: level || 'info' }
-    }, [
-      P.el('span', { class: 'log-time', text: '' }),
-      P.el('span', { class: 'log-text', text: String(text) })
-    ]));
-    while (host.childElementCount > 300) host.removeChild(host.firstElementChild);
-    host.scrollTop = host.scrollHeight;
+    const value = String(text == null ? '' : text);
+    if (!value) return;
+    try {
+      if (level === 'error') console.error('[character_build]', value);
+      else if (level === 'warn') console.warn('[character_build]', value);
+      else console.info('[character_build]', value);
+    } catch (err) {
+      //: 控制台都不可用（极端环境）—— 不影响主流程，但留个痕
+      void err;
+    }
   }
 
   async function buildLoad() {
@@ -2376,6 +2722,37 @@
     }
 
     buildRenderRoles();
+
+    //: ★★★ 2026-11-03 用户：「默认选择最近的一个角色」
+    //:
+    //: ## 之前
+    //:
+    //: ``BUILD_STATE.selectedId`` 一直是空串 → 打开页面时
+    //: **没有任何角色被选中**，④ 详情区永远显示「在上面点一个共鸣者…」。
+    //: 用户得先点一下才看得到东西。
+    //:
+    //: ## ⚠ 选谁？必须是**列表里第一个显示的**，不是 ``characters[0]``
+    //:
+    //: ``buildRenderRoles()`` 里有一句 ``all.slice().reverse()``
+    //: ——「最新获得在前」（照抄旧界面）。所以页面**最左边**那个是
+    //: ``characters[characters.length - 1]``。
+    //:
+    //: 踩到过：一开始按 ``characters[0]`` 选，结果默认选中的是「秧秧
+    //: Lv.20」，而列表第一格明晃晃写着「千咲 Lv.90」——
+    //: 选中态和看到的完全对不上，用户会以为点错了。
+    //:
+    //: 现在直接复用 ``buildRenderRoles`` 的同一套排序/筛选结果。
+    if (!BUILD_STATE.selectedId) {
+      const chars = Array.isArray(data.characters) ? data.characters : [];
+      //: 和 ``buildRenderRoles`` 一致：反转后取第一个
+      const ordered = chars.slice().reverse();
+      const first = ordered.find(function (c) {
+        return c && String(c.roleId || '') !== '';
+      });
+      if (first) {
+        buildSelectRole(String(first.roleId));
+      }
+    }
   }
 
   function setBuildCacheNote(text) {
@@ -2383,6 +2760,36 @@
     if (!el) return;
     //: ⚠ textContent（不是 innerHTML）—— 内容是用户可见的纯文本说明
     el.textContent = String(text);
+  }
+
+  /**
+   * ★ 在「② 账号概览」卡片里显示一条**可见的**失败/警告提示（2026-11-03）。
+   *
+   * ## 为什么需要
+   *
+   * ⑤ 日志卡片按用户要求删掉了，而原来的失败反馈**只写日志** ——
+   * 删了卡之后所有错误都会静默消失（交接文档点名的静默失败形态 ②）。
+   *
+   * 所以给一个常驻但默认隐藏的提示位：只有 ``state === 'blocked'/'error'``
+   * 时才显示，常态不占视觉空间。
+   *
+   * @param {string} text - 提示内容
+   * @param {string} [level] - ``warn`` / ``error``
+   */
+  function setBuildNotice(text, level) {
+    const el = BUILD_STATE.noticeEl;
+    if (!el) return;
+    const value = String(text || '').trim();
+    if (!value) {
+      el.hidden = true;
+      el.classList.add('hidden');
+      el.textContent = '';
+      return;
+    }
+    el.dataset.level = level || 'warn';
+    el.textContent = value;
+    el.hidden = false;
+    el.classList.remove('hidden');
   }
 
   /**
@@ -2429,16 +2836,39 @@
       const id = String(role.roleId || '');
       const hasData = !!detailSet[id];
       const unleveled = !hasData || (Number(role.level) || 0) < MAX_LEVEL;
-      //: ⚠ 「有没有 issue」需要详情；缓存接口没给逐条 issues，
-      //: 所以「达标/未达标」只能按「有没有详情数据」粗判 —— 见下方说明
-      const issues = hasData ? false : true;
+
+      //: ★★★ 2026-11-03 **筛选逻辑修正**（用户：「筛选逻辑有问题，
+      //: 未达标，怎么进入达标里了？」）
+      //:
+      //: ## 之前错在哪
+      //:
+      //: .. code:: js
+      //:
+      //:     const issues = hasData ? false : true;   // ← 假的判定
+      //:
+      //: 「有数据」被当成「达标」。于是千咲（暴击 41.3% / 推荐 ≥75%）
+      //: 明明是未达标，却出现在「达标」分类里 —— 用户截图圈的就是这个。
+      //:
+      //: ## 现在
+      //:
+      //: 用后端**真算出来的** ``role.flagged``（比对 standards.attrs 与
+      //: roleAttributeList 得出）。语义照旧界面 ``tool.py`` L1123-1136：
+      //:
+      //:   * 未练   = 没数据 **或** 等级没满 90
+      //:   * 未达标 = 有数据、满级、**且有问题**
+      //:   * 达标   = 有数据、满级、**且没问题**
+      //:
+      //: ⚠ 「没数据」必须归到「未练」而不是「达标」—— 见旧代码注释
+      //:   L1111-1115：那是用户 2026-10-05 报过的同一个 bug。
+      const flagged = role.flagged === true
+        || (Array.isArray(role.issues) && role.issues.length > 0);
 
       if (choice === '未练') {
         if (!unleveled) return false;
       } else if (choice === '未达标') {
-        if (unleveled || !issues) return false;
+        if (unleveled || !flagged) return false;
       } else if (choice === '达标') {
-        if (unleveled || issues) return false;
+        if (unleveled || flagged) return false;
       }
 
       if (keyword) {
@@ -2476,6 +2906,26 @@
         text: all.length ? '没有匹配的共鸣者。' : '缓存里没有角色数据。'
       }));
       return;
+    }
+
+    //: ★★★ 2026-11-03 **筛掉的选中角色要跟着换掉**
+    //:
+    //: 用户把筛选切到「达标」后，原来选中的千咲（未达标）**不在列表里了**，
+    //: 但 ④ 共鸣者详情**还显示着千咲** —— 列表只剩漂泊者/清宵，
+    //: 详情却讲千咲，看起来像"点错了"。
+    //:
+    //: 修法：选中的角色如果被当前筛选排除，自动改选**筛后第一个**。
+    //: ⚠ 只在"选中的那个不在 shown 里"时切，否则用户的选择会被打断。
+    const selectedStillShown = shown.some(function (role) {
+      return String(role.roleId || '') === BUILD_STATE.selectedId;
+    });
+    if (!selectedStillShown) {
+      const firstShown = shown[0];
+      const firstId = String((firstShown && firstShown.roleId) || '');
+      if (firstId) {
+        //: 用 setTimeout 排到当前渲染之后，避免在 for 循环里重入
+        setTimeout(function () { buildSelectRole(firstId); }, 0);
+      }
     }
 
     for (const role of shown) {
@@ -2603,110 +3053,784 @@
     buildLog('读取详情：' + roleId);
   }
 
+  /**
+   * ★★★ 2026-11-03 **彻底重写**（用户：「这个原查询角色练度的显示布局」）
+   *
+   * ## 之前是什么样（为什么被否）
+   *
+   * 旧实现只有：头像 + 名字 + 属性两行 + 共鸣链列表 + 一句
+   * 「完整图文详情请在旧界面查看」—— **少了六块**。
+   *
+   * ## 现在照抄旧界面 ``detail_view.py`` 的 ``show_detail()``（L1317-1400）
+   *
+   * 顺序**逐块对齐**：
+   *
+   * .. code:: text
+   *
+   *    ① 待优化红字（issues）
+   *    ② ✦ 属性推荐      当前 vs 官方推荐（超过/没到用颜色区分）
+   *    ③ ✦ 共鸣者属性    两列网格（生命/攻击/防御/暴击…）
+   *    ④ ✦ 武器          图标 + 名称 + 等级/谐振/星级 + 主属性
+   *    ⑤ ✦ 属性展示      声骸提供的加成（equipPhantomAddPropList）
+   *    ⑥ ✦ 声骸 COST n/12  套装名 + 每个声骸的主/副词条
+   *    ⑦ ✦ 技能          7 个技能图标 + 等级
+   *    ⑧ ✦ 共鸣链        已解锁/未解锁
+   *
+   * ## 数据从哪来
+   *
+   * ``getCharacterBuildDetail(roleId)`` 返回 ``{detail, standard}``：
+   *
+   * * ``detail`` —— 官方库街区的原始 ``details[roleId]``
+   * * ``standard`` —— 官方推荐标准（``standards[roleId]``），
+   *   含 ``attrs``（推荐属性）/ ``echo``（推荐套装）/ ``weapon`` / ``role_skill``
+   *
+   * @param {HTMLElement} host - 详情容器（④ 卡片内部）
+   * @param {object} data - ``{detail, standard, roleId}``
+   */
   function buildRenderDetail(host, data) {
     P.fill(host, null);
     const detail = data.detail || {};
     const standard = data.standard || {};
-
     const role = detail.role || {};
+
     const name = String(role.roleName || role.name || '');
     const level = role.level || detail.level || '';
-    const chainList = Array.isArray(detail.chainList) ? detail.chainList : [];
-    const unlocked = chainList.filter(function (c) { return c && c.unlocked; });
-    const weapon = detail.weaponData || {};
+    const attrName = String(role.attributeName || '');
+    const weaponType = String(role.weaponTypeName || '');
 
-    // ── 顶部：头像 + 名字 + 等级 / 共鸣链 ──
-    const headRow = P.el('div', { class: 'build-detail-head' });
-    const avatar = P.el('div', { class: 'build-tile-avatar' });
-    if (role.roleIconUrl) {
-      const img = P.el('img', { src: role.roleIconUrl, alt: '' });
-      img.addEventListener('error', function () {
-        P.fill(avatar, null);
-        avatar.textContent = (name || '?').slice(0, 1);
-        avatar.classList.add('has-initial-color');
-      }, { once: true });
-      avatar.appendChild(img);
-    } else {
-      avatar.textContent = (name || '?').slice(0, 1);
-      avatar.classList.add('has-initial-color');
-    }
-    headRow.appendChild(avatar);
-
-    const headText = P.el('div', { class: 'build-detail-headtext' });
-    headText.appendChild(P.el('div', {
-      class: 'build-detail-name',
-      text: name || String(data.roleId || '')
+    // ══════════════════════════════════════════════════════════════════════
+    //  标题行（旧界面 ``self._title``）
+    //
+    //  .. code:: text
+    //
+    //    千咲　Lv90　湮灭　长刃
+    //
+    //  ⚠ 分隔符是**全角空格** ``　``（旧界面 L1329-1332 用的就是它）
+    // ══════════════════════════════════════════════════════════════════════
+    const titleBits = [name || '?'];
+    if (level) titleBits.push('Lv' + level);
+    if (attrName) titleBits.push(attrName);
+    if (weaponType) titleBits.push(weaponType);
+    host.appendChild(P.el('div', {
+      class: 'build-detail-headline',
+      text: titleBits.join('\u3000')
     }));
-    const subBits = [];
-    if (level) subBits.push('Lv.' + level);
-    if (chainList.length) {
-      subBits.push('共鸣链 ' + unlocked.length + '/' + chainList.length);
-    }
-    if (weapon.weaponName || weapon.name) {
-      subBits.push(String(weapon.weaponName || weapon.name));
-    }
-    if (subBits.length) {
-      headText.appendChild(P.el('div', {
-        class: 'build-detail-sub',
-        text: subBits.join(' · ')
-      }));
-    }
-    headRow.appendChild(headText);
-    host.appendChild(headRow);
 
-    // ── 养成标准（`standard`）—— 旧界面在这块画雷达图，这里给数值 ──
-    if (standard && typeof standard === 'object' && Object.keys(standard).length) {
-      const attrs = Array.isArray(standard.attrs) ? standard.attrs : [];
-      if (attrs.length) {
-        const grid = P.el('div', { class: 'build-attr-grid' });
-        for (const attr of attrs) {
-          if (!attr || typeof attr !== 'object') continue;
-          const label = String(attr.name || attr.key || '');
-          const want = attr.value != null ? String(attr.value) : '';
-          const got = attr.current != null ? String(attr.current) : '';
-          if (!label) continue;
-          grid.appendChild(P.el('div', { class: 'build-attr-key', text: label }));
-          grid.appendChild(P.el('div', {
-            class: 'build-attr-val',
-            text: got ? got + ' / 推荐 ' + want : (want ? '推荐 ' + want : '')
-          }));
-        }
-        if (grid.childElementCount) host.appendChild(grid);
-      }
-    }
-
-    // ── 共鸣链（已解锁的逐条列出）──
-    if (unlocked.length) {
+    // ══════════════════════════════════════════════════════════════════════
+    //  ① 待优化红字（旧界面 L1339-1343）
+    //
+    //  ``issues`` 是一串**已经组织好的句子**，用「；」连接。
+    //  例：「暴击 41.3% 没到 ≥75%；暴击伤害 192.6% 没到 ≥260%；
+    //       套装搭配不符（现在 轻云出月×5，推荐 命理崩毁之弦×3 + 幽夜隐匿之帷×2）」
+    // ══════════════════════════════════════════════════════════════════════
+    const issues = Array.isArray(data.issues) ? data.issues : [];
+    if (issues.length) {
       host.appendChild(P.el('div', {
-        class: 'build-detail-section-title',
-        text: '共鸣链（已解锁 ' + unlocked.length + '/' + chainList.length + '）'
+        class: 'build-detail-issues',
+        text: '⚠ ' + issues.join('；')
       }));
-      const list = P.el('div', { class: 'build-chain-list' });
-      for (const chain of unlocked) {
-        list.appendChild(P.el('div', { class: 'build-chain' }, [
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  ② ✦ 属性推荐（旧界面 L1345-1356 ``_standard_block``）
+    //
+    //  这是**核心判据**：把「当前值」和「官方推荐值」并排，
+    //  没达标的整行标红 + 末尾 ✗，达标标绿 + ✓。
+    // ══════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════
+    //  当前属性表（detail.roleAttributeList → {名字: 数值}）
+    //
+    //  ★★★ 2026-11-03 踩到：``attributeValue`` 是**带百分号的字符串**
+    //
+    //  .. code:: text
+    //
+    //      '生命'     = '19500'      → Number 19500  ✅
+    //      '暴击'     = '43.2%'      → Number **NaN**  ❌
+    //      '共鸣效率' = '170.2%'     → Number **NaN**  ❌
+    //
+    //  直接 ``Number('170.2%')`` 得 NaN，后面 ``have >= need`` 全是 false
+    //  → **明明达标（170.2% ≥ 115%）也被标成 ✗**。
+    //
+    //  实测症状：属性推荐里「共鸣效率 170.2% ≥115.0%」挂着红 ✗。
+    //
+    //  修法：剥掉非数字后缀再转换（``parseFloat`` 天然只吃到数字为止，
+    //  但为了明确表达意图、并且处理全角符号，这里先清一遍）。
+    // ══════════════════════════════════════════════════════════════════════
+    const parseAttrNum = function (raw) {
+      if (raw == null) return NaN;
+      if (typeof raw === 'number') return raw;
+      const cleaned = String(raw).replace(/[^0-9.\-]/g, '');
+      if (!cleaned) return NaN;
+      const n = parseFloat(cleaned);
+      return isFinite(n) ? n : NaN;
+    };
+    const currentMap = {};
+    for (const item of (detail.roleAttributeList || [])) {
+      if (!item || typeof item !== 'object') continue;
+      const nm = String(item.attributeName || '').trim();
+      if (nm) currentMap[nm] = parseAttrNum(item.attributeValue);
+    }
+    const stdAttrs = (standard && Array.isArray(standard.attrs))
+      ? standard.attrs : [];
+    if (stdAttrs.length) {
+      const sec = buildDetailSection('✦ 属性推荐', [
+        P.el('div', {
+          class: 'build-std-head'
+        }, [
+          P.el('span', { class: 'build-std-head-name', text: '属性' }),
+          P.el('span', { class: 'build-std-head-cur', text: '当前数值' }),
+          P.el('span', { class: 'build-std-head-want', text: '推荐数值' })
+        ])
+      ]);
+      const body = sec.contentEl;
+      for (const attr of stdAttrs) {
+        if (!attr || typeof attr !== 'object') continue;
+        const label = String(attr.name || '');
+        if (!label) continue;
+        const wantRaw = String(attr.recommend != null ? attr.recommend : '');
+        const symbol = String(attr.symbol || '≥');
+
+        // ══════════════════════════════════════════════════════════════
+        //  ★★★ 当前值**必须从 ``roleAttributeList`` 取**，不能用
+        //  ``attr.current``（2026-11-03 实测踩到）
+        //
+        //  ## 坑
+        //
+        //  ``standard.attrs[].current`` 在后端**恒为 ``"0"`` / ``"0.0%"``**
+        //  —— 那是 ```` 的原始字段，没人回填。直接用的话：
+        //
+        //  .. code:: text
+        //
+        //      暴击      0.0%   ≥70.0%   ✗      ← 全是 0，全员"没达标"
+        //      暴击伤害  0.0%   ≥250.0%  ✗
+        //
+        //  用户看到的是一条全红的表，**判据完全失效**。
+        //
+        //  ## 旧界面怎么做的（``detail_view.py`` L884-893）
+        //
+        //  .. code:: python
+        //
+        //      current = {}
+        //      for item in detail.get("roleAttributeList") or []:
+        //          current[item["attributeName"]] = _num(...)
+        //      ...
+        //      for a in standard["attrs"]:
+        //          have = current.get(a["name"])      # ← 从当前属性表取
+        //          ok = _meets(have, need, symbol)    # ← 自己算，不信 is_finished
+        //
+        //  **两个要点**：
+        //    ① 当前值从 ``roleAttributeList`` 取（那里是真数据）
+        //    ② 达标与否**自己比**，不信 ``is_finished``
+        //       （它同样没人回填，恒为 false）
+        // ══════════════════════════════════════════════════════════════
+        const haveRaw = (label in currentMap) ? currentMap[label] : null;
+        const needNum = Number(attr.value);
+        const haveUnit = (label in currentMap)
+          ? String((function () {
+            for (const it of (detail.roleAttributeList || [])) {
+              if (it && String(it.attributeName || '').trim() === label) {
+                return String(it.attributeValue || '');
+              }
+            }
+            return '';
+          })())
+          : '';
+
+        //: ⚠ 面板里没这个属性 → 显示「—」，**不标红**（不是"不达标"）
+        const missing = (haveRaw === null) || !isFinite(needNum);
+
+        //: 自己算达标（照旧界面 ``_meets``：≥ / ≤ / = 三种符号）
+        let okFlag = true;
+        if (!missing) {
+          if (symbol === '≤') okFlag = haveRaw <= needNum;
+          else if (symbol === '=') okFlag = Math.abs(haveRaw - needNum) < 1e-9;
+          else okFlag = haveRaw >= needNum;
+        }
+
+        //: 当前值显示：优先用原始字符串（带 % 单位），否则用数值
+        const cur = missing ? '—' : haveUnit;
+
+        //: 差值文案（旧界面 ``_gap_label``）—— 「（差 33.7%）」
+        let gap = '';
+        if (!missing && !okFlag) {
+          const diff = needNum - haveRaw;
+          if (diff > 0) {
+            const unit = String(wantRaw).indexOf('%') >= 0 ? '%' : '';
+            gap = '（差 ' + (Math.round(diff * 10) / 10) + unit + '）';
+          }
+        }
+        body.appendChild(P.el('div', {
+          class: 'build-std-row' +
+            (missing ? ' is-missing' : (okFlag ? ' is-ok' : ' is-bad'))
+        }, [
+          P.el('span', { class: 'build-std-name', text: label }),
+          P.el('span', { class: 'build-std-cur', text: cur }),
           P.el('span', {
-            class: 'sweep-tag',
-            dataset: { kind: 'nest' },
-            text: String(chain.order || '')
+            class: 'build-std-want',
+            text: symbol + wantRaw + ' ' + gap
           }),
-          P.el('div', { class: 'build-chain-body' }, [
-            P.el('div', { class: 'build-chain-name', text: chain.name || '' }),
-            P.el('div', {
-              class: 'build-chain-desc',
-              text: chain.description || ''
-            })
-          ])
+          P.el('span', {
+            class: 'build-std-mark',
+            //: 缺属性用灰色「—」，不误导成"没达标"
+            text: missing ? '—' : (okFlag ? '✓' : '✗')
+          })
         ]));
       }
-      host.appendChild(list);
+      host.appendChild(sec.card);
     }
 
-    // ── ★ 明确留的缺口：图文详情不做 ──
-    host.appendChild(P.el('div', {
-      class: 'build-detail-missing',
-      text: '完整图文详情（属性雷达 / 武器立绘 / 声骸套装图 / 技能说明）' +
-            '请在旧界面查看：MYTOOLS_WEB_SHELL=0'
+    // ══════════════════════════════════════════════════════════════════════
+    //  ③ ✦ 共鸣者属性（旧界面 L1358-1363 ``_prop_grid(cols=2)``）
+    // ══════════════════════════════════════════════════════════════════════
+    const attrs = Array.isArray(detail.roleAttributeList)
+      ? detail.roleAttributeList : [];
+    if (attrs.length) {
+      host.appendChild(buildDetailPropGrid('✦ 共鸣者属性', attrs));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  ④ ✦ 武器（旧界面 L1365-1370 ``_weapon_block``）
+    // ══════════════════════════════════════════════════════════════════════
+    const wd = detail.weaponData || {};
+    if (wd.weapon && (wd.weapon.weaponName || wd.weapon.name)) {
+      host.appendChild(buildDetailWeapon(wd));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  ⑤ ✦ 属性展示（旧界面 L1372-1377）—— 声骸提供的加成
+    //
+    //  ⚠ 字段名是 ``equipPhantomAddPropList``（**不在** phantomData 里，
+    //    和 detail 同级）—— 读错位置就永远画不出来。
+    // ══════════════════════════════════════════════════════════════════════
+    const adds = Array.isArray(detail.equipPhantomAddPropList)
+      ? detail.equipPhantomAddPropList : [];
+    if (adds.length) {
+      host.appendChild(buildDetailPropGrid('✦ 属性展示', adds));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  ⑥ ✦ 声骸（旧界面 L1379-1386 ``_echoes_block``）
+    // ══════════════════════════════════════════════════════════════════════
+    const ph = detail.phantomData || {};
+    if (Array.isArray(ph.equipPhantomList) && ph.equipPhantomList.length) {
+      host.appendChild(buildDetailEchoes(ph));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  ⑦ ✦ 技能（旧界面 L1388-1393 ``_skills_block``）
+    // ══════════════════════════════════════════════════════════════════════
+    const skills = Array.isArray(detail.skillList) ? detail.skillList : [];
+    if (skills.length) {
+      host.appendChild(buildDetailSkills(skills));
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  ⑧ ✦ 共鸣链（旧界面 L1395-1400 ``_chains_block``）
+    // ══════════════════════════════════════════════════════════════════════
+    const chains = Array.isArray(detail.chainList) ? detail.chainList : [];
+    if (chains.length) {
+      host.appendChild(buildDetailChains(chains, role));
+    }
+  }
+
+  /**
+   * 造一个「✦ 标题」区块（旧界面 ``_section``）。
+   *
+   * @param {string} title
+   * @param {Array} children - 初始内容
+   * @returns {{card: HTMLElement, contentEl: HTMLElement}}
+   */
+  function buildDetailSection(title, children) {
+    const card = P.el('div', { class: 'build-section' });
+    card.appendChild(P.el('div', {
+      class: 'build-section-title', text: title
     }));
+    const contentEl = P.el('div', { class: 'build-section-body' });
+    for (const child of (children || [])) {
+      if (child) contentEl.appendChild(child);
+    }
+    card.appendChild(contentEl);
+    return { card: card, contentEl: contentEl };
+  }
+
+  /**
+   * 两列属性网格（旧界面 ``_prop_grid(cols=2)``）。
+   *
+   * ## 布局
+   *
+   * .. code:: text
+   *
+   *    生命      15335      攻击        1185
+   *    防御       1483      暴击        41.3%
+   *
+   * 用 CSS ``grid-template-columns: repeat(2, 1fr)``，每格内部
+   * 「图标 + 名字 …… 数值」（``justify-content: space-between``）。
+   */
+  function buildDetailPropGrid(title, items) {
+    const rows = [];
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const nm = String(item.attributeName || item.name || '');
+      if (!nm) continue;
+      const val = item.attributeValue != null
+        ? String(item.attributeValue) : '';
+      const iconUrl = String(item.iconUrl || '');
+      rows.push(P.el('div', { class: 'build-prop-cell' }, [
+        (function () {
+          const icon = P.el('span', { class: 'build-prop-icon' });
+          if (iconUrl) {
+            const img = P.el('img', { src: iconUrl, alt: '' });
+            //: 图标挂了一律隐藏（不留破图）—— 官方 CDN 有时会拒
+            img.addEventListener('error', function () {
+              icon.style.display = 'none';
+            }, { once: true });
+            icon.appendChild(img);
+          } else {
+            icon.style.display = 'none';
+          }
+          return icon;
+        })(),
+        P.el('span', { class: 'build-prop-name', text: nm }),
+        P.el('span', { class: 'build-prop-value', text: val })
+      ]));
+    }
+    if (!rows.length) return buildDetailSection(title, []).card;
+    const grid = P.el('div', { class: 'build-prop-grid' });
+    for (const row of rows) grid.appendChild(row);
+    return buildDetailSection(title, [grid]).card;
+  }
+
+  /** ④ ✦ 武器（旧界面 ``_weapon_block`` L665-694）*/
+  function buildDetailWeapon(wd) {
+    const weapon = wd.weapon || {};
+    const box = P.el('div', { class: 'build-weapon' });
+
+    //: 左侧立绘 / 图标
+    const iconWrap = P.el('div', { class: 'build-weapon-icon' });
+    const iconUrl = String(weapon.weaponIcon || '');
+    if (iconUrl) {
+      const img = P.el('img', { src: iconUrl, alt: '' });
+      img.addEventListener('error', function () {
+        iconWrap.style.display = 'none';
+      }, { once: true });
+      iconWrap.appendChild(img);
+    } else {
+      iconWrap.style.display = 'none';
+    }
+    box.appendChild(iconWrap);
+
+    //: 右侧信息
+    const info = P.el('div', { class: 'build-weapon-info' });
+    info.appendChild(P.el('div', {
+      class: 'build-weapon-name',
+      text: String(weapon.weaponName || weapon.name || '')
+    }));
+    const bits = [];
+    if (wd.level != null) bits.push('Lv.' + wd.level);
+    if (wd.resonLevel != null) bits.push('谐振' + wd.resonLevel + '阶');
+    if (weapon.weaponStarLevel != null) {
+      bits.push('★' + weapon.weaponStarLevel);
+    }
+    if (bits.length) {
+      info.appendChild(P.el('div', {
+        class: 'build-weapon-sub', text: bits.join('　')
+      }));
+    }
+    //: 主属性（旧界面 ``mainPropList``）
+    const mains = Array.isArray(wd.mainPropList) ? wd.mainPropList : [];
+    if (mains.length) {
+      const mrow = P.el('div', { class: 'build-weapon-props' });
+      for (const mp of mains) {
+        if (!mp || typeof mp !== 'object') continue;
+        mrow.appendChild(P.el('div', { class: 'build-weapon-prop' }, [
+          P.el('span', {
+            class: 'build-prop-name',
+            text: String(mp.attributeName || '')
+          }),
+          P.el('span', {
+            class: 'build-prop-value',
+            text: String(mp.attributeValue != null ? mp.attributeValue : '')
+          })
+        ]));
+      }
+      info.appendChild(mrow);
+    }
+    box.appendChild(info);
+
+    //: 武器特效说明（``effectDescription``）—— 旧界面折叠区里，这里直接给
+    if (weapon.weaponEffectName || weapon.effectDescription) {
+      box.appendChild(P.el('div', { class: 'build-weapon-effect' }, [
+        P.el('div', {
+          class: 'build-weapon-effect-name',
+          text: String(weapon.weaponEffectName || '')
+        }),
+        P.el('div', {
+          class: 'build-weapon-effect-desc',
+          text: String(weapon.effectDescription || '')
+        })
+      ]));
+    }
+    return buildDetailSection('✦ 武器', [box]).card;
+  }
+
+  /**
+   * ⑥ ✦ 声骸（旧界面 ``_echoes_block`` L624-664）
+   *
+   * 结构：
+   *   * 顶部：套装统计「推荐辅音词条命中 11」+ 词条计数（旧界面那个
+   *     大圆圈数字）
+   *   * 每个声骸一张小卡：图标 + 名字 + COST + 等级 + 套装名
+   *     + 主属性（金）+ 副词条（白）
+   */
+  function buildDetailEchoes(ph) {
+    const list = Array.isArray(ph.equipPhantomList) ? ph.equipPhantomList : [];
+    const wrap = P.el('div', { class: 'build-echoes' });
+
+    //: 套装统计（旧界面 ``_echoes_block`` 开头的 fetter 汇总）
+    const setCount = {};
+    for (const item of list) {
+      const fd = (item && item.fetterDetail) || {};
+      const nm = String(fd.name || '');
+      if (nm) setCount[nm] = (setCount[nm] || 0) + 1;
+    }
+    const setNames = Object.keys(setCount);
+    if (setNames.length) {
+      wrap.appendChild(P.el('div', { class: 'build-echo-sets' }, [
+        P.el('span', { class: 'build-echo-sets-label', text: '套装' }),
+        P.el('span', {
+          class: 'build-echo-sets-value',
+          text: setNames.map(function (n) {
+            return n + ' ×' + setCount[n];
+          }).join(' + ')
+        })
+      ]));
+    }
+
+    const grid = P.el('div', { class: 'build-echo-grid' });
+    for (const item of list) {
+      if (!item || typeof item !== 'object') continue;
+      const prop = item.phantomProp || {};
+      const fd = item.fetterDetail || {};
+      const card = P.el('div', { class: 'build-echo-card' });
+
+      //: 图标 + 名字 + COST/等级
+      const head = P.el('div', { class: 'build-echo-head' });
+      const iconWrap = P.el('div', { class: 'build-echo-icon' });
+      const iconUrl = String(prop.iconUrl || '');
+      if (iconUrl) {
+        const img = P.el('img', { src: iconUrl, alt: '' });
+        img.addEventListener('error', function () {
+          iconWrap.textContent = '?';
+        }, { once: true });
+        iconWrap.appendChild(img);
+      } else {
+        iconWrap.textContent = '?';
+      }
+      head.appendChild(iconWrap);
+
+      const headText = P.el('div', { class: 'build-echo-headtext' });
+      headText.appendChild(P.el('div', {
+        class: 'build-echo-name',
+        text: String(prop.name || '')
+      }));
+      const sub = [];
+      if (prop.cost != null) sub.push('COST ' + prop.cost);
+      if (item.level != null) sub.push('+' + item.level);
+      if (fd.name) sub.push('[' + fd.name + ']');
+      if (sub.length) {
+        headText.appendChild(P.el('div', {
+          class: 'build-echo-sub', text: sub.join('　')
+        }));
+      }
+      head.appendChild(headText);
+      card.appendChild(head);
+
+      //: 主属性（金色，旧界面 ``mainProps``）
+      const mains = Array.isArray(item.mainProps) ? item.mainProps : [];
+      if (mains.length) {
+        const body = P.el('div', { class: 'build-echo-props' });
+        for (const mp of mains) {
+          if (!mp || typeof mp !== 'object') continue;
+          body.appendChild(P.el('div', { class: 'build-echo-prop is-main' }, [
+            P.el('span', {
+              class: 'build-prop-name',
+              text: String(mp.attributeName || '')
+            }),
+            P.el('span', {
+              class: 'build-prop-value',
+              text: String(mp.attributeValue != null ? mp.attributeValue : '')
+            })
+          ]));
+        }
+        card.appendChild(body);
+      }
+      //: 副词条（``subProps``；``valid: true`` 的标色 —— 旧界面也这么区分）
+      const subs = Array.isArray(item.subProps) ? item.subProps : [];
+      if (subs.length) {
+        const body = P.el('div', { class: 'build-echo-props' });
+        for (const sp of subs) {
+          if (!sp || typeof sp !== 'object') continue;
+          body.appendChild(P.el('div', {
+            class: 'build-echo-prop' + (sp.valid ? ' is-valid' : '')
+          }, [
+            P.el('span', {
+              class: 'build-prop-name',
+              text: String(sp.attributeName || '')
+            }),
+            P.el('span', {
+              class: 'build-prop-value',
+              text: String(sp.attributeValue != null ? sp.attributeValue : '')
+            })
+          ]));
+        }
+        card.appendChild(body);
+      }
+      grid.appendChild(card);
+    }
+    wrap.appendChild(grid);
+    return buildDetailSection(
+      '✦ 声骸　COST ' + (ph.cost != null ? ph.cost : '?') + '/12',
+      [wrap]
+    ).card;
+  }
+
+  /**
+   * ⑦ ✦ 技能（旧界面 ``_skills_block`` L960-1029）
+   *
+   * 一行 7 个：图标 + 名字 + 等级（``Lv.x/10``）。
+   * 旧界面用 ``skill.iconUrl`` 画图标，没有就用占位。
+   */
+  /**
+   * ★ 造一块**共用**的说明面板（旧界面 ``_expand_panel`` L743-792）。
+   *
+   * ## 交互要求（用户原话，``detail_view.py`` L746-750）
+   *
+   * > 这里点到哪个技能，展示哪个，占满整个红框，
+   * > 再次点击该技能就是关闭展开
+   * > 共鸣链这里也是跟上面一样
+   *
+   * → **不是每条一个框**，而是**共用一块**：点谁就把内容换上去；
+   *   再点同一个就关掉（互斥展开）。
+   *
+   * @returns {{panel: HTMLElement, titleEl: HTMLElement,
+   *            bodyEl: HTMLElement, set: Function, hide: Function}}
+   */
+  function buildExpandPanel() {
+    const panel = P.el('div', { class: 'build-expand-panel' });
+    panel.hidden = true;
+    panel.classList.add('hidden');
+
+    const titleEl = P.el('div', { class: 'build-expand-title' });
+    const bodyEl = P.el('div', { class: 'build-expand-body' });
+    panel.appendChild(titleEl);
+    panel.appendChild(bodyEl);
+
+    const api = {
+      panel: panel,
+      titleEl: titleEl,
+      bodyEl: bodyEl,
+      //: 当前展开的是哪一条（用来做「再点一次关闭」）
+      currentKey: '',
+      set: function (key, title, text) {
+        api.currentKey = key;
+        titleEl.textContent = String(title || '');
+        bodyEl.textContent = String(text || '');
+        panel.hidden = false;
+        panel.classList.remove('hidden');
+      },
+      hide: function () {
+        api.currentKey = '';
+        panel.hidden = true;
+        panel.classList.add('hidden');
+      }
+    };
+    return api;
+  }
+
+  /**
+   * ★ 把「点图标 → 在共用面板里展开/收起」接上（旧界面 ``_bind_exclusive``）。
+   *
+   * 互斥语义：
+   *   * 点 A   → 面板显示 A
+   *   * 点 B   → 面板换成 B
+   *   * 再点 B → 面板关闭（``currentKey === key`` 就 hide）
+   *
+   * @param {HTMLElement} clickable - 可点的元素（图标 / 整格）
+   * @param {object} expand - ``buildExpandPanel()`` 的返回值
+   * @param {string} key - 这一条的唯一标识
+   * @param {string} title - 面板标题
+   * @param {string} text - 面板正文
+   */
+  function bindExclusiveExpand(clickable, expand, key, title, text) {
+    if (!clickable || !expand) return;
+    if (!String(text || '').trim()) return;   //: 没说明就不给点（不制造空面板）
+    clickable.classList.add('is-clickable');
+    clickable.setAttribute('role', 'button');
+    clickable.setAttribute('tabindex', '0');
+    clickable.title = '点击展开说明';
+
+    const toggle = function () {
+      if (expand.currentKey === key) {
+        expand.hide();
+        clickable.classList.remove('is-active');
+        return;
+      }
+      //: 互斥：先把别的格子取消高亮
+      const host = clickable.ownerDocument;
+      if (host) {
+        for (const el of host.querySelectorAll('.build-skill.is-active,'
+          + ' .build-chain-node.is-active')) {
+          el.classList.remove('is-active');
+        }
+      }
+      clickable.classList.add('is-active');
+      expand.set(key, title, text);
+    };
+
+    clickable.addEventListener('click', toggle);
+    //: 键盘可达（无障碍；也方便自动化测试）
+    clickable.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        toggle();
+      }
+    });
+  }
+
+  /**
+   * ⑦ ✦ 技能（旧界面 ``_skills_block`` L960-1027）
+   *
+   * ==========  ========================================================
+   * 元素         说明
+   * ==========  ========================================================
+   * 图标行       一排 7 个：图标 + 名字 + ``Lv.x/10``
+   * 共用面板     点图标 → 在**下面**展开该技能的说明；再点同一格 → 收起
+   * ==========  ========================================================
+   *
+   * ⚠ 标题格式照旧界面 ``f"{name}（{type}）"`` ——
+   *   例「砰砰（常态攻击）」。
+   */
+  function buildDetailSkills(skills) {
+    const wrap = P.el('div', { class: 'build-skills' });
+    const row = P.el('div', { class: 'build-skill-row' });
+
+    //: ★ 共用面板 —— 必须在图标行**之后**插进 DOM（下面展开）
+    const expand = buildExpandPanel();
+
+    let idx = 0;
+    for (const item of skills) {
+      if (!item || typeof item !== 'object') continue;
+      const skill = item.skill || {};
+      const nm = String(skill.name || skill.skillName || '');
+      if (!nm) continue;
+      idx += 1;
+
+      const type = String(skill.type || '');
+      const desc = String(skill.description || '').trim();
+      const title = type ? (nm + '（' + type + '）') : nm;
+
+      const cell = P.el('div', { class: 'build-skill' });
+      const iconWrap = P.el('div', { class: 'build-skill-icon' });
+      const iconUrl = String(skill.iconUrl || '');
+      if (iconUrl) {
+        const img = P.el('img', { src: iconUrl, alt: '' });
+        img.addEventListener('error', function () {
+          iconWrap.textContent = '✦';
+        }, { once: true });
+        iconWrap.appendChild(img);
+      } else {
+        iconWrap.textContent = '✦';
+      }
+      cell.appendChild(iconWrap);
+      cell.appendChild(P.el('div', {
+        class: 'build-skill-name', text: nm
+      }));
+      if (item.level != null) {
+        cell.appendChild(P.el('div', {
+          class: 'build-skill-level',
+          text: 'Lv.' + item.level + '/10'
+        }));
+      }
+      //: 点整格（图标更好点）→ 展开说明
+      bindExclusiveExpand(cell, expand, 'skill-' + idx, title, desc);
+      row.appendChild(cell);
+    }
+
+    wrap.appendChild(row);
+    wrap.appendChild(expand.panel);
+    return buildDetailSection('✦ 技能', [wrap]).card;
+  }
+
+  /**
+   * ⑧ ✦ 共鸣链（旧界面 ``_chains_block`` L1054-1135）
+   *
+   * ## 交互和技能**完全一样**（用户：「共鸣链这里也是跟上面一样」）
+   *
+   * 一排图标（解锁的亮 / 没解的压暗），点一个 → 下面共用面板展开说明，
+   * 再点同一个 → 收起。
+   *
+   * ⚠ 旧界面用 ``_dim()`` 把未解锁的压暗（**不能用 CSS ``opacity``**，
+   *   那个在 QLabel 上无效）。网页里 ``opacity`` 正常，所以直接 CSS。
+   */
+  function buildDetailChains(chains, role) {
+    const wrap = P.el('div', { class: 'build-chains' });
+    const row = P.el('div', { class: 'build-chain-row' });
+    const expand = buildExpandPanel();
+
+    const unlockedNum = role && role.chainUnlockNum != null
+      ? Number(role.chainUnlockNum) : -1;
+    let idx = 0;
+    for (const item of chains) {
+      if (!item || typeof item !== 'object') continue;
+      idx += 1;
+      //: 判定解锁：优先用 ``unlocked`` 字段，退回 ``order <= chainUnlockNum``
+      const order = item.order != null ? Number(item.order) : idx;
+      const unlocked = (item.unlocked != null)
+        ? !!item.unlocked
+        : (unlockedNum >= 0 && order <= unlockedNum);
+
+      const nm = String(item.name || '');
+      const desc = String(item.description || '').trim();
+      //: ★★★ 2026-11-03 用户圈图：「这里有没有激活该共鸣链，要打个括号说明」
+      //:
+      //: 问题：面板标题只写「共鸣链 1　穿行于荒芜长廊」，
+      //: **看不出这条到底解锁没有** —— 用户可能以为已经生效了。
+      //:
+      //: 现在标题末尾加状态括号，和官方库街区一致：
+      //:
+      //: .. code:: text
+      //:
+      //:     共鸣链 1　穿行于荒芜长廊（已激活）
+      //:     共鸣链 4　xxx（未激活）
+      //:
+      //: ⚠ 标题里也要带，不只是靠图标的明暗 ——
+      //:   用户是**点开面板看说明**的，那一眼必须能判断有没有生效。
+      const stateText = unlocked ? '（已激活）' : '（未激活）';
+      const title = (nm ? ('共鸣链 ' + order + '　' + nm) : ('共鸣链 ' + order))
+        + stateText;
+
+      const cell = P.el('div', {
+        class: 'build-chain-node'
+          + (unlocked ? ' is-unlocked' : ' is-locked')
+      });
+      const iconUrl = String(item.iconUrl || item.icon || '');
+      if (iconUrl) {
+        const img = P.el('img', { src: iconUrl, alt: '' });
+        img.addEventListener('error', function () {
+          cell.textContent = String(order);
+        }, { once: true });
+        cell.appendChild(img);
+      } else {
+        cell.textContent = String(order);
+      }
+      //: 未解锁的也**可以看说明**（用户可能想知道后面解锁什么）
+      bindExclusiveExpand(cell, expand, 'chain-' + idx, title, desc);
+      row.appendChild(cell);
+    }
+
+    wrap.appendChild(row);
+    wrap.appendChild(expand.panel);
+    return buildDetailSection('✦ 共鸣链', [wrap]).card;
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -3770,11 +4894,24 @@
       size: 'sm', disabled: true,
       onClick: function () { enhanceAction('stop'); }
     });
-    const btnSkip = P.button('跳过', {
+    //: ★★★ 2026-11-03 用户圈图：「没有运行的时候，跳过应该与停止一样不可点」
+    //:
+    //: 原来「跳过」**创建时就是可点的** —— 没运行时点它，
+    //: ``enhanceAction('skip')`` 会去打引擎接口，拿到「没有在跑」的错误，
+    //: 然后往「结果报告」区写一行红字。用户看到的是"点了个按钮，报错了"。
+    //:
+    //: 「跳过」的语义是"强化途中换下一个声骸"——**没在跑时根本无意义**，
+    //: 所以初始 ``disabled: true``，和「停止」「继续」一致。
+    //:
+    //: ⚠ 和「停止」的区别：停止要等真正进了运行态才能点；
+    //:   跳过还要额外要求"正在强化"（见 ``enhanceStartWatch`` 里的启停逻辑）。
+    ENHANCE_STATE.btnSkip = P.button('跳过', {
       size: 'sm',
+      disabled: true,
       title: '强化途中遇到不想要的声骸，按一下换下一个',
       onClick: function () { enhanceAction('skip'); }
     });
+    const btnSkip = ENHANCE_STATE.btnSkip;
     const btnReset = P.button('恢复默认', {
       size: 'sm',
       onClick: function () { enhanceResetSettings(); }
@@ -4450,19 +5587,17 @@
         fail('停止失败：' + String(d.message || d.reason || '没有正在运行的任务'));
         return;
       }
-      if (ENHANCE_STATE.btnStop) ENHANCE_STATE.btnStop.disabled = true;
+      //: 停止成功 → 四个按钮统一回「未运行」态（跳过也跟着禁用）
+      setEnhanceRunning(false, '');
       return;
     }
 
     // ── 运行 ──
-    if (ENHANCE_STATE.btnRun) ENHANCE_STATE.btnRun.disabled = true;
-    if (ENHANCE_STATE.btnStop) ENHANCE_STATE.btnStop.disabled = false;
+    //: 统一走 setEnhanceRunning（它同时管 停止 / 跳过 / 继续）
+    setEnhanceRunning(true, '强化');
 
     const result = await P.call('runTask', 'echo_enhance');
-    const revert = function () {
-      if (ENHANCE_STATE.btnRun) ENHANCE_STATE.btnRun.disabled = false;
-      if (ENHANCE_STATE.btnStop) ENHANCE_STATE.btnStop.disabled = true;
-    };
+    const revert = function () { setEnhanceRunning(false, ''); };
 
     if (!result.ok) {
       revert();
@@ -4490,17 +5625,53 @@
       const r = await P.call('getStatus');
       if (!r.ok || !r.data) return;
       const running = String(r.data.running || '');
-      if (ENHANCE_STATE.btnRun) {
-        ENHANCE_STATE.btnRun.disabled = !!running;
-      }
-      if (ENHANCE_STATE.btnStop) {
-        ENHANCE_STATE.btnStop.disabled = !running;
-      }
+      //: ★ 2026-11-03：「跳过」和「停止」同进同出 ——
+      //: 没有运行的时候不可点（用户圈图要求）。
+      //: 用 ``setEnhanceRunning()`` 统一改，避免两个地方各写一份走偏。
+      setEnhanceRunning(!!running, running);
       if (!running) {
         clearInterval(ENHANCE_STATE.watchTimer);
         ENHANCE_STATE.watchTimer = null;
       }
     }, 1500);
+  }
+
+  /**
+   * ★ 统一维护「运行 / 停止 / 跳过 / 继续」四个按钮的可点状态（2026-11-03）。
+   *
+   * ## 为什么要一个函数
+   *
+   * 之前这是**四处各写一份** ``btnXxx.disabled = ...``：
+   * ``enhanceAction`` 里两处、``enhanceStartWatch`` 里一处、
+   * 别处还有 —— 漏一个就是"某个按钮状态不对"。
+   *
+   * 实测漏的就是「跳过」：它**从头到尾没有任何地方控制 disabled**，
+   * 所以一直可点。用户圈图：「没有运行的时候，跳过应该与停止一样不可点」。
+   *
+   * @param {boolean} running - 引擎是否在跑
+   * @param {string} [taskName] - 正在跑的任务名（用来判断"是不是强化"）
+   */
+  function setEnhanceRunning(running, taskName) {
+    running = !!running;
+    if (ENHANCE_STATE.btnRun) {
+      ENHANCE_STATE.btnRun.disabled = running;
+    }
+    if (ENHANCE_STATE.btnStop) {
+      ENHANCE_STATE.btnStop.disabled = !running;
+    }
+    //: 「跳过」只在**正在强化**时有意义 ——
+    //: 跑别的工具（比如 4C）时点「跳过」也是错的动作。
+    if (ENHANCE_STATE.btnSkip) {
+      const isEnhance = running
+        && (!taskName || String(taskName).indexOf('强化') >= 0);
+      ENHANCE_STATE.btnSkip.disabled = !isEnhance;
+    }
+    //: 「继续」只在**暂停**时出现（引擎那边自动停止会暂停任务）——
+    //: 这里没有暂停态的可靠信号，保守起见保持"运行中可点，
+    //: 真实是否可继续由后端拒绝并回报错误"。见 enhanceAction('resume')。
+    if (ENHANCE_STATE.btnResume) {
+      ENHANCE_STATE.btnResume.disabled = !running;
+    }
   }
 
   //  导出（调试用）

@@ -59,6 +59,17 @@
   //  消息通知
   // ────────────────────────────────────────────────────────────────────────
   window.App.registerPage('notice', function (section) {
+    //: ★★★ 2026-11-03 用户圈图：
+    //:   「工具不自动展开，而且这个箭头图标不是向右而是向下吧，
+    //:     这里会变成可清空的列表」
+    //:
+    //: 圈的是**说明文字那一整段**（"通知的存储与清理在
+    //: src/core/notifications.py（Qt 版 notify_page.py）。P2 接
+    //: getNotices() 之后这里会变成可清空的列表。"）——
+    //: 那是给开发者看的实现说明，不该出现在界面上。
+    //:
+    //: 副标题「最近 10 条通知，每天自动清理」**保留** ——
+    //: 那是用户可见的功能描述（告诉他这里会有多少条、怎么清理）。
     const head = document.createElement('div');
     head.className = 'page-head';
     head.innerHTML =
@@ -74,13 +85,6 @@
     card.innerHTML =
       '<div class="empty" style="padding:26px 16px">' +
       '  <div class="empty-title">还没有通知</div>' +
-      '  <div class="empty-hint">' +
-      '    通知的存储与清理在 <span class="selectable" ' +
-      '    style="font-family:monospace">src/core/notifications.py</span>（Qt 版' +
-      '    <span class="selectable" style="font-family:monospace">notify_page.py</span>）。' +
-      '    P2 接 <span class="selectable" style="font-family:monospace">getNotices()</span> ' +
-      '    之后这里会变成可清空的列表。' +
-      '  </div>' +
       '</div>';
     section.appendChild(card);
   });

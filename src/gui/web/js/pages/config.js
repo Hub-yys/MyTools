@@ -79,12 +79,28 @@
   }
   const App = window.App;
 
-  /** 分类定义（value 和 Python 侧的 config_kind 对应）*/
+  /** 分类定义（value 和 Python 侧的 config_kind 对应）
+   *
+   * ★★★ 2026-11-03 用户圈图：「干掉角色战斗配置」
+   *
+   * 去掉了一整条 tab（``{value:'battle_profile', label:'战斗配置'}``）。
+   *
+   * ## 为什么可以直接去掉
+   *
+   * * 用户的战斗配置数量是 **0**（列表标题写着「0 条角色战斗配置」）
+   * * 「角色战斗配置」的**编辑表单本来就没做**（点新增选它会提示
+   *   「下一轮做」，见 ``TYPE_BATTLE_PROFILE`` 那个分支）
+   *
+   * 也就是说这条 tab **永远是空的、也建不了新条目** —— 留着只占地方。
+   *
+   * ⚠ **只删 tab，不删底层数据读取**：如果哪天用户从旧界面建了战斗配置，
+   *   它仍会出现在「全部」里（``state.items`` 不按 tab 过滤时照常显示）。
+   *   真要恢复这条 tab，把这一行加回来即可。
+   */
   const KINDS = [
     { value: 'all', label: '全部', kind: '' },
     { value: 'loadout', label: '角色声骸筛选', kind: 'loadout' },
-    { value: 'echo_profile', label: '角色声骸强化', kind: 'echo_profile' },
-    { value: 'battle_profile', label: '战斗配置', kind: 'battle_profile' }
+    { value: 'echo_profile', label: '角色声骸强化', kind: 'echo_profile' }
   ];
 
   const state = {
@@ -599,9 +615,16 @@
       }
       //: 最多画 60 个（61 个角色不超过这个数）
       list.slice(0, 60).forEach(function (item, idx) {
+        //: ★★★ 2026-11-03 用户圈图：「这里名字左边加上那个角色头像」
+        //:
+        //: 原来每项只有纯名字（``text: item.name``）—— 用户要在
+        //: 几十个角色里找人对号，没有头像很难认。
+        //:
+        //: 现在每项 = [头像][名字][元素]。
+        //: 头像来源和 ``updateAvatar`` 完全一致（``item.iconUrl`` 优先，
+        //: 挂了退回首字色块），所以列表里看到的和右边大图一致。
         const opt = P.el('div', {
           class: 'char-option' + (idx === activeIndex ? ' is-active' : ''),
-          text: item.name,
           dataset: { name: item.name },
           onMousedown: function (ev) {
             //: ⚠ 用 mousedown 而不是 click —— blur 会先触发、把菜单收掉
@@ -609,6 +632,50 @@
             choose(item.name);
           }
         });
+
+        //: 头像
+        const face = P.el('span', { class: 'char-option-face' });
+        //: ★★★ 2026-11-03 修：字段名是 ``avatarUrl``
+        //:
+        //: 我第一版写成 ``item.iconUrl || item.avatar`` —— **两个都不存在**，
+        //: 所以永远走「没有头像」分支，用户看到的还是首字色块
+        //: （圈图：「图片呢」）。
+        //:
+        //: 后端 ``getCharacterOptions`` 给的字段是::
+        //:
+        //:     {name, avatarUrl, avatarHue, initial, taken, element, ...}
+        //:
+        //: 其中 ``avatarUrl`` **只在文件真在时才有值**（``_safe_icon_url``
+        //: 会先 ``path.exists``），空串就该走首字兜底 —— 所以判断
+        //: ``if (avatarUrl)`` 就够了，不用再试别的字段名。
+        const iconUrl = String(item.avatarUrl || '');
+        if (iconUrl) {
+          const img = P.el('img', { src: iconUrl, alt: '', loading: 'lazy' });
+          img.addEventListener('error', function () {
+            //: 图挂了 → 退回首字色块（和右侧大图同一套兜底）
+            P.fill(face, null);
+            face.classList.add('is-initial');
+            const initial = item.initial;
+            face.textContent = String(
+              (initial && initial.initial) || item.name.slice(0, 1));
+            if (initial && initial.color) {
+              face.style.backgroundColor = String(initial.color);
+            }
+          }, { once: true });
+          face.appendChild(img);
+        } else {
+          face.classList.add('is-initial');
+          const initial = item.initial;
+          face.textContent = String(
+            (initial && initial.initial) || item.name.slice(0, 1));
+          if (initial && initial.color) {
+            face.style.backgroundColor = String(initial.color);
+          }
+        }
+        opt.appendChild(face);
+        opt.appendChild(P.el('span', {
+          class: 'char-option-name', text: item.name
+        }));
         if (item.element) {
           opt.appendChild(P.el('span', {
             class: 'char-option-meta', text: String(item.element)
@@ -971,7 +1038,14 @@
   const QUALITY_CHOICES = ['二星', '三星', '四星', '五星'];
   const DEFAULT_QUALITIES = ['五星'];
   const STATUS_CHOICES = ['已弃置', '已锁定', '未标记'];
-  const DEFAULT_STATUS = '未标记';
+  //: ★★★ 2026-11-03 用户圈图：「默认是勾上已锁定」
+  //:
+  //: 原来默认是「未标记」。用户的场景是**要刷的声骸先锁上**再筛，
+  //: 所以新建配置时默认「已锁定」更贴合实际用法。
+  //:
+  //: ⚠ 这个常量有 **4 处**在用（新建默认 / 回填兜底 / 保存 / 读取），
+  //:   改一处就全改 —— 这正是把它抽成常量而不是到处硬编码的价值。
+  const DEFAULT_STATUS = '已锁定';
   //: 旧界面 ``game_data.COST_SECTIONS``
   const COST_SECTIONS = [[4, '4C'], [3, '3C'], [1, '1C']];
 
@@ -1010,14 +1084,40 @@
       }));
     }
 
-    // ── 声骸套装（37 套，带图标 + 版本）──
+    // ── 声骸套装（37 套，**带图标**）──
+    //
+    //: ★★★ 2026-11-03 用户圈图：「图标呢」
+    //:
+    //: 原来用 ``Panels.select()``（原生 ``<select>``）—— 而
+    //: ``<option>`` **只能放纯文本，放不进 ``<img>``**，
+    //: 所以后端早就给了 ``iconUrl``（``assets/game/echo_sets/``
+    //: 下 37 个 png 都在）却也显示不出来。
+    //:
+    //: 现在换成 ``buildIconPicker()``：按钮 + 自定义弹层，
+    //: 每一项都是「图标 + 套装名」，选中后 trigger 里也带图标。
     const sets = await loadEchoSetList();
     const setRow = P.el('div', { class: 'dlg-row' });
     setRow.appendChild(requiredLabel('声骸套装'));
-    const setPicker = Panels.select(
-      [SET_PLACEHOLDER].concat(sets.map(function (s) { return s.name; }))
-        .map(function (n) { return { value: n, label: n }; }),
-      existing && existing.echoSet ? existing.echoSet : SET_PLACEHOLDER
+    const setPicker = buildIconPicker(
+      sets.map(function (s) {
+        return { name: s.name, iconUrl: s.iconUrl };
+      }),
+      existing && existing.echoSet ? existing.echoSet : SET_PLACEHOLDER,
+      {
+        placeholder: SET_PLACEHOLDER,
+        //: ★★★ 2026-11-03 **换套装要立刻重建声骸区**
+        //:
+        //: 踩到过：从原生 ``<select>`` 换成自定义 picker 后，
+        //: 原来挂在 ``select.change`` 上的监听没了 ——
+        //: 选完套装，下面 4C/3C/1C 区**一直停在「请先在上方选择声骸套装」**，
+        //: 用户会以为套装没选上（实测截图确认）。
+        //:
+        //: 所以 picker 必须显式回调这里。``rebuildEchoArea`` 会重新
+        //: 拉 ``getEchoSetDetail`` 并重画。
+        onChange: function () {
+          rebuildEchoArea(null);
+        }
+      }
     );
     setPicker.el.classList.add('dlg-select', 'dlg-set-select');
     setRow.appendChild(setPicker.el);
@@ -1404,6 +1504,186 @@
     }
     return '';
   }
+
+  /**
+   * ★★★ 2026-11-03 带图标的**自定义下拉**（替换原生 ``<select>``）。
+   *
+   * ## 为什么不能用 ``<select>``
+   *
+   * 用户圈图：「图标呢」—— 声骸套装下拉里每套都该有图标，
+   * 但原生 ``<option>`` **只能放纯文本**，放不进 ``<img>``。
+   *
+   * 后端 ``getLibraryData`` 早就给了 ``iconUrl``（
+   * ``assets/game/echo_sets/<套装名>.png``，37 个文件都在），
+   * 只是 ``<select>`` 渲染不出来。
+   *
+   * ## 实现
+   *
+   * 一个按钮 + 一个绝对定位的弹层（``.picker-panel``）：
+   *
+   * .. code:: text
+   *
+   *     [🖼 轻云出月            ▼]     ← .picker-trigger
+   *      ┌────────────────────┐
+   *      │ 🖼 轻云出月         │       ← .picker-option（带图标）
+   *      │ 🖼 命理崩毁之弦     │
+   *      └────────────────────┘
+   *
+   * ## 交互
+   *
+   * * 点 trigger → 开/关
+   * * 点选项 → 选中 + 关闭
+   * * 点外部 / Esc → 关闭
+   * * 选中项在 trigger 里**也显示图标**
+   *
+   * @param {Array<{name:string, iconUrl:string}>} items
+   * @param {string} current - 当前值
+   * @param {object} [opts] - ``{placeholder, onChange}``
+   * @returns {{el, get, set, setOptions}}
+   */
+  function buildIconPicker(items, current, opts) {
+    opts = opts || {};
+    const placeholder = opts.placeholder || '';
+    let value = current || placeholder;
+    let options = (items || []).slice();
+
+    const root = P.el('div', { class: 'picker' });
+    const trigger = P.el('button', {
+      class: 'picker-trigger', type: 'button'
+    });
+    const triggerIcon = P.el('span', { class: 'picker-trigger-icon' });
+    const triggerText = P.el('span', { class: 'picker-trigger-text' });
+    const triggerArrow = P.el('span', {
+      class: 'picker-trigger-arrow', text: '▼'
+    });
+    trigger.appendChild(triggerIcon);
+    trigger.appendChild(triggerText);
+    trigger.appendChild(triggerArrow);
+    root.appendChild(trigger);
+
+    const panel = P.el('div', { class: 'picker-panel' });
+    panel.hidden = true;
+    panel.classList.add('hidden');
+    root.appendChild(panel);
+
+    /** 造一个「图标 + 文字」片段 */
+    function makeFace(name, iconUrl) {
+      const frag = [];
+      const icon = P.el('span', { class: 'picker-opt-icon' });
+      if (iconUrl) {
+        const img = P.el('img', { src: iconUrl, alt: '', loading: 'lazy' });
+        img.addEventListener('error', function () {
+          //: 图标挂了就藏起来（不留破图），文字照常显示
+          icon.style.display = 'none';
+        }, { once: true });
+        icon.appendChild(img);
+      } else {
+        icon.style.display = 'none';
+      }
+      frag.push(icon);
+      frag.push(P.el('span', { class: 'picker-opt-text', text: name }));
+      return frag;
+    }
+
+    function findItem(name) {
+      for (const it of options) {
+        if (String(it.name) === String(name)) return it;
+      }
+      return null;
+    }
+
+    function syncTrigger() {
+      P.fill(triggerIcon, null);
+      P.fill(triggerText, null);
+      const hit = findItem(value);
+      const label = value || placeholder || '请选择';
+      const isPlaceholder = !hit && (!value || value === placeholder);
+      if (hit && hit.iconUrl) {
+        const img = P.el('img', { src: hit.iconUrl, alt: '' });
+        img.addEventListener('error', function () {
+          triggerIcon.style.display = 'none';
+        }, { once: true });
+        triggerIcon.appendChild(img);
+        triggerIcon.style.display = '';
+      } else {
+        triggerIcon.style.display = 'none';
+      }
+      triggerText.textContent = label;
+      trigger.classList.toggle('is-placeholder', isPlaceholder);
+    }
+
+    function renderPanel() {
+      P.fill(panel, null);
+      //: 占位项（「请选择」）排在第一个，和旧界面一致
+      const list = [];
+      if (placeholder) list.push({ name: placeholder, iconUrl: '' });
+      for (const it of options) list.push(it);
+      for (const it of list) {
+        const row = P.el('div', {
+          class: 'picker-option'
+            + (String(it.name) === String(value) ? ' is-current' : '')
+        }, makeFace(String(it.name), it.iconUrl));
+        row.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          setValue(String(it.name));
+          close();
+          if (typeof opts.onChange === 'function') opts.onChange(value);
+        });
+        panel.appendChild(row);
+      }
+    }
+
+    function open() {
+      renderPanel();
+      panel.hidden = false;
+      panel.classList.remove('hidden');
+      root.classList.add('is-open');
+    }
+    function close() {
+      panel.hidden = true;
+      panel.classList.add('hidden');
+      root.classList.remove('is-open');
+    }
+    function toggle() {
+      if (panel.hidden) open(); else close();
+    }
+
+    function setValue(v) {
+      value = v == null ? '' : String(v);
+      syncTrigger();
+    }
+
+    trigger.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      toggle();
+    });
+    //: 点外部关闭
+    document.addEventListener('click', function () { close(); });
+    //: Esc 关闭
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') close();
+    });
+
+    syncTrigger();
+
+    const api = {
+      el: root,
+      panelEl: panel,
+      triggerEl: trigger,
+      get: function () { return value; },
+      set: setValue,
+      setOptions: function (list, keep) {
+        options = (list || []).slice();
+        if (keep != null) setValue(keep);
+        else syncTrigger();
+        if (!panel.hidden) renderPanel();
+      },
+      open: open,
+      close: close
+    };
+    return api;
+  }
+
 
   /** 套装列表（``getLibraryData().echoSets``，37 套，已够用）*/
   async function loadEchoSetList() {
@@ -1840,14 +2120,25 @@
     const s = saved || {};
 
     // ── ① 核心属性（CollapsibleCard，默认收起）──
+    //
+    //: ★★★ 2026-11-03 用户圈图：「说明干掉」
+    //:
+    //: 删掉的是一整段（约 4 行）灰色说明：
+    //:
+    //:   「必须有，缺任意一条就弃置。暴击、暴击伤害强制勾选且不可取消 ——
+    //:     上限 5 条里它们已占 2 条，自选最多还能勾 3 条（勾满后其余
+    //:     自选框会置灰；已勾的随时可取消）。
+    //:     出厂默认只有暴击、暴击伤害两条；每次进入本页都是这套默认值，
+    //:     这里的勾选不会跨次保留（摘要若标「非默认」说明本次改过，
+    //:     点标题栏的「恢复默认」可立刻还原）。」
+    //:
+    //: 用户从 2026-11-02 起反复要求「说明文字全删」，工具页那 7 个
+    //: 早就删了，**配置页的对话框一直漏着** —— 这次一并清掉。
+    //:
+    //: ⚠ 摘要行（``summary``）**保留** —— 那不是说明，是**当前勾选
+    //:   状态的回显**（「已勾选 2 / 5 条：暴击、暴击伤害」），
+    //:   用户需要看得见自己勾了什么。
     const coreColl = TP.collapsibleCard('核心属性', {
-      hint: '必须有，缺任意一条就弃置。' + TP.ENHANCE_CRIT + '、' + TP.ENHANCE_CRIT_DMG +
-        '强制勾选且不可取消 —— 上限 ' + TP.ENHANCE_MAX_CORE + ' 条里它们已占 2 条，' +
-        '自选最多还能勾 ' + (TP.ENHANCE_MAX_CORE - 2) + ' 条' +
-        '（勾满后其余自选框会置灰；已勾的随时可取消）。\n' +
-        '出厂默认只有暴击、暴击伤害两条；**每次进入本页都是这套默认值**，' +
-        '这里的勾选不会跨次保留（摘要若标「非默认」说明本次改过，' +
-        '点标题栏的「恢复默认」可立刻还原）。',
       summary: '',
       expanded: false
     });
@@ -1896,7 +2187,27 @@
     }
     syncCore();
 
-    // ── ② 双爆下限（裸行，旧界面 ``_build_crit_card``）──
+    // ── ② 双爆下限（★ 2026-11-03 补玻璃卡底）──
+    //
+    //: 用户圈图：「这里的卡片呢，还有3个启用/未启用按钮没对齐」
+    //:
+    //: ## 两个问题
+    //:
+    //: ① **没有卡片底** —— 这一行夹在「核心属性」卡片和「满值锁定」卡片
+    //:    之间，是条裸行，看起来像"少了一张卡"。工具页那边上一轮已经
+    //:    补了 ``.enh-crit-card``，**配置页这边漏了**（两处是分开实现的）。
+    //:
+    //: ② **三个开关没对齐** —— 这行的开关靠 ``flex:1 1 auto`` 推到了
+    //:    最右，而下面「满值锁定」「自动停止」两张卡的开关也在最右，
+    //:    但**卡片的左右内边距不同**（裸行 vs ``card-glass`` 的 padding），
+    //:    于是三者的 x 坐标差几个像素，看着就是没对齐。
+    //:
+    //: ## 修法
+    //:
+    //: 套上 ``.enh-crit-card``（和工具页同一个类，同样的 padding / 圆角），
+    //: 开关改用 ``margin-left: auto``（CSS 里 ``.enh-crit-row > label.sw``
+    //: 已经写好）—— 三行的右边界就都由同一套 padding 决定，自然对齐。
+    const critCard = P.el('div', { class: 'enh-crit-card card-glass' });
     const critRow = P.el('div', { class: 'enh-crit-row' });
     critRow.appendChild(P.el('span', { class: 'enh-inline-label', text: '暴击不低于' }));
     local.critField = Panels.numberInput(
@@ -1913,7 +2224,9 @@
     local.critDmgField.el.classList.add('cfg-number');
     local.critDmgField.input.classList.add('cfg-number-input');
     critRow.appendChild(local.critDmgField.el);
-    critRow.appendChild(P.el('div', { style: 'flex:1 1 auto' }));
+    //: ⚠ 这里原来有个 ``flex:1 1 auto`` 的占位 div —— 去掉它，
+    //: 改由 CSS ``.enh-crit-row > label.sw { margin-left: auto }``
+    //: 把开关推到右边（和工具页保持一致）
     const critOn = s.enable_crit_check !== false;
     const critSw = P.toggle('启用', critOn, function (on) {
       local.critField.input.disabled = !on;
@@ -1923,21 +2236,26 @@
     local.critSwitch = critSw.querySelector('input[type="checkbox"]');
     local.critField.input.disabled = !critOn;
     local.critDmgField.input.disabled = !critOn;
-    root.appendChild(critRow);
+    critCard.appendChild(critRow);
+    root.appendChild(critCard);
 
     // ── ③ 满值锁定（CardWidget + 开关 AlignTop）──
+    //
+    //: ★ 2026-11-03 用户圈图「说明干掉」——删掉了这段：
+    //:
+    //:   「出现满值词条（暴击 10.5 / 爆伤 21）时：不看别的条件，
+    //:     一律强化到满级并上锁，不弃置。判定排在双爆下限与有效词条
+    //:     之前 —— 出了满值就保住。」
+    //:
+    //: ⚠ ``.enh-switch-left`` 容器**保留** —— 没有它开关会被
+    //:   ``.enh-switch-row`` 的 ``align-items: flex-start`` 顶到最左，
+    //:   和下面「自动停止」的开关错位（那才是用户说的"没对齐"）。
     const maxCard = P.el('div', { class: 'enh-switch-card card-glass' });
     const maxRow = P.el('div', { class: 'enh-switch-row' });
     const maxLeft = P.el('div', { class: 'enh-switch-left' });
     maxLeft.appendChild(P.el('div', {
       class: 'enh-switch-title',
       text: '满' + TP.ENHANCE_CRIT + ' / 满爆伤 自动锁定'
-    }));
-    maxLeft.appendChild(P.el('div', {
-      class: 'enh-switch-hint',
-      text: '出现满值词条（暴击 10.5 / 爆伤 21）时：不看别的条件，' +
-        '一律强化到满级并上锁，不弃置。判定排在双爆下限与有效词条之前 —— ' +
-        '出了满值就保住。'
     }));
     maxRow.appendChild(maxLeft);
     const maxSw = P.toggle('启用', s.enable_max_roll_lock !== false, function () {},
@@ -1966,8 +2284,14 @@
     root.appendChild(stopCard);
 
     // ── ⑤ 可选属性（CollapsibleCard）──
+    //
+    //: ★ 2026-11-03 用户圈图「说明干掉」——删掉 ``hint: '核心属性之外，
+    //: 这些出现了也算有效词条。'``。
+    //:
+    //: 这是配置页对话框里**最后一条**说明文字（核心属性 / 满值锁定那两条
+    //: 前面已删）。删完这一条，三个可折叠卡的 hint 全部为空 ——
+    //: 和工具页那边保持一致。
     const optColl = TP.collapsibleCard('可选属性', {
-      hint: '核心属性之外，这些出现了也算有效词条。',
       summary: '',
       expanded: false
     });
@@ -1998,7 +2322,34 @@
     }
     syncOptional();
 
-    // ── ⑥ 有效词条（裸行）──
+    // ── ⑥ 有效词条 ──
+    //
+    //: ★★★ 2026-11-03 用户圈图：
+    //:   「我给了三核心词条，2 条有效词条，但是有效词条至少数量设置为 3，
+    //:     应该提示至少为 4」
+    //:
+    //: ## 规则（后端 ``valid_count_range``）
+    //:
+    //: .. code:: text
+    //:
+    //:     下界 = 核心属性条数     ← 「核心几条，有效词条最低就几条」
+    //:     上界 = 核心 ∪ 可选 总条数
+    //:
+    //: ## 之前错在哪
+    //:
+    //: 这里写死 ``{min: 2, max: 5}`` —— **没跟核心属性联动**。
+    //: 勾了 3 个核心，有效词条还能选 3（甚至 2），界面完全不拦，
+    //: 等点保存/运行才被模型按 clamp 处理，用户根本不知道。
+    //:
+    //: ## 现在
+    //:
+    //: ``syncValidRange()`` 在**每次核心/可选属性变化时**重算范围：
+    //:   * 加减框的 min/max 跟着变
+    //:   * 当前值低于下界 → **当场**把值抬到下界，并在下面显示
+    //:     「至少 N 条（核心属性 M 条）」的提示
+    //:
+    //: 用户要的"应该提示至少为 4"就是这个提示。
+    const validCard = P.el('div', { class: 'enh-crit-card card-glass' });
     const validRow = P.el('div', { class: 'enh-crit-row' });
     validRow.appendChild(P.el('span', { class: 'enh-inline-label', text: '有效词条' }));
     validRow.appendChild(P.el('span', { class: 'enh-inline-label', text: '至少' }));
@@ -2009,8 +2360,85 @@
     local.validStepper.input.classList.add('cfg-number-input');
     validRow.appendChild(local.validStepper.el);
     validRow.appendChild(P.el('span', { class: 'enh-inline-label', text: '条' }));
-    validRow.appendChild(P.el('div', { style: 'flex:1 1 auto' }));
-    root.appendChild(validRow);
+    //: 提示位（值不足时显示「至少 N 条（核心属性 M 条）」）
+    local.validHint = P.el('span', {
+      class: 'enh-inline-label enh-valid-hint'
+    });
+    validRow.appendChild(local.validHint);
+    validCard.appendChild(validRow);
+    root.appendChild(validCard);
+
+    /**
+     * 按当前核心/可选属性条数重算「有效词条数」范围并纠正当前值。
+     *
+     * ⚠ 算法必须和后端 ``settings.valid_count_range`` **完全一致** ——
+     * 两边算不一样就是新的 bug。所以这里照抄它的三行：
+     *   ``total = len(core | optional)`` / ``low = max(2, len(core))`` /
+     *   ``high = max(low, min(5, total))``
+     */
+    function syncValidRange() {
+      const coreN = Object.keys(local.coreBoxes).filter(function (k) {
+        return local.coreBoxes[k] && local.coreBoxes[k].checked;
+      }).length;
+      const optN = Object.keys(local.optionalBoxes).filter(function (k) {
+        return local.optionalBoxes[k] && local.optionalBoxes[k].checked;
+      }).length;
+      const MINV = 2;
+      const MAXV = 5;
+      const total = coreN + optN;
+      const low = Math.max(MINV, coreN);
+      const high = Math.max(low, Math.min(MAXV, total));
+
+      const input = local.validStepper.input;
+      if (input) {
+        input.min = String(low);
+        input.max = String(high);
+        //: 当前值越界就抬到合法范围内（用户圈图要的就是这个自动纠正）
+        const cur = parseInt(String(local.validStepper.get()), 10);
+        if (!isFinite(cur) || cur < low) {
+          local.validStepper.set(low);
+        } else if (cur > high) {
+          local.validStepper.set(high);
+        }
+      }
+      if (local.validHint) {
+        //: 常态给一行灰字说明下界怎么来的；核心 ≥3 时更要说清楚
+        local.validHint.textContent = coreN
+          ? '（核心属性 ' + coreN + ' 条，不能少于 ' + low + '）'
+          : '';
+      }
+    }
+
+    //: ★★★ 2026-11-03 让「有效词条」范围**跟着核心/可选属性联动**
+    //:
+    //: ## ⚠ 我第一版写错了，这里记下来别再犯
+    //:
+    //: 写成了::
+    //:
+    //:     const _syncCore0 = syncCore;
+    //:     syncCore = function () { _syncCore0(); syncValidRange(); };   // ❌ 无效
+    //:
+    //: ``syncCore`` 是 **function 声明**（hoisted 的绑定），在它被调用时
+    //: 解析的是外层作用域那个函数 —— 给同名变量**重新赋值不会**穿到
+    //: 已有的调用点（那些 checkbox 的 ``change`` 监听早就在闭包里
+    //: 绑到了原函数）。
+    //:
+    //: 实测症状：勾了 3 个核心，hint 还写着「核心属性 2 条，不能少于 2」。
+    //:
+    //: ## 现在
+    //:
+    //: 直接给 checkbox **补一个独立的 change 监听** —— 不改任何已有函数，
+    //: 也不依赖声明顺序。这是最稳的做法。
+    for (const stat of Object.keys(local.coreBoxes)) {
+      const cb = local.coreBoxes[stat];
+      if (cb) cb.addEventListener('change', syncValidRange);
+    }
+    for (const stat of Object.keys(local.optionalBoxes)) {
+      const cb = local.optionalBoxes[stat];
+      if (cb) cb.addEventListener('change', syncValidRange);
+    }
+    //: 初次进来也算一次
+    syncValidRange();
 
     // ── 读值（和工具页 ``getToolSettings`` 的字段名一致）──
     function read() {
@@ -2044,12 +2472,61 @@
   // ══════════════════════════════════════════════════════════════════════
 
   async function submitEchoProfile(name, settings, existing, app) {
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★★★ 2026-11-03 修「保存必报 data 必须是对象」（用户圈图）
+    //
+    //  ## 症状
+    //
+    //  点「创建」必然红字报错：**「data 必须是对象」** ——
+    //  配置根本存不进去。
+    //
+    //  ## 根因
+    //
+    //  后端 ``setConfig`` 要求的协议是::
+    //
+    //      {"kind": "echo_profile", "id"?: "...", "data": { 真正的配置体 }}
+    //
+    //  而这里发的是::
+    //
+    //      {"kind": "echo_profile", "name": "...", "settings": {...}}
+    //      └─ 没有 data ───────────────────────────────────┘
+    //
+    //  → 后端 ``body = data.get("data")`` 拿到 ``None`` →
+    //    ``not isinstance(None, dict)`` → 报 "data 必须是对象"。
+    //
+    //  ## 为什么之前没被发现
+    //
+    //  旁边的 ``submitLoadout`` **是对的**（``{kind, data: _loadoutWire(data)}``）
+    //  —— 两个函数一个抄一个，抄漏了一层。而「角色声骸强化」的保存
+    //  大概从没被真正点通过（用户之前都是 0 条战斗配置/在建声骸筛选）。
+    //
+    //  ## 现在
+    //
+    //  按协议包一层 ``data``。**注意是扁平的** —— 后端
+    //  ``_save_echo_profile`` 直接 ``EchoProfile.from_dict(body)``，
+    //  而 ``from_dict`` 读的是 ``data["name"]`` / ``data["settings"]``
+    //  （都是**顶层**字段，不是嵌套）::
+    //
+    //      {"kind": "echo_profile",
+    //       "id"?: "...",
+    //       "data": {"name": "景燃", "settings": {...}}}
+    //                 └─ 这两个必须在 data 的**顶层** ─┘
+    //
+    //  ⚠ 我第一版写成了 ``data: {name, settings: {...}}`` 里再嵌
+    //    ``name`` —— 那就成了 ``data.name.name``，后端读不到。
+    //    对照 ``EchoProfile.from_dict`` 的字段列表就是这个形状。
     const payload = {
       kind: 'echo_profile',
-      name: name,
-      settings: settings
+      data: {
+        name: name,
+        settings: settings
+      }
     };
-    if (existing && existing.id) payload.id = existing.id;
+    if (existing && existing.id) {
+      payload.id = existing.id;
+      //: 修改时后端也需要 id 在 body 里（``target_id = data.id or body.id``）
+      payload.data.id = existing.id;
+    }
 
     const result = await P.call('setConfig', JSON.stringify(payload));
     const current = DIALOG_STATE.current;
@@ -2099,6 +2576,30 @@
 
     closeDialog();
     await reload();
+    //: ★★★ 2026-11-03 用户圈图：
+    //:   「新增角色声骸筛选，怎么没有这条配置？」
+    //:
+    //: ## 症状
+    //:
+    //: 在「角色声骸强化」tab 下点「新增」并建了一条**声骸筛选**配置，
+    //: 弹框关了、列表刷新了 —— 但**当前 tab 还是「角色声骸强化」**，
+    //: 而新条目属于「角色声骸筛选」→ 看不见，用户以为没创建成功。
+    //:
+    //: ## 修法
+    //:
+    //: 建完自动切到**新条目所属的那个 tab**（``KINDS`` 里按 kind 找）。
+    //: 这正是 ``KINDS`` 要带 ``kind`` 字段的用处。
+    const kindOfNew = String(payload.kind || '');
+    const targetTab = KINDS.find(function (k) {
+      return k.kind && k.kind === kindOfNew;
+    });
+    if (targetTab && state.kind !== targetTab.value) {
+      state.kind = targetTab.value;
+      renderRows();
+      //: 顺带给个确认 —— 用户刚建完，需要知道"东西在哪"
+      toast('<b>已创建</b>「' + P.esc(String(payload.name || '')) +
+        '」，已切到「' + P.esc(targetTab.label) + '」分类', 'ok');
+    }
     void app;
   }
 

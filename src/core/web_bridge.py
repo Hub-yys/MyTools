@@ -387,6 +387,41 @@ _TOOL_SETTINGS_SPEC: dict[str, dict] = {
         #: 这个常量的每一项是三元组 → 展开成 {value,label,desc}
         "tupleChoices": {"style"},
     },
+    #: ★★★ 2026-11-03 声骸自动强化（用户圈图：
+    #: 「我给了三核心词条，2 条有效词条，但是有效词条至少数量设置为 3，
+    #:   应该提示至少为 4」）
+    #:
+    #: ## 为什么需要后端给「有效词条数的合法范围」
+    #:
+    #: 规则（``echo_enhance/settings.py`` ``valid_count_range``）：
+    #:
+    #: .. code:: text
+    #:
+    #:     下界 = 核心属性条数        ← 「核心几条，有效词条最低就几条」
+    #:     上界 = 核心 ∪ 可选 的总条数（声骸 5 孔位里每种词条只出现一次）
+    #:
+    #: 前端页面把加减框写死成 ``{min: 2, max: 5}`` —— **没跟着核心属性联动**。
+    #: 于是勾了 3 个核心、有效词条还能选 3 → 用户提交后导出/运行时
+    #: 才被模型判成非法（或者静默按 clamp 后的值跑）。
+    #:
+    #: ## 现在
+    #:
+    #: ``getToolSettings("echo_enhance")`` 除了 settings，还回:
+    #:
+    #: .. code:: jsonc
+    #:
+    #:     "ranges": {"minValidCount": [下界, 上界]}
+    #:
+    #: 页面据此动态设加减框的 min/max，并在「当前值 < 下界」时**立刻**
+    #: 提示「至少为 N」（而不是等点创建才报错）。
+    "echo_enhance": {
+        "settingsKey": "echo_enhance",
+        "module": "src.tools.game.echo_enhance.settings",
+        "defaults": {},
+        "choices": {},
+        #: ★ 会按核心/可选属性条数算出「有效词条数」的合法范围
+        "validCountRange": True,
+    },
 }
 
 
@@ -3088,6 +3123,8 @@ class WebBridge(QObject):
 
         defaults: dict = {}
         choices: dict = {}
+        #: ★ 2026-11-03 有些工具还要给「合法范围」（目前只有 echo_enhance）
+        ranges: dict = {}
         if spec:
             mod = _import_quiet(spec["module"])
             if mod is not None:
@@ -3104,6 +3141,28 @@ class WebBridge(QObject):
                             value,
                             as_tuples=field in (spec.get("tupleChoices") or ()),
                         )
+                #: ★★★ 2026-11-03 「有效词条数」的合法范围
+                #:
+                #: 规则在 ``settings.valid_count_range(core, optional)``：
+                #:   下界 = 核心属性条数（「核心几条，有效词条最低就几条」）
+                #:   上界 = 核心 ∪ 可选 的总条数
+                #:
+                #: 用**当前已存设置**算，页面拿到后把加减框的 min/max 设对，
+                #: 并在当前值越界时**当场**提示 —— 而不是等点「创建」
+                #: 才被后端拒绝（用户圈图抱怨的正是这个）。
+                if spec.get("validCountRange"):
+                    try:
+                        core = settings.get("core_stats")
+                        optional = settings.get("optional_stats")
+                        low, high = mod.valid_count_range(
+                            core if isinstance(core, (list, tuple)) else (),
+                            optional if isinstance(optional, (list, tuple)) else (),
+                        )
+                        ranges["minValidCount"] = [int(low), int(high)]
+                    except Exception:  # noqa: BLE001 - 算不出来就不给
+                        logger.debug(
+                            "getToolSettings：算 valid_count_range 失败",
+                            exc_info=True)
 
         return _json({
             "ok": True,
@@ -3112,6 +3171,7 @@ class WebBridge(QObject):
             "settings": settings,
             "defaults": defaults,
             "choices": choices,
+            "ranges": ranges,
             #: ⚠ 这里**没有** ``prerequisites``（2026-11-02 删）——
             #: 旧界面没有「运行前提」区块，用户要求去掉。
         })
@@ -3761,6 +3821,67 @@ class WebBridge(QObject):
     # 只要求"读缓存"）。缓存没有就明确告诉用户去旧界面登录一次。
 
     @Slot(result=str)
+    def kuroLogout(self) -> str:
+        """★ 退出库街区登录（2026-11-03 补）。
+
+        ## 用户要求
+
+        > 退出登录怎么不能点？
+
+        之前 Web 版把「退出登录」**禁用**了，理由是"会破坏旧界面保存的
+        登录态"。但那只是**保守**，不是事实约束 —— 登出本就是用户的
+        合法操作，旧界面也一直是可点的。
+
+        ## 做什么（照抄旧界面 ``_on_logout``）
+
+        .. code:: python
+
+            kuro_account.clear_account()   # 删令牌文件
+            clear_cache()                  # 删 kuro_练度.json
+            self._account = Account()      # 重新读（变成未登录）
+            self._data = {}
+            self._render({})               # 清空页面
+            self._say("已退出登录（令牌 + 缓存都已删除）")
+
+        ⚠ **删缓存是故意的** —— 旧界面就这么做，而且登出后缓存里的
+        角色数据已经没有归属，留着只会让用户以为还登着。
+
+        :return: ``{ok, cleared: bool, message}
+        """
+        try:
+            from . import kuro_account  # noqa: PLC0415
+            from . import paths  # noqa: PLC0415
+
+            cleared_token = False
+            cleared_cache = False
+            try:
+                kuro_account.clear_account()
+                cleared_token = True
+            except Exception:  # noqa: BLE001 - 删不掉也要继续清缓存
+                logger.warning("kuroLogout：删令牌失败", exc_info=True)
+
+            try:
+                cache_file = paths.user_data_dir() / "kuro_练度.json"
+                if cache_file.is_file():
+                    cache_file.unlink()
+                    cleared_cache = True
+            except Exception:  # noqa: BLE001
+                logger.warning("kuroLogout：删缓存失败", exc_info=True)
+
+            logger.info("已退出登录（令牌=%s 缓存=%s）",
+                        cleared_token, cleared_cache)
+            return _json({
+                "ok": True,
+                "clearedToken": cleared_token,
+                "clearedCache": cleared_cache,
+                "message": "已退出登录（令牌 + 缓存都已删除）",
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("kuroLogout 失败", exc_info=True)
+            return _json({"ok": False, "reason": "error",
+                          "message": f"{type(exc).__name__}: {exc}"})
+
+    @Slot(result=str)
     def getCharacterBuildCache(self) -> str:
         """读角色练度缓存（**只读，不登录**）。
 
@@ -3804,11 +3925,105 @@ class WebBridge(QObject):
             else []
 
         characters: list[dict] = []
+        #: ★★★ 2026-11-03 **算出「这个角色有没有不达标项」**（flagged）
+        #:
+        #: ## 为什么必须后端算
+        #:
+        #: 页面原来只拿到 ``detailIds``（"有没有详情数据"），于是把
+        #: 「有数据」当成「达标」—— 用户圈图：
+        #:
+        #:   「筛选逻辑有问题，未达标，怎么进入达标里了？」
+        #:
+        #: 千咲 暴击 41.3% / 推荐 ≥75%，明明是**未达标**，
+        #: 但因为"有数据"就被塞进了「达标」分类。
+        #:
+        #: ## 判定规则（照抄旧界面 ``tool.py`` L1101-1136 的语义）
+        #:
+        #: ``standards[roleId].attrs`` 里每项有 ``value``（推荐值）和
+        #: ``symbol``（``≥`` / ``≤`` / ``=``）；拿
+        #: ``details[roleId].roleAttributeList`` 里**同名属性**的当前值比，
+        #: 任一不满足就算 flagged。
+        #:
+        #: ⚠ 两个必须注意的点（前端已经各踩过一次）：
+        #:   ① 当前值是**带百分号的字符串**（``'41.3%'``）——
+        #:      直接 ``float()`` 会炸，要剥掉 ``%``
+        #:   ② 属性名两边**必须完全一致**才配上（「暴击」对「暴击」）
+        flagged: dict[str, list[str]] = {}
+        details_raw = raw.get("details") if isinstance(
+            raw.get("details"), dict) else {}
+        standards_raw = raw.get("standards") if isinstance(
+            raw.get("standards"), dict) else {}
+
+        def _num(value) -> float | None:
+            """``'41.3%'`` / ``41.3`` / ``'1700'`` → float；转不了给 None。"""
+            if value is None:
+                return None
+            if isinstance(value, (int, float)):
+                return float(value)
+            text = str(value).replace("%", "").strip()
+            if not text:
+                return None
+            try:
+                return float(text)
+            except ValueError:
+                return None
+
+        for rid, detail in details_raw.items():
+            if not isinstance(detail, dict):
+                continue
+            std = standards_raw.get(rid)
+            std_attrs = std.get("attrs") if isinstance(std, dict) else None
+            if not isinstance(std_attrs, list) or not std_attrs:
+                continue
+            current: dict[str, float] = {}
+            for item in (detail.get("roleAttributeList") or []):
+                if not isinstance(item, dict):
+                    continue
+                nm = str(item.get("attributeName") or "").strip()
+                val = _num(item.get("attributeValue"))
+                if nm and val is not None:
+                    current[nm] = val
+
+            issues: list[str] = []
+            for attr in std_attrs:
+                if not isinstance(attr, dict):
+                    continue
+                nm = str(attr.get("name") or "").strip()
+                if not nm:
+                    continue
+                need = _num(attr.get("value"))
+                have = current.get(nm)
+                #: 面板里没这个属性 → **不算不达标**（旧界面也这么处理）
+                if need is None or have is None:
+                    continue
+                symbol = str(attr.get("symbol") or "≥")
+                if symbol == "≤":
+                    passed = have <= need
+                elif symbol == "=":
+                    passed = abs(have - need) < 1e-9
+                else:
+                    passed = have >= need
+                if not passed:
+                    #: ⚠ 文案里**不要**用 ``attr['current']`` —— 那个字段
+                    #: 后端恒为 ``'0'`` / ``'0.0%'``（没人回填），
+                    #: 写进文案就成了「暴击 0.0% 没到 ≥75%」，
+                    #: 而真实值是 41.3%（实测踩到）。
+                    #: 用我们自己从 ``roleAttributeList`` 取到的当前值。
+                    have_text = f"{have:g}"
+                    if "%" in str(attr.get("recommend") or ""):
+                        have_text += "%"
+                    issues.append(
+                        f"{nm} {have_text} 没到 "
+                        f"{symbol}{attr.get('recommend') or need}")
+            if issues:
+                flagged[str(rid)] = issues
+
         for item in role_list:
             if not isinstance(item, dict):
                 continue
+            rid = str(item.get("roleId") or "")
             characters.append({
-                "roleId": str(item.get("roleId") or ""),
+                "roleId": rid,
                 "name": str(item.get("roleName") or item.get("name") or ""),
                 "level": item.get("level") or 0,
                 "star": item.get("star") or item.get("quality") or 0,
@@ -3823,6 +4038,9 @@ class WebBridge(QObject):
                 #: ⚠ 这是**库街区 CDN 的远程 URL**（web-static.kurobbs.com），
                 #: 不是本地文件 —— 页面直接 ``<img src>`` 即可，不用 media_server。
                 "picUrl": str(item.get("rolePicUrl") or ""),
+                #: ★ 不达标项明细（空数组 = 达标）
+                "issues": flagged.get(rid, []),
+                "flagged": rid in flagged,
             })
 
         #: ★★★ 账号概览（旧界面 ②「账号概览」那行 6 项）

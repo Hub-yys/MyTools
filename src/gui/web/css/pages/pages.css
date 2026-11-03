@@ -1698,22 +1698,50 @@
   color: var(--text);
 }
 
-/* 折叠箭头 —— 用 CSS 画的 chevron，展开朝下、收起朝右 */
+/* 折叠箭头 —— 用 CSS 画的 chevron，**展开朝下、收起朝右**
+ *
+ * ★★★ 2026-11-03 用户圈图：「这个箭头图标不是向右而是向下吧」
+ *
+ * ## 实测结论：它本来就是朝下的
+ *
+ * ``getComputedStyle(chevron).transform`` 实测是
+ * ``matrix(0.707107, 0.707107, -0.707107, 0.707107, ...)`` = 旋转 45°，
+ * 配合 ``border-right + border-bottom`` 画出来就是 **∨（朝下）**。
+ *
+ * ## 那为什么用户看着像朝右
+ *
+ * 这个 chevron 是**两边各 1.5px 的直角折线**，尺寸只有 **7×7**，
+ * 而且展开态还带了 ``translateY(-2px)``（为了视觉居中的微调）——
+ * 在 125% DPI 的屏幕上缩成 8.75px，加上那 2px 上移，
+ * **两条边的长度不对称**，看起来就歪成了「>」。
+ *
+ * ## 修法
+ *
+ * * 尺寸 7 → **8px**（清晰一点）
+ * * **去掉 ``translateY(-2px)``** —— 那点偏移是让它歪的主因；
+ *   改用 ``margin-bottom`` 做对称的视觉居中
+ * * 边框 1.5 → **1.6px**，转角更实
+ *
+ * 这样展开态是干净的 ∨，收起态是干净的 ›，不会再认错。
+ */
 .nav-group-chevron {
   flex: 0 0 auto;
   margin-left: auto;
-  width: 7px;
-  height: 7px;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  /*: 展开态：箭头朝下 */
-  transform: rotate(45deg) translateY(-2px);
-  opacity: 0.65;
+  width: 8px;
+  height: 8px;
+  border-right: 1.6px solid currentColor;
+  border-bottom: 1.6px solid currentColor;
+  /*: 展开态：箭头朝下（∨） */
+  transform: rotate(45deg);
+  /*: 用 margin 做视觉居中，别用 translate 偏移（那会让两条边看着不对称）*/
+  margin-top: -3px;
+  margin-bottom: 3px;
+  opacity: 0.7;
   transition: transform 150ms var(--ease), opacity 150ms var(--ease);
 }
 
 .nav-group.is-collapsed .nav-group-chevron {
-  /*: 收起态：箭头朝右 */
+  /*: 收起态：箭头朝右（›） */
   transform: rotate(-45deg);
 }
 
@@ -1882,6 +1910,119 @@
   height: 30px;
 }
 
+/*: ★ 2026-11-03 练度页的**可见失败提示**（日志卡删掉后的新出口）
+ *
+ * 默认隐藏；只有读取缓存失败 / 接口未就绪时才显示。
+ * 样式按 ``data-level`` 分色。
+ */
+.build-notice {
+  margin-top: 8px;
+  padding: 7px 11px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  border-left: 2px solid rgba(255, 200, 90, 0.6);
+  background-color: rgba(230, 180, 80, 0.10);
+  color: #e8c98a;
+}
+
+.build-notice[data-level="error"] {
+  border-left-color: rgba(255, 120, 110, 0.7);
+  background-color: rgba(200, 60, 50, 0.12);
+  color: #ff9b95;
+}
+
+/*: ★★★ 2026-11-03 「角色搜索」下拉候选（用户圈图）
+ *
+ *   「只搜索角色，也是下拉列表，也可输入搜索
+ *    检查其它地方的角色搜索是不是有图片吗，还有角色搜索都是这种
+ *    下拉列表+输入关键词模糊搜索」
+ *
+ * 输入框 + 候选面板；候选带**头像**、名字、等级和属性。
+ */
+.build-char-search {
+  position: relative;
+}
+
+/*: 候选面板 —— 挂在输入框正下方 */
+.build-char-panel {
+  position: absolute;
+  z-index: 70;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 280px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 5px;
+  border-radius: 10px;
+  background-color: #14141f;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+}
+
+/*: 一个候选：头像 + 名字 + 等级属性 */
+.build-char-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.build-char-opt:hover {
+  background-color: rgba(255, 255, 255, 0.10);
+}
+
+.build-char-opt.is-current {
+  background-color: rgba(120, 110, 255, 0.30);
+}
+
+/*: 头像（圆形，和配置页的角色候选一致） */
+.build-char-face {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background-color: rgba(255, 255, 255, 0.08);
+  font-size: 10px;
+  color: var(--text);
+}
+
+.build-char-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.build-char-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 550;
+}
+
+/*: 右侧「Lv.90　湮灭」 */
+.build-char-meta {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+
+.build-char-empty {
+  padding: 10px 9px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
 /* ② 账号概览 */
 .build-overview-row {
   display: flex;
@@ -1898,16 +2039,66 @@
    旧界面 L792-815：QScrollArea(横向) + QHBoxLayout，setFixedHeight(TILE_H + 22)
    用户原话："一个就展示所有共鸣者，展示不全，可以滑动"
    ⚠ 用网格换行会把下面的详情区挤出屏幕 —— 这是旧界面踩过的坑。 */
+/*: 共鸣者横向滚动行
+ *
+ * ★★★ 2026-11-03 用户圈图：
+ *   「这里应该价格左右滑动，不然我想看右边的角色怎么办」
+ *
+ * ## 症状
+ *
+ * 角色多的时候右边被裁掉了，但**看不出这条能横向滚动** ——
+ * 没有可见的滚动条、也没有任何提示。用户以为"就是看不全"。
+ *
+ * ## 根因
+ *
+ * ``overflow-x: auto`` 本身是生效的（鼠标滚轮按住 Shift 也能滚），
+ * 但全局滚动条是 ``::-webkit-scrollbar { height: 10px }`` +
+ * ``background: var(--scrollbar)``（``rgba(0,0,0,0.16)``）——
+ * **深色玻璃底上几乎透明**，肉眼看不见。
+ *
+ * ## 修法
+ *
+ * 1. 给这条**单独**做一条明显的滚动条（比全局粗、颜色更亮）
+ * 2. 加 ``scroll-behavior: smooth``，滚起来跟手
+ * 3. 鼠标悬停时才完全显现（不滚的时候别太抢眼）
+ *
+ * ⚠ 只给 ``.build-roles-scroll`` 加，不动全局滚动条 ——
+ *   内容区的纵向滚动条保持原样（那个用户没抱怨）。
+ */
 .build-roles-scroll {
   display: flex;
   flex-wrap: nowrap;
   gap: 6px;
   overflow-x: auto;
   overflow-y: hidden;
-  padding-bottom: 6px;
   /*: 旧界面 setFixedHeight(TILE_H + 22) = 132 + 22 = 154 */
   height: 154px;
   align-items: flex-start;
+  /*: 滚动条占的高度算进来，否则最后一行会被裁 */
+  padding-bottom: 10px;
+  scroll-behavior: smooth;
+  /*: 让触摸板/触屏也能横滑 */
+  -webkit-overflow-scrolling: touch;
+}
+
+/*: ★ 这条横向滚动条必须**看得见**，否则用户不知道能滑 */
+.build-roles-scroll::-webkit-scrollbar {
+  height: 9px;
+}
+
+.build-roles-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 5px;
+  margin: 0 2px;
+}
+
+.build-roles-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 5px;
+}
+
+.build-roles-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.45);
 }
 
 .build-roles-empty {
@@ -2315,25 +2506,32 @@
   flex-wrap: wrap;
 }
 
-/* ★ 单控件行水平居中（2026-11-03 用户：「这个调整成居中」）
+/* ★ 单控件行**靠左**（2026-11-03 用户纠正：「我是说文本框中文字居中，
+ * 你把文本框居中干嘛，移回左边去」）
  *
- * ## 什么时候用
+ * ## 我搞错了什么
  *
- * 一行里**只剩一个控件**、贴着卡片左边缘、右边一大片空白时。
- * 典型是「战斗方式」卡的下拉框 —— 旧界面它右边本来有一段说明文字
- * 撑满（``row.addWidget(self.style_hint, 1)``），说明文字按用户要求
- * 删掉之后，160px 的下拉框就孤零零贴在 1200px 宽的卡片最左边。
+ * 上一轮我把整个下拉框在卡片里水平居中了（``justify-content: center``）——
+ * 用户要的根本不是这个。他要的是：
  *
- * ## 为什么不改 ``.cfg-inline-row``
+ *   * 文本框**位置**：靠左（和「定时关机」「战斗方式」其他行一致）
+ *   * 文本框**里面的文字**：居中
  *
- * 那个类有 **8 处**在用（定时关机 / 目标属性 / 数量 / 勾选行 /
- * 运行行 / 历史头…），那些行要么内容满、要么必须靠左排，
- * 全局改成居中会全部错位。
+ * 旧界面 ``row.addWidget(self.style_box)`` 后面跟
+ * ``row.addWidget(self.style_hint, 1)`` —— 控件本来就贴左，
+ * 说明文字吃掉右边的空白。说明按用户要求删掉之后，控件仍然贴左，
+ * 只是右边空着，这是**对的**。
  *
- * 所以单独加一个修饰类，只给需要的行用。
+ * ## 所以这里
+ *
+ * 不给位置做任何居中处理（保持 ``.cfg-inline-row`` 的默认靠左）。
+ * 文字居中由 ``select.input`` / ``input.input`` 的 ``text-align: center``
+ * 负责 —— 见文件末尾「输入控件」一节。
+ *
+ * ⚠ 保留这个类名是为了不破坏已有的 JS 调用点，但它**不再改变布局**。
  */
 .cfg-row-center {
-  justify-content: center;
+  justify-content: flex-start;
 }
 
 /* ★ 运行 / 停止按钮排一行
@@ -2471,10 +2669,21 @@
   text-align: left;
 }
 
-/* 下拉（战斗方式）*/
+/* 下拉（战斗方式）
+ *
+ * ★ 2026-11-03 用户：「这个下拉框也有点长了」
+ *
+ * 旧界面 ``self.style_box.setMinimumWidth(160)`` —— Qt 里那是**最小值**，
+ * 但网页里写死成 ``width: 160px`` 就变成了固定宽度：'智能切换' 四个字
+ * 量出来约 110px，框却占 160px，右边空一大截。
+ *
+ * 现在宽度交给 JS ``sizeSelectToLongestOption()`` 精确计算
+ * （= 最长选项文字 + 左右内边距 + 小余量）。
+ * 这里只留**防塌缩**下限 —— 再窄箭头会压到字上。
+ */
 .cfg-select {
-  width: 160px;
-  flex: 0 0 160px;
+  min-width: 96px;
+  flex: 0 0 auto;
 }
 
 /* 下拉右边的说明文字 */
@@ -2546,10 +2755,31 @@
   line-height: 1.6;
 }
 
-/* 宽下拉（旧界面 ``TARGET_BOX_WIDTH = 320``）*/
+/*: 宽下拉（旧界面 ``TARGET_BOX_WIDTH = 320``）
+ *
+ * ★★★ 2026-11-03 用户：「还是长了……准则是比字的最大长度大一点就行」
+ *
+ * ## 试过但**不可行**的：``width: fit-content``
+ *
+ * ``<select>`` 的 ``fit-content`` 在 Chromium 里**不按最宽 option 算**，
+ * 而是塌成内容区最小宽度 —— 实测量出来只有 **79px**，
+ * 「导电伤害加成」显示不全，右边箭头还压着字（截图确认过）。
+ *
+ * ## 现在的做法：**JS 量，CSS 兜底**
+ *
+ * ``buildSizedSelect()``（见 ``tool-panels.js``）渲染时用 canvas
+ * 量出**最长选项**的文字宽度，写进元素的 ``width`` 内联样式
+ * （= 文字宽 + 左右内边距 + 箭头位）。
+ * 这样宽度精确等于「比字的最大长度大一点」，也不依赖浏览器
+ * 对 ``fit-content`` 的实现差异。
+ *
+ * ⚠ 这里保留 ``min/max-width`` 作为**兜底**：JS 没跑到（接口挂了 /
+ *   选项是异步填的）时也不会塌成 79px 或撑满整行。
+ */
 .cfg-select-wide {
-  width: 320px;
-  flex: 0 0 320px;
+  min-width: 168px;
+  max-width: 300px;
+  flex: 0 0 auto;
 }
 
 /* 〔−〕〔+〕步进按钮（旧界面 ``ToolButton`` 32x32）*/
@@ -2904,6 +3134,16 @@
 .enh-crit-row > label.sw {
   margin-left: auto;          /*: 吃掉中间的空白，贴右边 */
   flex: 0 0 auto;
+}
+
+/*: ★ 2026-11-03 「有效词条」的下界提示（用户：「应该提示至少为 4」）
+ *
+ * 显示成「（核心属性 3 条，不能少于 3）」，常态是灰字，
+ * 值被自动抬高时由 JS 改成醒目一点的颜色。
+ */
+.enh-valid-hint {
+  margin-left: 6px;
+  color: var(--faint);
 }
 
 .enh-inline-label {
@@ -3665,6 +3905,42 @@
   flex: 0 0 auto;
 }
 
+/*: ★ 2026-11-03 角色候选列表里的**头像**（用户：「名字左边加上那个角色头像」）
+ *  和右侧大图用同一套兜底：图挂了就退回首字色块。
+ */
+.char-option-face {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background-color: rgba(255, 255, 255, 0.08);
+  font-size: 10px;
+  color: var(--text);
+  /*: 圆形头像里的图片要铺满 */
+}
+
+.char-option-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/*: 没有头像时显示首字（深色字，配 ``item.initial.color`` 的浅色底）*/
+.char-option-face.is-initial {
+  color: #17202e;
+  font-weight: 650;
+}
+
+.char-option-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .char-menu-empty {
   padding: 10px 9px;
   font-size: 11.5px;
@@ -3847,7 +4123,34 @@
   border-left: 2px solid rgba(251, 191, 36, 0.50);
 }
 
-/* 一行声骸：勾选 + 图标 + 名字 + 属性多选 */
+/*: 一行声骸：勾选 + 图标 + 名字 + 属性多选
+ *
+ * ★★★ 2026-11-03 用户圈图：「这个勾选的框没有水平居中」
+ *
+ * ## 症状
+ *
+ * 勾选框贴在行的**左边缘**、而且偏上 —— 和右边的图标（36px 高、
+ * 有圆角底色）不在一条视觉中线上。
+ *
+ * ## 根因
+ *
+ * ``.echo-row`` 是 ``align-items: flex-start``（因为右边属性多选可能
+ * 换成好几行，顶部对齐才对），而 ``.echo-check`` 又额外给了
+ * ``padding-top: 3px`` —— 于是勾选框既不在行的垂直中线上，
+ * 也不和图标对齐。
+ *
+ * ## 修法
+ *
+ * 让 ``.echo-check`` **自己撑满行高并垂直居中**：
+ *
+ * .. code:: css
+ *
+ *     align-self: stretch       /* 吃掉行高（不管行多高）
+ *     align-items: center       /* 内部勾选框居中
+ *     padding-top: 0            /* 去掉那个 3px 的偏移
+ *
+ * 这样无论右边属性列有几行，勾选框都稳稳落在**第一行图标的中线**上。
+ */
 .echo-row {
   display: flex;
   align-items: flex-start;
@@ -3868,7 +4171,12 @@
 .echo-check {
   display: flex;
   align-items: center;
-  padding-top: 3px;
+  /*: ★ 关键：撑满行高后内部居中，才能和图标的垂直中线对齐 */
+  align-self: stretch;
+  /*: 图标是 30px 高，勾选框 15px → 上边距 (30-15)/2 = 7.5px，
+   * 这样它正好落在**第一行图标**的高度中心 */
+  padding-top: 0;
+  min-height: 30px;
   cursor: pointer;
 }
 
@@ -4217,6 +4525,93 @@
   cursor: not-allowed;
 }
 
+/*: ★★★ 2026-11-03 用户：「文本框中文字应该居中，检查有没有类似的情况，
+ * 应该都调成居中」
+ *
+ * ## 范围
+ *
+ * 用户圈了「目标属性」下拉框，但明确说「检查有没有类似的情况」——
+ * 所以**所有** ``.input``（下拉 / 文本 / 数字）统一内文字居中，
+ * 而不是只改那一个。只改一个的话下一个页面又会问一遍。
+ *
+ * ## 为什么是左右都留等量内距
+ *
+ * ``text-align: center`` 只在**内容盒**内居中。下拉框右边有 26px
+ * 是给箭头的（``select.input { padding-right: 26px }``），
+ * 左边如果只有 9px，视觉重心还是会偏左。
+ *
+ * 所以给下拉框补 ``padding-left: 26px`` —— 让左右内距相等，
+ * 居中的**视觉中心**才真的在框中间。
+ *
+ * ⚠ 文本/数字输入框没有箭头，左右本来就都是 9px，不用额外处理。
+ */
+.input {
+  text-align: center;
+}
+
+select.input {
+  /*: 和右侧箭头留白对称，否则文字看着偏左 */
+  padding-left: 26px;
+}
+
+/*: ★★★ 2026-11-03 **``text-align`` 对 base-select 无效，要用 ``justify-content``**
+ *
+ * ## 症状（用户第二次提「这文本框的文字看起来没居中啊」）
+ *
+ * 上一版给 ``.input { text-align: center }``，实测 ``getComputedStyle``
+ * 读出来**确实是 ``center``** —— 但文字还是靠左。为什么？
+ *
+ * ## 根因：``appearance: base-select`` 把 select 变成了 **flex 容器**
+ *
+ * 为了让下拉弹层能圆角（见下面 ``select.input`` 里那段说明），
+ * 我们给 select 加了 ``appearance: base-select``。它的副作用是：
+ *
+ * .. code:: text
+ *
+ *     getComputedStyle(select).display === 'flex'      ← 实测就是这个
+ *
+ * 而 ``text-align`` 只对**行内内容**（inline content）生效，
+ * 对 flex 布局里的 flex item **完全无效** —— 所以算出来是 center
+ * 但画出来还是靠左。这就是「值对了、样子没变」的经典陷阱。
+ *
+ * ## ★ 水平 vs 垂直是**两个**属性（第三次才对齐，别混）
+ *
+ * flex 容器里「居中」要分**两个轴**，用户这两轮说的正是这两件事：
+ *
+ * ============  ===================  ==========================
+ * 轴             属性                 用户的原话
+ * ============  ===================  ==========================
+ * 水平（主轴）    ``justify-content``  「文字看起来没居中啊」
+ * 垂直（交叉轴）  ``align-items``      「上下不居中」
+ * ============  ===================  ==========================
+ *
+ * 只写 ``justify-content: center`` 的话：左右居中了，**上下还顶着上边**
+ * —— 实测 ``alignItems`` 是 ``normal``（= ``stretch``），
+ * 而 select 高 **30px**、文字行高 **18.75px**，
+ * 于是文字贴上沿、下面空约 11px。**两个都要写。**
+ */
+select.input {
+  justify-content: center;   /*: 水平居中 */
+  align-items: center;       /*: ★ 垂直居中（用户：「上下不居中」）*/
+  text-align: center;        /*: 非 base-select 浏览器的兜底 */
+}
+
+/*: ★ 普通文本 / 数字输入框同样要垂直居中（2026-11-03）
+ *
+ * ``<input>`` 不是 flex 容器，文字垂直位置由 ``line-height`` 和 padding
+ * 决定。实测 ``paddingTop/Bottom: 0`` + ``line-height: 18.75px``
+ * 在 **30px** 高的框里 → 文字贴上沿（用户圈的就是这几处）。
+ *
+ * ⚠ 不要用 ``line-height: 30px``（= 框高）来硬凑：
+ *   多行内容会粘在一起，而且缩放时容易差 1px。
+ *   给**上下等量 padding** 更稳。
+ */
+input.input {
+  /*: (30 高 - 18.75 行高) / 2 ≈ 5.6px，取 5px 留余量 */
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
 select.input {
   cursor: pointer;
   /*: Chromium 的下拉箭头默认是黑的，深色底上看不见 */
@@ -4323,8 +4718,36 @@ input.input[type="number"] {
   font-variant-numeric: tabular-nums;
 }
 
+/*: 文本输入框的宽度策略
+ *
+ * ★★★ 2026-11-03 **改用 ``0 0 auto`` —— 组件级宽度必须能生效**
+ *
+ * ## 踩了两次的同一个坑
+ *
+ * 这条规则优先级是 ``(0,2,1)``，**高于**任何单类名的组件规则：
+ *
+ * .. code:: text
+ *
+ *     .build-login-input { width: 200px }   → (0,1,0)  输了 → 实测被拉成 1132px
+ *     .cfg-count-box     { flex: 0 0 90px } → (0,1,0)  输了 → 实测被拉成 555px
+ *
+ * ## 为什么改 ``flex: 0 0 auto`` 而不是继续加特例
+ *
+ * 上一轮我给 ``.cfg-count-box`` 加了 ``input.input.cfg-count-box`` 这种
+ * 「叠选择器提权重」的写法 —— 那是**治标**：下一个组件再声明宽度，
+ * 又会被这条规则吃掉（登录框就是这样又踩了一次）。
+ *
+ * 所以改根：``0 0 auto`` = "按自己声明的宽度来，别撑满"。
+ *
+ *   * 声明了宽度的 → 现在生效（``.build-login-input`` 200px 等）
+ *   * 没声明宽度的 → 走浏览器默认宽度（约 20 字符），不会塌成 0
+ *
+ * ⚠ 真的需要撑满的地方（表格里那种长输入框）**自己写**
+ *   ``flex: 1 1 auto`` —— 那是局部的、显式的决定，
+ *   不该由一条全局兜底规则替它决定。
+ */
 input.input[type="text"] {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
 }
 
 /*: ★★★ 2026-11-03 **修「数量框被撑到 555px」**
@@ -4358,6 +4781,745 @@ input.input[type="text"] {
 input.input.cfg-count-box {
   flex: 0 0 90px;
   width: 90px;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ★★★ 2026-11-03 ④ 共鸣者详情 —— 完整图文布局
+
+   用户：「这个原查询角色练度的显示布局，数据来自官方的库街区」
+
+   照抄旧界面 ``character_build/detail_view.py`` 的 ``show_detail()``
+   （L1317-1400），八个区块：
+
+     ① 待优化红字   ② ✦属性推荐(当前 vs 推荐)  ③ ✦共鸣者属性
+     ④ ✦武器       ⑤ ✦属性展示              ⑥ ✦声骸 COST n/12
+     ⑦ ✦技能       ⑧ ✦共鸣链
+
+   ## 配色约定（照官方库街区那个页面）
+
+   * 区块标题：**深色实心条** + 左侧 ✦（``.build-section-title``）
+   * 达标的属性：**金色**底 ``rgba(230,180,80,…)``
+   * 没达标的：**红色**字 + 整行淡红底
+   * 声骸主属性：金色；副词条：普通白；``valid`` 词条：淡金底
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/*: 标题行「千咲　Lv90　湮灭　长刃」 */
+.build-detail-headline {
+  font-size: 15px;
+  font-weight: 640;
+  color: var(--text);
+  letter-spacing: 0.01em;
+  margin-bottom: 10px;
+}
+
+/*: ① 待优化红字（旧界面 ``BAD_FG``）*/
+.build-detail-issues {
+  font-size: 12px;
+  line-height: 1.65;
+  color: #ff8f88;
+  background-color: rgba(200, 60, 50, 0.10);
+  border-left: 2px solid rgba(255, 120, 110, 0.55);
+  border-radius: 6px;
+  padding: 8px 11px;
+  margin-bottom: 12px;
+}
+
+/*: 区块容器 —— 每块之间留 12px，和卡片列表的节奏一致 */
+.build-section {
+  margin-bottom: 12px;
+}
+
+/*: 区块标题条（深色实心，照官方那种「✦ 属性推荐」的头）*/
+.build-section-title {
+  font-size: 12.5px;
+  font-weight: 620;
+  color: var(--text);
+  background-color: rgba(0, 0, 0, 0.34);
+  border-radius: 6px;
+  padding: 6px 11px;
+  margin-bottom: 7px;
+  letter-spacing: 0.02em;
+}
+
+.build-section-body {
+  padding: 0 2px;
+}
+
+/* ── ② 属性推荐表 ────────────────────────────────────────────────────── */
+.build-std-head,
+.build-std-row {
+  display: grid;
+  /*: 名字 | 当前 | 推荐 | ✓✗ —— 后三列固定宽，名字吃剩余 */
+  grid-template-columns: minmax(90px, 1fr) 96px minmax(150px, 1.2fr) 24px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 5px;
+}
+
+.build-std-head {
+  color: var(--faint);
+  font-size: 11px;
+  padding-bottom: 3px;
+}
+
+/*: 列标题「属性」—— 左对齐（和下面的 `.build-std-name` 对齐）*/
+.build-std-head-name {
+  text-align: left;
+}
+
+/*: 列标题右对齐（和下面的数值列对齐）*/
+.build-std-head-cur,
+.build-std-head-want {
+  text-align: right;
+}
+
+.build-std-row {
+  line-height: 1.5;
+}
+
+/*: 没达标 —— 淡红底 + 红字（旧界面 ``hit_row_color`` 的语义）*/
+.build-std-row.is-bad {
+  background-color: rgba(200, 60, 50, 0.10);
+  color: #ff8f88;
+}
+
+/*: 达标 —— 淡金底 + 金绿字 */
+.build-std-row.is-ok {
+  background-color: rgba(230, 180, 80, 0.08);
+  color: var(--text);
+}
+
+.build-std-name {
+  font-weight: 550;
+}
+
+.build-std-cur,
+.build-std-want {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.build-std-cur {
+  font-weight: 620;
+}
+
+.build-std-mark {
+  text-align: center;
+  font-weight: 700;
+}
+
+/* ── ③⑤ 两列属性网格 ────────────────────────────────────────────────── */
+.build-prop-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 18px;
+}
+
+/*: 窄窗口退回单列 */
+@media (max-width: 980px) {
+  .build-prop-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.build-prop-cell {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.build-prop-icon {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  opacity: 0.85;
+}
+
+.build-prop-icon img {
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+}
+
+.build-prop-name {
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+/*: 数值 —— 等宽数字，右对齐后才好看（同一列的数字位数对齐）*/
+.build-prop-value {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── ④ 武器 ──────────────────────────────────────────────────────────── */
+.build-weapon {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.build-weapon-icon {
+  width: 62px;
+  height: 62px;
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: rgba(255, 255, 255, 0.05);
+  display: grid;
+  place-items: center;
+}
+
+.build-weapon-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/*: 武器右侧信息列（名字 / 等级 / 主属性 / 特效）*/
+.build-weapon-info {
+  min-width: 0;
+}
+
+.build-weapon-name {
+  font-size: 13px;
+  font-weight: 620;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+
+.build-weapon-sub {
+  font-size: 11px;
+  color: var(--faint);
+  margin-bottom: 7px;
+}
+
+/*: ★★★ 2026-11-03 用户圈图：
+ *   「这个武器的展示也太奇怪了吧，怎么分那么开」
+ *
+ * ## 症状
+ *
+ * 武器的两个主属性（「攻击 337」和「共鸣效率 51.8%」）被**顶到两端**，
+ * 中间空出一大片，紧接着下面的特效说明又贴着左边 —— 整块看着散架。
+ *
+ * ## 根因
+ *
+ * 这里是 ``display: grid; grid-template-columns: repeat(2, 1fr)``：
+ *
+ * .. code:: text
+ *
+ *     [攻击          337]  [共鸣效率      51.8%]
+ *     ^ 各占 1fr（半宽），名字贴左、数值贴右 → 中间空 500px
+ *
+ * 「1fr」是为了让**两列等宽对齐**，但主属性只有 2 项时，
+ * 半宽的格子反而把一对键值撕开了。
+ *
+ * ## 修法
+ *
+ * 用 ``grid-template-columns: max-content max-content``：
+ * 每列**按内容宽度**，两项紧挨着排在左边，不再撑满。
+ *
+ * ⚠ 不用 flex —— grid 在后面加第三、四个主属性时仍会**自动换行成两列**
+ *   并保持列对齐，flex 会挤成一行溢出。
+ */
+.build-weapon-props {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  gap: 2px 26px;
+  justify-content: start;
+}
+
+.build-weapon-prop {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  line-height: 1.85;
+  /*: 名字和数值之间给固定间距，别用 space-between 撕太开 */
+  white-space: nowrap;
+}
+
+/*: 武器主属性里的数值跟名字紧凑挨着（不是推到行尾） */
+.build-weapon-prop .build-prop-value {
+  margin-left: 6px;
+}
+
+/*: 武器特效说明跨两列 */
+.build-weapon-effect {
+  grid-column: 1 / -1;
+  margin-top: 9px;
+  padding: 8px 11px;
+  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+.build-weapon-effect-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.build-weapon-effect-desc {
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--dim);
+  white-space: pre-wrap;
+}
+
+/* ── ⑥ 声骸 ──────────────────────────────────────────────────────────── */
+.build-echoes {
+  min-width: 0;
+}
+
+/*: 套装统计行「套装  轻云出月 ×5 + …」*/
+.build-echo-sets {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  font-size: 12px;
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background-color: rgba(230, 180, 80, 0.08);
+}
+
+.build-echo-sets-label {
+  color: var(--faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.build-echo-sets-value {
+  color: #e6b450;
+  font-weight: 550;
+}
+
+/*: 声骸卡网格 —— 每行两个（旧界面也是两列）*/
+.build-echo-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 980px) {
+  .build-echo-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.build-echo-card {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background-color: rgba(255, 255, 255, 0.03);
+  min-width: 0;
+}
+
+.build-echo-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 7px;
+}
+
+.build-echo-icon {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  border-radius: 7px;
+  overflow: hidden;
+  background-color: rgba(255, 255, 255, 0.06);
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  color: var(--faint);
+}
+
+.build-echo-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.build-echo-headtext {
+  min-width: 0;
+}
+
+.build-echo-name {
+  font-size: 12.5px;
+  font-weight: 620;
+  color: var(--text);
+}
+
+.build-echo-sub {
+  font-size: 11px;
+  color: var(--faint);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.build-echo-props {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.build-echo-prop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.85;
+}
+
+/*: 主属性 —— 金色（官方页面里主词条就是这个色）*/
+.build-echo-prop.is-main {
+  color: #e6b450;
+}
+
+.build-echo-prop.is-main .build-prop-name {
+  color: #e6b450;
+}
+
+.build-echo-prop.is-main .build-prop-value {
+  color: #e6b450;
+}
+
+/*: 命中推荐的副词条 —— 淡金底 */
+.build-echo-prop.is-valid {
+  background-color: rgba(230, 180, 80, 0.10);
+  border-radius: 4px;
+  padding: 0 5px;
+  margin: 0 -5px;
+}
+
+/* ── ✦ 技能 / 共鸣链 的「点击展开说明」面板（2026-11-03）───────────────
+ *
+ * 交互照旧界面 `_expand_panel` + `_bind_exclusive`：
+ *
+ *   * **共用一块**面板（不是每条一个框）
+ *   * 点谁显示谁；**再点同一个 → 收起**
+ *   * 面板占满整宽（在图标行**下面**，把下面的内容顶下去）
+ *
+ * 用户原话：
+ *   「这里点到哪个技能，展示哪个，占满整个红框，
+ *     再次点击该技能就是关闭展开」
+ *   「共鸣链这里也是跟上面一样」
+ *
+ * ⚠ 旧界面踩过一个坑：`setVisible(False)` 之后 `isVisible()`
+ *   在父窗口没 show 时永远是 False。网页里用 `hidden` 类 + `hidden`
+ *   属性双写，读 `classList.contains('hidden')` 判断状态最可靠。
+ */
+
+/*: 技能 / 共鸣链 —— 竖向：图标行 + 下面的共用面板 */
+.build-skills,
+.build-chains {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/*: 共用说明面板 */
+.build-expand-panel {
+  padding: 9px 12px;
+  border-radius: 7px;
+  background-color: rgba(255, 255, 255, 0.05);
+  border-left: 3px solid var(--primary);
+}
+
+.build-expand-title {
+  font-size: 12.5px;
+  font-weight: 620;
+  color: var(--text);
+  margin-bottom: 5px;
+}
+
+.build-expand-body {
+  font-size: 12px;
+  line-height: 1.72;
+  color: var(--dim);
+  /*: 官方技能说明里有换行（`\\n`）—— 保留它 */
+  white-space: pre-wrap;
+  /*: 说明可以选中复制（旧界面也开了 TextSelectableByMouse）*/
+  user-select: text;
+  cursor: text;
+}
+
+/*: 可点展开的格子 —— 给个手型，别让人猜 */
+.build-skill.is-clickable,
+.build-chain-node.is-clickable {
+  cursor: pointer;
+}
+
+/*: 当前展开的那一格高亮（和别的区分开）*/
+.build-skill.is-active .build-skill-icon,
+.build-chain-node.is-active {
+  outline: 1.5px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.build-skill.is-clickable:hover .build-skill-icon {
+  background-color: rgba(255, 255, 255, 0.10);
+}
+
+.build-chain-node.is-clickable:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+/* ── ⑦ 技能 ──────────────────────────────────────────────────────────── */
+.build-skill-row {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 1080px) {
+  .build-skill-row {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.build-skill {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+  min-width: 0;
+}
+
+.build-skill-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 9px;
+  overflow: hidden;
+  background-color: rgba(255, 255, 255, 0.06);
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  color: var(--dim);
+}
+
+.build-skill-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.build-skill-name {
+  font-size: 10.5px;
+  color: var(--dim);
+  line-height: 1.35;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-skill-level {
+  font-size: 10.5px;
+  color: #e6b450;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── ⑧ 共鸣链 ────────────────────────────────────────────────────────── */
+.build-chain-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.build-chain-node {
+  width: 44px;
+  height: 44px;
+  border-radius: 9px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.build-chain-node img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/*: 已解锁 —— 亮 */
+.build-chain-node.is-unlocked {
+  border-color: rgba(230, 180, 80, 0.45);
+  background-color: rgba(230, 180, 80, 0.10);
+  color: #e6b450;
+}
+
+/*: 未解锁 —— 压暗（但不隐藏，用户要看得到总共有几条）*/
+.build-chain-node.is-locked {
+  opacity: 0.38;
+  filter: grayscale(1);
+  color: var(--faint);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   ★ 带图标的自定义下拉（``buildIconPicker``）—— 2026-11-03
+
+   用户：「图标呢」「下拉列表矩形直角」「文字居中」三个要求一起满足：
+
+     * 每项有**图标**（原生 ``<option>`` 放不进 ``<img>``，只能用这个）
+     * 弹层**圆角** + 阴影（和 ``select.input::picker`` 观感一致）
+     * 文字/图标**垂直居中**
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.picker {
+  position: relative;
+  display: inline-block;
+  /*: 和 ``.dlg-select`` 同样的占位宽度——否则打开弹层会把行挤变形 */
+  min-width: 240px;
+}
+
+/*: 触发按钮（看起来和输入框一致）*/
+.picker-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px 0 9px;
+  border-radius: var(--radius-sm);
+  background-color: rgba(13, 21, 36, calc(var(--we-readability-floor) * 0.5));
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 140ms var(--ease);
+}
+
+.picker-trigger:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.picker.is-open .picker-trigger {
+  border-color: var(--primary);
+}
+
+/*: trigger 里的图标（32×32 有点大，压到 24）*/
+.picker-trigger-icon {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.picker-trigger-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.picker-trigger-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /*: 用户要求「文本框中的文字居中」——这里同样居中 */
+  text-align: center;
+}
+
+/*: 还没选时（「请选择」）用暗色，和下拉占位一致 */
+.picker-trigger.is-placeholder .picker-trigger-text {
+  color: var(--faint);
+}
+
+.picker-trigger-arrow {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--dim);
+  transition: transform 140ms var(--ease);
+}
+
+.picker.is-open .picker-trigger-arrow {
+  transform: rotate(180deg);
+}
+
+/*: 弹层 */
+.picker-panel {
+  position: absolute;
+  z-index: 60;
+  top: calc(100% + 5px);
+  left: 0;
+  min-width: 100%;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 5px;
+  border-radius: 10px;
+  background-color: #14141f;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+}
+
+/*: 每一项：图标 + 文字，垂直居中 */
+.picker-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.picker-option:hover {
+  background-color: rgba(255, 255, 255, 0.10);
+}
+
+.picker-option.is-current {
+  background-color: rgba(120, 110, 255, 0.32);
+}
+
+.picker-opt-icon {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background-color: rgba(255, 255, 255, 0.06);
+}
+
+.picker-opt-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.picker-opt-text {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* ── 变更摘要区（资源库更新）── */

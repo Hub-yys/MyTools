@@ -4,15 +4,12 @@
       "暴击",
       "暴击伤害"
     ],
-    "optional_stats": [
-      "攻击百分比",
-      "共鸣效率"
-    ],
-    "crit_min": 6.9,
-    "crit_dmg_min": 13.8,
+    "optional_stats": [],
+    "crit_min": 7.5,
+    "crit_dmg_min": 15,
+    "min_valid_count": 2,
     "enable_crit_check": true,
     "enable_max_roll_lock": true,
-    "min_valid_count": 3,
     "enable_auto_stop": true
   },
   "echo_change": {
