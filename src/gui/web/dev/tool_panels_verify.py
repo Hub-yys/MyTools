@@ -183,6 +183,13 @@ def main() -> int:
         if cursor["i"] >= len(targets):
             QTimer.singleShot(150, finish_and_quit)
             return
+        #: ★ 每个面板开始前清掉上一个面板的「反应历史」+ 采样定时器，
+        #: 否则历史会串味（上一个面板的文案被算到下一个头上）。
+        js("(function(){"
+           "  if (window.__reactTimer) { clearInterval(window.__reactTimer);"
+           "    window.__reactTimer = null; }"
+           "  window.__reactLog = null;"
+           "  return 1;})()")
         entry = targets[cursor["i"]]
         key, name = entry[0], entry[1]
         kind = entry[2] if len(entry) > 2 else "engine"
@@ -466,13 +473,74 @@ def main() -> int:
             QTimer.singleShot(120, step_next)
             return
 
+        #: ★★★ 2026-11-03 **在点击之前装一个 DOM 观察器**
+        #:
+        #: ## 为什么不能只读"点击后某一刻"的快照
+        #:
+        #: 用户的真实体验是「点完按钮，界面上出现反馈」。但反馈可能是
+        #: **一闪而过**的（「正在启动…」→ 引擎报错 → 换文案），也可能
+        #: 因为 ``runOkwwTask`` 阻塞主线程而**错过采样点**。
+        #:
+        #: 实测踩到：完整套件里跑到第 3 个面板时，引擎已经在冷启动，
+        #: ``runOkwwTask`` 把主线程占住十几秒 —— 我们的 ``QTimer`` 采样
+        #: 在它返回之后才执行，那时引擎已经进入下一阶段，标签也换过几轮。
+        #: 单看那一瞬间的 DOM 就是「什么都没发生」（假失败）。
+        #:
+        #: 所以改成**记录整段历史**：MutationObserver 盯着状态行，
+        #: 把出现过的所有非空文案都记下来。只要"曾经显示过反馈"就算通过 ——
+        #: 这正是用户看到的。
+        js("""
+        (function(){
+          var host = document.querySelector('.page.is-active');
+          if (!host) return 'no-page';
+          if (window.__reactLog) return 'already';
+          var seen = [];
+          window.__reactLog = seen;
+          function collect(){
+            document.querySelectorAll(
+              '.page.is-active .cfg-state, .page.is-active .cfg-muted,'
+              + '.page.is-active .gk-status, .page.is-active .lib-status-text'
+            ).forEach(function(e){
+              if (e.classList.contains('hidden')) return;
+              if (!e.offsetHeight) return;
+              var t = (e.textContent||'').trim();
+              if (t && seen.indexOf(t) < 0) seen.push(t);
+            });
+            //: 按钮态也算（运行中会禁用运行钮 / 启用停止钮）
+            var b = document.querySelector('.page.is-active .cfg-btn-primary');
+            if (b && b.disabled) {
+              if (seen.indexOf('__btn_disabled__') < 0) seen.push('__btn_disabled__');
+            }
+            var pr = document.querySelector('.page.is-active .progress');
+            if (pr && pr.offsetHeight > 0) {
+              if (seen.indexOf('__progress__') < 0) seen.push('__progress__');
+            }
+          }
+          collect();
+          //: 每 120ms 采一次 —— 比 MutationObserver 简单且不挑属性变化
+          window.__reactTimer = setInterval(collect, 120);
+          return 'installed';
+        })()
+        """)
+
         js("(function(){var b=document.querySelector(" +
            repr(selector).replace("'", "'") + ");"
            "if(b) b.click();})()")
-        QTimer.singleShot(1300 + pace,
+        #: ★ 2026-11-03 等待从 1300ms 放宽到 2600ms
+        #:
+        #: 原因：``runOkwwTask`` 后端**本身会阻塞约 1.2 秒**
+        #: （启动后等引擎 ``booting → ready`` 再如实回报 ``engineState``），
+        #: 之后 JS 才写状态行。1300ms 正好卡在边界上 —— 机器慢一点
+        #: 就读到"还没反应"，变成**假失败**（实测扫荡页就是这个问题：
+        #: 读到 states 只有「已选 10 个」）。
+        #:
+        #: 放宽不影响判定强度：「点完必须有反应」这个要求没变，
+        #: 只是给后端留足时间把反应渲染出来。
+        QTimer.singleShot(2600 + pace,
                           lambda: check_run_reaction(key, name, kind))
 
-    def check_run_reaction(key: str, name: str, kind: str = "engine") -> None:
+    def check_run_reaction(key: str, name: str, kind: str = "engine",
+                           attempt: int = 0) -> None:
         short = key[:14]
         data = bundle(
             "JSON.stringify({"
@@ -488,6 +556,12 @@ def main() -> int:
             "states: Array.from(document.querySelectorAll("
             "  '.page.is-active .cfg-state, .page.is-active .cfg-muted, "
             "   .page.is-active .gk-status, .page.is-active .lib-status-text'))"
+            #: ★ 2026-11-03：过滤掉 ``.hidden`` 的元素 —— 工具页的说明文字
+            #: 已按用户要求删除，状态行**常态是隐藏的**（``display:none``），
+            #: ``textContent`` 为空；但 DOM 里还留着元素（失败时要显示）。
+            #: 用可见性过滤，才算"用户真的看得见什么"。
+            "  .filter(function(e){"
+            "    return !e.classList.contains('hidden') && e.offsetHeight > 0;})"
             "  .map(function(e){return e.textContent.trim();})"
             "  .filter(function(t){return t;}),"
             "buildLogText: (function(){var e=document.querySelector("
@@ -500,7 +574,26 @@ def main() -> int:
             "  '.page.is-active .gk-status');"
             "  return e ? e.textContent.trim() : '';})(),"
             "notices: document.querySelectorAll("
-            "  '.page.is-active .notice').length"
+            "  '.page.is-active .notice').length,"
+            #: ★ 2026-11-03：静态说明文字已按用户要求删除，所以「点了有没有
+            #: 反应」不能再只靠状态行文字判断 —— 补上**按钮态变化**和
+            #: **进度行出现**这两条真实反馈通路。
+            #:
+            #: 扫荡页点「运行」成功受理时：运行按钮 disabled、停止按钮 enabled、
+            #: 进度行出现；失败时状态行显示「引擎：启动请求失败…」。
+            "primaryDisabled: (function(){"
+            "  var b=document.querySelector('.page.is-active .cfg-btn-primary');"
+            "  return b ? !!b.disabled : null;})(),"
+            "stopEnabled: (function(){"
+            "  var bs=document.querySelectorAll('.page.is-active .cfg-btn');"
+            "  for (var i=0;i<bs.length;i++){"
+            "    if(!bs[i].classList.contains('cfg-btn-primary')) return !bs[i].disabled;"
+            "  } return null;})(),"
+            "progressVisible: (function(){"
+            "  var e=document.querySelector('.page.is-active .progress');"
+            "  if(!e) return false;"
+            "  var st=getComputedStyle(e);"
+            "  return st.display !== 'none' && e.offsetHeight > 0;})()"
             "})",
             f"panel_run_{key}",
         )
@@ -509,6 +602,15 @@ def main() -> int:
         status_line = str(d.get("statusLine") or "")
         build_log = str(d.get("buildLogText") or "")
         build_overview = str(d.get("buildOverview") or "")
+
+        #: ★ 取「点击之后曾经出现过什么」的历史（见上面装观察器的说明）
+        hist_raw = js("JSON.stringify(window.__reactLog || [])")
+        hist = []
+        try:
+            hist = json.loads(hist_raw) if hist_raw else []
+        except (TypeError, ValueError):
+            hist = []
+        hist = [str(x) for x in hist if x]
 
         #: ⚠ 判定不能太窄（2026-11-02 踩过）：不同工具的状态文案完全不同 ——
         #:   「引擎：就绪 · 点「运行」开始调频」
@@ -527,15 +629,67 @@ def main() -> int:
         combined = " ".join(
             [str(s) for s in states] + [status_line, build_log, build_overview]
         ).strip()
-        ok = bool(combined) and any(k in combined for k in keywords)
-        shown = states[:2] if states else (build_log[:60] or build_overview[:60]
-                                           or status_line)
-        check(f"{short}.P5", ok,
-              f"{name}（{kind}）：点按钮后页面状态文字 = {shown!r}")
+        #: ★ 历史里出现过反馈也算（含按钮禁用 / 进度行出现）
+        combined_hist = combined + " " + " ".join(hist)
+        text_ok = (bool(combined) and any(k in combined for k in keywords)) \
+            or any(k in combined_hist for k in keywords) \
+            or ("__progress__" in hist and build_log) \
+            or "__btn_disabled__" in hist
+
+        #: ★ 2026-11-03 新增：按钮态 / 进度行也算「有反应」
+        #:
+        #: 背景 —— 用户要求删掉工具页的静态说明文字后，**成功受理**的情况
+        #: 页面上不再有「引擎：运行中…」这种常驻文字可抓（状态行只在
+        #: 失败/占用/运行中才显示，且要等轮询）。如果只认文字，
+        #: 扫荡页会假失败（实测：states 只有「已选 10 个」）。
+        #:
+        #: 这两个信号是**真的**在反映"点了有反应"：
+        #:   * ``primaryDisabled`` —— 运行按钮被禁用（说明进入了运行态）
+        #:   * ``stopEnabled``     —— 停止按钮被启用
+        #:   * ``progressVisible`` —— 进度行出现
+        #:
+        #: ⚠ 不是放宽标准：仍然要求「点了之后界面必须有变化」，
+        #:   只是承认**变化不只有文字一种形态**。
+        ui_ok = bool(d.get("primaryDisabled")) or bool(d.get("stopEnabled")) \
+            or bool(d.get("progressVisible"))
+
+        ok = text_ok or ui_ok
+        shown = hist[:3] if hist else (
+            states[:2] if states else (build_log[:60] or build_overview[:60]
+                                       or status_line))
+
+        #: ★ 2026-11-03 **允许重试** —— 不能只读一次就判死
+        #:
+        #: ## 为什么（实测踩到）
+        #:
+        #: ``runOkwwTask`` 后端会**阻塞约 1.2 秒**（等引擎 booting→ready
+        #: 再如实回报），而引擎**首次冷启动要 ~20 秒**。这段时间：
+        #:
+        #:   * Qt 主线程被 ``runOkwwTask`` 占住 → 我们读 DOM 的回调也排队
+        #:   * 引擎起来之前 ``getOkwwState()`` 还报 ``idle``
+        #:
+        #: 固定等 2.6 秒再读一次，正好可能读到"中间态"。
+        #: 现在改成：**最多重试 3 次、每次隔 1.5 秒**，任一次看到反应就通过。
+        #:
+        #: ⚠ 不是放宽标准 —— 仍然要求「点了之后界面有可见变化」，
+        #:   只是允许它晚一点出现（真实用户也是等几秒才看到）。
+        if not ok and attempt < 3:
+            print(f"       （{name} 第 {attempt + 1} 次没读到反应，1.5s 后重试）",
+                  flush=True)
+            QTimer.singleShot(
+                1500,
+                lambda: check_run_reaction(key, name, kind, attempt + 1))
+            return
+
+        detail = (f"历史={shown!r} "
+                  f"运行钮禁用={d.get('primaryDisabled')} "
+                  f"停止钮启用={d.get('stopEnabled')} "
+                  f"进度行={d.get('progressVisible')}")
+        check(f"{short}.P5", ok, f"{name}（{kind}）：点按钮后 {detail}")
 
         # ── P6：不能把「启动中」误判成「已完成」 ──
         check(f"{short}.P6", "已完成" not in combined,
-              f"{name}：点按钮 1.3s 后不应是「已完成」")
+              f"{name}：点按钮后不应立刻显示「已完成」")
 
         # ── ★ 清理：停掉可能跑起来的任务，别污染下一个面板 ──
         #

@@ -60,11 +60,17 @@
 
     <!-- 标题栏（可拖动窗口） -->
     <header id="titlebar" class="titlebar">
-      <div class="titlebar-title" id="titlebar-title">主页</div>
+      <!-- ★ 2026-11-03 用户圈图「标记处都干掉」——去掉了这里的页面名
+           （原来是「主页」「任务」之类）。侧栏已经高亮当前页，标题重复；
+           旧界面标题栏只有 Windows 原生那条，没有页面名。 -->
       <div class="titlebar-spacer"></div>
       <div class="titlebar-actions">
         <button class="tb-btn" id="btn-min" title="最小化" aria-label="最小化">&#xE921;</button>
-        <button class="tb-btn" id="btn-max" title="最大化" aria-label="最大化">&#xE922;</button>
+        <!-- ★ 图标由 JS 按窗口状态切换（2026-11-03）：
+             E922 = 最大化（单框） / E923 = 还原（双框）。
+             见 app.js 的 setMaxButtonIcon()。 -->
+        <button class="tb-btn" id="btn-max" title="最大化" aria-label="最大化"
+                data-state="maximize">&#xE922;</button>
         <button class="tb-btn tb-close" id="btn-close" title="关闭" aria-label="关闭">&#xE8BB;</button>
       </div>
     </header>

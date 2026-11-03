@@ -143,10 +143,14 @@ def slots():
             yield row, col
 
 
-def find_next_unenhanced(task):
+def find_next_unenhanced(task, exclude=None):
     """★ 找出**下一个未强化**的声骸格子。返回 ``(row, col)``，找不到返回 None。
 
     :param task: ok-ww 的 task（要能用 ``find_one`` / ``box_of_screen_scaled``）
+    :param exclude: 要**跳过**的格子 ``{(row, col), ...}``。
+        2026-10-29 加：「跳过不该强化的声骸」时用 —— 那种声骸还是
+        0 级，不排除的话每次扫描都会点回它，来回打转。
+        传 ``None`` 等价于不排除（原行为）。
 
     ## 判定
 
@@ -165,7 +169,10 @@ def find_next_unenhanced(task):
     几何常量是 1280x720 下量的；``box_of_screen_scaled(BASE_W, BASE_H, ...)``
     会把它换算到当前屏幕 —— **只在这一处做缩放**，别自己再乘一遍。
     """
+    skip = set(exclude or ())
     for row, col in slots():
+        if (row, col) in skip:
+            continue
         x1, y1, x2, y2 = icon_box_base(row, col)
         box = task.box_of_screen_scaled(BASE_W, BASE_H, x1, y1, x2, y2,
                                         name="echo_stack_slot")

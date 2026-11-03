@@ -1,6 +1,6 @@
 {
   "_source": "https://wiki.biligame.com/wutheringwaves/声骸合鸣",
-  "_fetched": "2026-10-01",
+  "_fetched": "2026-10-24",
   "_game_version": "3.7",
   "_note": "套装名称与效果文字整理自 bwiki 声骸合鸣页（游戏内原文）。游戏更新后可能过期，重跑 tools/refresh_wuwa_data.py 可刷新。",
   "_icons": "图标为程序生成的占位图。把游戏图标按 assets/game/echo_sets/<套装名>.png 覆盖同名文件即可。",
@@ -1686,7 +1686,7 @@
       "effects": [
         {
           "pieces": 2,
-          "text": "热熔伤害提升10%"
+          "text": "热熔伤害提升10%。"
         },
         {
           "pieces": 5,
@@ -1945,6 +1945,18 @@
         {
           "name": "奇绽傀",
           "cost": 1
+        },
+        {
+          "name": "霁息兽尊·首",
+          "cost": 1
+        },
+        {
+          "name": "霁息兽尊·身",
+          "cost": 1
+        },
+        {
+          "name": "心傀·喜",
+          "cost": 1
         }
       ]
     },
@@ -1988,6 +2000,10 @@
         }
       ],
       "echoes": [
+        {
+          "name": "千傀重楼",
+          "cost": 4
+        },
         {
           "name": "解形煞",
           "cost": 3

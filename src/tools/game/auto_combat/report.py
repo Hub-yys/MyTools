@@ -54,17 +54,34 @@ MISMATCHED_NAMES = {
     "YangYangSp": "Yangyang: Xuanling",
 }
 
-#: ★ MyTools 自加角色的**中文名**（类名 → 中文）。
+#: ★ **ok-ww 没翻译**的角色：类名 → 中文名。
 #:
 #: 为什么需要这张表：报告里的角色名走的是 ok-ww 的翻译文件
-#: （``i18n/zh_CN/LC_MESSAGES/ok.po``）。**上游没有「心」**，
-#: 所以 po 里没有 ``msgid "Xin"`` → 名字保持英文 ``Xin`` →
-#: 数据集里查不到（数据集存的是中文「心」）→ **没有头像**（显示 ? 占位）。
-#: （用户 2026-10-01 报的"识别出来了，但是显示的不是头像"就是这个。）
+#: （``i18n/zh_CN/LC_MESSAGES/ok.po``）。**po 里没有的 ``msgid``
+#: 就保持英文** → 数据集里查不到（数据集存的是中文）→ **没有头像**。
 #:
-#: ⚠ 以后再加自写角色，除了 Labels/CharFactory/Xin.py，**这里也要加一行**。
-LOCAL_CHAR_NAMES = {
-    "Xin": "心",
+#: ## 2026-10-25 用户报「清宵的图片没识别出来」
+#:
+#: 实测::
+#:
+#:     gettext.gettext('Qingxiao')  ->  'Qingxiao'    ← 没翻译，保持英文
+#:     gettext.gettext('JingRan')   ->  '景燃'         ← 有翻译
+#:
+#: ok-ww 的 ``ok.po`` 里**就是没有** ``Qingxiao`` 这一条（上游漏了），
+#: 而我们的数据集里存的是中文「清宵」→ 对不上 → 头像显示 ?。
+#:
+#: 所以在这里补一行。**注意**：这不是改 ok-ww 的代码，只是报告显示层的
+#: 名字映射 —— 认人、战斗都还是 ok-ww 原版。
+#:
+#: ⚠ 以后遇到「认出来了但没头像」，先跑一下::
+#:
+#:     gettext.gettext('<ClassName>')
+#:
+#: 如果返回的还是一串英文，就是缺翻译，往这里加一行即可。
+LOCAL_CHAR_NAMES: dict[str, str] = {
+    "Qingxiao": "清宵",       # 上游 ok.po 漏了这条（2026-10-25 用户报的）
+    "Suoming": "锁暝",        # 同上，v3.7.9 的 po 里也没有
+    "Rover": "漂泊者·导电",     # po 里只有 "漂泊者"，数据集按元素分了四条
 }
 
 _QUOTED = re.compile(r'^"(.*)"$', re.DOTALL)
@@ -154,8 +171,21 @@ def char_display_name(char) -> str:
     if explicit:
         return explicit
 
-    table = zh_names()
     cls_name = type(char).__name__
+
+    #: ★★ :data:`LOCAL_CHAR_NAMES` **最优先** —— 它是"数据集里的准确中文名"。
+    #:
+    #: ## 为什么必须在 MISMATCHED_NAMES 之前（2026-10-25 踩过的坑）
+    #:
+    #: 原来这个判断放在最后，结果 ``YangYangSp`` / ``Rover`` 先命中
+    #: ``MISMATCHED_NAMES`` 的 ``Yangyang: Xuanling`` / ``Rover`` →
+    #: 再查翻译表拿到 ``Yangyang: Xuanling`` / ``漂泊者`` →
+    #: **数据集里没有这两个名字**（我们存的是 ``秧秧·玄翎`` / ``漂泊者·导电``）
+    #: → 没头像。加进 LOCAL_CHAR_NAMES 也没用，因为根本没走到那一步。
+    if cls_name in LOCAL_CHAR_NAMES:
+        return LOCAL_CHAR_NAMES[cls_name]
+
+    table = zh_names()
     candidates = [
         cls_name,
         MISMATCHED_NAMES.get(cls_name, ""),
@@ -165,9 +195,6 @@ def char_display_name(char) -> str:
     for key in candidates:
         if key and key in table:
             return table[key]
-    # ★ 上游的翻译表里没有的自加角色，走我们自己的表
-    if cls_name in LOCAL_CHAR_NAMES:
-        return LOCAL_CHAR_NAMES[cls_name]
     return MISMATCHED_NAMES.get(cls_name) or cls_name
 
 

@@ -111,7 +111,6 @@ Get-CimInstance Win32_OperatingSystem | Select-Object Caption
 `sitecustomize.py` 放在 venv 里之后，**测试也能正常跑了**：
 
 ```
-explore_gap 单测   287 个全过（2.6 秒）
 nest_sweep 单测     67 个全过（0.04 秒）
 ```
 

@@ -5,18 +5,30 @@
 `main_window.py` 已经 300+ 行；而「哪个工具在跑 → 该弹哪种确认框」是**纯决策**，
 单独放这里可以被 `tests/` 直接覆盖，不用起 GUI。
 
-## 三件事
+## 现在管三件事（2026-10-24 起）
 
-1. **托盘常驻**：主窗口能隐藏到托盘，工具/任务继续在后台跑。
-2. **关闭确认（无任务）**：问「隐藏到托盘」还是「直接退出」。
-3. **关闭确认（有任务在跑）**：先点明**是哪个工具/任务**在跑，再问「停止并退出」。
+1. **托盘常驻**：托盘图标还在（气泡通知、托盘菜单都能用），
+   但**不再用来藏窗口**。2026-10-25 起「点启动就最小化」那套
+   也已删除（用户要求撤掉），启动后窗口保持原样。
+2. **关闭确认（无任务）**：问「**退出** 还是 **取消**」。
+3. **关闭确认（有任务在跑）**：先点明**是哪个工具/任务**在跑，再问「退出 / 取消」
+   （退出会先停掉它）。
+
+## ★ 2026-10-24 的两条用户要求
+
+> 修改启动的策略，不再最小化到托盘栏，而是直接最小化
+
+> 关闭窗口时，提示改为退出或取消
+
+所以**没有"隐藏到托盘"这个出口了** ——
+``CLOSE_HIDE`` 常量保留（``closeEvent`` 里还有防御性分支），
+但 :func:`ask_close` 已经不会再返回它。``allow_hide`` 参数同理，只为兼容签名。
 
 ## 设计取舍
 
-* **没有托盘就退化成最小化**：极少数环境（无头会话）拿不到系统托盘，
-  这时不能因为"没托盘"就把关闭确认也一起废掉 —— 确认框照弹，
-  只是「隐藏到托盘」退化成「最小化到任务栏」。
-* **点运行后自动缩到托盘**由界面层接线（见 ``main_window`` 注册的
+* **没有托盘也不影响别的**：``tray_available()`` 为 False 时只是
+  气泡通知发不出去，关闭确认和最小化行为**完全不变**。
+* **点运行后自动最小化**由界面层接线（见 ``main_window`` 注册的
   ``add_task_started_listener``）—— 本模块不关心谁触发。
 """
 
@@ -112,43 +124,69 @@ def close_question(running_task: str | None,
 
     返回 ``(标题, 正文, 主按钮文字, 次按钮文字)``。
 
-    ``allow_hide=False``（系统托盘拿不到）时，**两个按钮都不能提"托盘"** ——
-    那条路走不通，劝用户去点就是坑。这时"隐藏"统一说成"最小化到任务栏"。
+    ## ★ 2026-10-24 用户要求：**只有「退出」和「取消」两个选项**
+
+    用户原话：
+
+    > 关闭窗口时，提示改为退出或取消
+
+    改之前这里问的是「隐藏到托盘 / 直接退出」（有任务时是
+    「停止并退出 / 隐藏到托盘」）—— 那个"隐藏到托盘"的选项
+    **已经去掉了**（用户要求不再往托盘藏窗口）。
+
+    所以现在无论有没有任务在跑，都只有两条路：
+
+    * **主按钮** = 退出（有任务时先停掉任务，文案里说明清楚）
+    * **次按钮** = 取消（什么都不做）
+
+    ⚠ ``allow_hide`` 参数**保留但已无用处**（原先控制"隐藏到托盘"
+    还是"最小化到任务栏"的措辞）。留着是为了不破坏调用方签名；
+    以后真没人传了可以删。
 
     抽成纯函数是为了能直接断言文案 —— 这段最容易写错却最难人工覆盖
     （要真的关一次窗口、还得正好有任务在跑）。
     """
-    hide_word = "隐藏到托盘" if allow_hide else "最小化到任务栏"
-
     if running_task:
         return (
             "工具/任务正在执行",
             f"「{running_task}」正在执行。\n\n"
-            f"退出会先停止它（当前这一轮已经强化的声骸不会回退，"
+            f"退出会先停止它（当前这一轮已经处理完的不会回退，"
             f"但剩余未处理的就留在原地了）。\n\n"
-            f"要停止并退出，还是{hide_word}让它继续跑？",
-            "停止并退出",
-            hide_word,
+            f"确定要退出吗？",
+            "退出",
+            "取消",
         )
     return (
-        f"关闭 {APP_DISPLAY_NAME}",
-        f"要{hide_word}（程序继续在后台运行，任务和引擎都不受影响），"
-        f"还是直接退出程序？",
-        hide_word,
-        "直接退出",
+        f"退出 {APP_DISPLAY_NAME}",
+        "确定要退出程序吗？",
+        "退出",
+        "取消",
     )
 
 
 def ask_close(parent, running_task: str | None, *, allow_hide: bool = True) -> str:
-    """弹关闭确认框，返回 :data:`CLOSE_HIDE` / :data:`CLOSE_QUIT` / :data:`CLOSE_CANCEL`。
+    """弹关闭确认框，返回 :data:`CLOSE_QUIT` 或 :data:`CLOSE_CANCEL`。
 
-    三个出口分别对应：
+    ## ★ 2026-10-24：只剩两个出口
 
-    * ``yesButton``    —— 主按钮（用户最可能想要的那个）
-    * ``cancelButton`` —— 次按钮
-    * **右上角 X / Esc** —— :data:`CLOSE_CANCEL`：什么都不做，留在原地
+    ==================  ==============================
+    ``yesButton``       主按钮 = **退出**
+    ``cancelButton``    次按钮 = **取消**（什么都不做）
+    右上角 X / Esc      :data:`CLOSE_CANCEL`（同上）
+    ==================  ==============================
 
-    把 X/Esc 映射成「取消」而不是「退出」是刻意的：误按 X 的代价必须最小。
+    改之前主/次按钮按"有没有任务在跑"会映射成不同出口
+    （``CLOSE_HIDE`` / ``CLOSE_QUIT`` 互换），现在统一成
+    "主=退出、次=取消" —— 和 :func:`close_question` 的新文案对齐。
+
+    ⚠ **``CLOSE_HIDE`` 已经不会再从这里返回了**。常量本身留着
+    （``main_window.closeEvent`` 里还有防御性分支），但它是死值。
+
+    ``allow_hide`` 参数保留仅为不破坏调用方签名，**不再影响任何行为**。
+
+    ⚠ 为什么还要区分"点次按钮"和"按 X/Esc"：两者的结果虽然都是
+    :data:`CLOSE_CANCEL`，但下面那套假 MessageBox 的模拟需要它 ——
+    而且将来若再给次按钮换个含义，这个区分还在。
     """
     from qfluentwidgets import MessageBox
 
@@ -161,8 +199,7 @@ def ask_close(parent, running_task: str | None, *, allow_hide: bool = True) -> s
 
     # ⚠ qfluentwidgets 的 MessageBox **没有 clickedButton()**（实测），
     #   而 exec() 对"点 cancelButton"和"按 X / Esc"都返回假 —— 两者必须分开：
-    #   前者是用户明确选了次按钮，后者是什么都没选（应当视为取消）。
-    #   所以自己挂一个标记。
+    #   前者是用户明确选了次按钮，后者是什么都没选。
     pressed: dict[str, bool] = {"secondary": False}
     try:
         box.cancelButton.clicked.connect(
@@ -174,20 +211,13 @@ def ask_close(parent, running_task: str | None, *, allow_hide: bool = True) -> s
     accepted = bool(box.exec())
 
     if accepted:
-        primary = True                      # 主按钮
-    elif pressed.get("secondary"):
-        primary = False                     # 明确点了次按钮
-    else:
-        return CLOSE_CANCEL                 # X / Esc
-
-    # ⚠ CLOSE_HIDE 的含义是「别退出，去后台」，**不是**「一定有托盘」。
-    #   到底缩托盘还是最小化到任务栏，由调用方按 tray_available() 决定 ——
-    #   这里只管用户想不想退出。allow_hide 只影响上面那几句文案。
-    if running_task:
-        # 主按钮 = 停止并退出；次按钮 = 去后台继续跑
-        return CLOSE_QUIT if primary else CLOSE_HIDE
-    # 无任务：主按钮 = 去后台；次按钮 = 直接退出
-    return CLOSE_HIDE if primary else CLOSE_QUIT
+        return CLOSE_QUIT                   # 主按钮 = 退出
+    #: 次按钮「取消」和 X/Esc 的结果**一样**：什么都不做。
+    #: （``pressed`` 现在不参与判断了，保留它是因为上面那段
+    #:   `cancelButton.clicked` 的接线还能当作"次按钮真的被点了"的证据，
+    #:   排查问题时有用。）
+    _ = pressed
+    return CLOSE_CANCEL
 
 
 def _menu_palette() -> tuple[str, str, str]:

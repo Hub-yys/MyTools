@@ -2315,14 +2315,57 @@
   flex-wrap: wrap;
 }
 
-/* 两个按钮各占一半宽（旧界面 row.addWidget(btn, 1) 两次）*/
+/* ★ 单控件行水平居中（2026-11-03 用户：「这个调整成居中」）
+ *
+ * ## 什么时候用
+ *
+ * 一行里**只剩一个控件**、贴着卡片左边缘、右边一大片空白时。
+ * 典型是「战斗方式」卡的下拉框 —— 旧界面它右边本来有一段说明文字
+ * 撑满（``row.addWidget(self.style_hint, 1)``），说明文字按用户要求
+ * 删掉之后，160px 的下拉框就孤零零贴在 1200px 宽的卡片最左边。
+ *
+ * ## 为什么不改 ``.cfg-inline-row``
+ *
+ * 那个类有 **8 处**在用（定时关机 / 目标属性 / 数量 / 勾选行 /
+ * 运行行 / 历史头…），那些行要么内容满、要么必须靠左排，
+ * 全局改成居中会全部错位。
+ *
+ * 所以单独加一个修饰类，只给需要的行用。
+ */
+.cfg-row-center {
+  justify-content: center;
+}
+
+/* ★ 运行 / 停止按钮排一行
+ *
+ * ## ★★★ 2026-11-03 用户圈图：「按钮太大了，比文字长度大一点就行」
+ *
+ * 原来是 ``flex: 1 1 0``（两个按钮各占一半）——
+ * 那是我照旧界面 ``row.addWidget(self.start_btn, 1)`` 抄的，
+ * **但旧界面是 Qt 布局、按钮高度 32，而且卡片本身只有 320 宽**；
+ * 网页里卡片是**整窗宽**（1400+），一半宽度就是 600+ 像素 ——
+ * 一个「启动」两个字撑出 600px 的紫块，非常难看。
+ *
+ * ## 现在
+ *
+ * 按钮宽度 = **文字宽 + 左右各 28px**，两个按钮挨在一起，
+ * 剩下的空间留白。用 ``inline-flex`` 让它们自己排，不撑满。
+ *
+ * ⚠ 保留一点最小宽度（88px），否则「运行」「停止」两个字太窄会显小气。
+ */
 .cfg-btn-row {
   display: flex;
-  gap: 12px;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .cfg-btn {
-  flex: 1 1 0;
+  /*: 不撑满 —— 宽度由内容 + padding 决定 */
+  flex: 0 0 auto;
+  min-width: 88px;
+  padding: 0 28px;
   height: 34px;
   border-radius: var(--radius-sm);
   font-size: 13px;
@@ -2825,12 +2868,42 @@
 }
 
 /* 双爆下限 / 有效词条 —— **裸行**（旧界面没有卡片包裹）*/
+/*: 双爆下限行 —— ★ 2026-11-03 用户圈图：
+ *  「这个卡片怎么没了，而且这个启用要对齐」
+ *
+ *  ## 原来的问题
+ *
+ *  这一行是**裸行**（旧界面 ``_build_crit_card`` 确实没有 CardWidget），
+ *  但它里面塞了**两个数字输入 + 一个开关** —— 而上下都是玻璃卡，
+ *  视觉上就像"卡片缺了一块"，开关还因为 ``flex-wrap`` 掉到了下一行、
+ *  跑出卡片范围。
+ *
+ *  ## 现在
+ *
+ *  给它套一层**同样的玻璃底**（``.enh-crit-card``），让 6 块在视觉上
+ *  连成一列；开关用 ``margin-left:auto`` **靠右对齐**，和下面
+ *  「满值锁定 / 自动停止」两张卡的开关**左右位置完全一致**。
+ *
+ *  ⚠ 旧界面确实没有卡片底，但用户这次是要「卡片」，以最新要求为准。
+ */
+.enh-crit-card {
+  padding: 15px 20px;
+  border-radius: var(--radius-lg);
+}
+
 .enh-crit-row {
   display: flex;
   align-items: center;
   gap: 9px;
-  flex-wrap: wrap;
-  padding: 2px 0;
+  flex-wrap: nowrap;          /*: ★ 不换行 —— 换行会让开关跑出卡片 */
+  padding: 0;
+}
+
+/*: 开关靠右，和下面两张卡的开关纵向对齐
+ *  （``P.toggle`` 产出的根元素是 ``label.sw``，见 ``_shared.js``）*/
+.enh-crit-row > label.sw {
+  margin-left: auto;          /*: 吃掉中间的空白，贴右边 */
+  flex: 0 0 auto;
 }
 
 .enh-inline-label {
@@ -4147,20 +4220,92 @@
 select.input {
   cursor: pointer;
   /*: Chromium 的下拉箭头默认是黑的，深色底上看不见 */
-  appearance: none;
-  -webkit-appearance: none;
   padding-right: 26px;
   background-image: linear-gradient(45deg, transparent 50%, var(--dim) 50%),
                     linear-gradient(135deg, var(--dim) 50%, transparent 50%);
   background-position: calc(100% - 14px) 13px, calc(100% - 9px) 13px;
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
+
+  /* ══════════════════════════════════════════════════════════════════
+     ★★★ 2026-11-03 用户圈图：「这个下拉列表矩形怎么是个直角的，要圆角的」
+
+     ## 为什么原来做不到
+
+     原生 ``<select>`` 的弹出列表由**操作系统**画（Windows 上是 Win32
+     菜单窗口）—— CSS 完全管不到它。``option { border-radius }``
+     算得出值但**画的时候被忽略**。
+
+     ## 怎么做到
+
+     Chromium 135+ 的 **``appearance: base-select``**：把 ``<select>``
+     降级成**页面内元素**，弹层变成 ``::picker(select)`` 伪元素 ——
+     于是圆角 / 阴影 / 圆角 hover 全都能用 CSS 写。
+
+     本机 QtWebEngine 6.11.2 = **Chromium 140**，实测支持
+     （见 ``dev`` 目录探针：``CSS.supports('appearance','base-select')``
+     → ``true``）。
+
+     ## ⚠ 三个必须一起处理的副作用（实测踩到）
+
+     1. **双箭头** —— base-select 自带一个 ``::picker-icon`` 箭头，
+        和我们 ``background-image`` 画的那个重复 → 要 ``display:none``
+     2. **多一个 ✓** —— 选中项前面会显示 ``::checkmark``，
+        和旧界面的下拉观感不一致 → 也要隐藏
+     3. **``option`` 变 ``display:flex``** 是 base-select 的行为，
+        ``padding`` 才生效 —— 不写的话项会贴边
+
+     ## 降级
+
+     ``appearance: base-select`` 不支持的浏览器会**忽略这一行**，
+     退回原生下拉（直角但不报错）。所以这里不用写 ``@supports`` 兜底。
+     ══════════════════════════════════════════════════════════════════ */
+  appearance: base-select;
+  -webkit-appearance: base-select;
+}
+
+/*: base-select 自带的箭头 —— 我们已经画了一个，去掉 */
+select.input::picker-icon {
+  display: none;
+}
+
+/*: ★ 弹层本体：圆角 + 阴影 + 内边距 */
+select.input::picker(select) {
+  appearance: base-select;
+  background-color: #14141f;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 5px;
+  margin-top: 5px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+  color: #ece9ff;
 }
 
 select.input option {
   /*: 下拉弹层用系统色，深色主题下也别是白底黑字刺眼 */
-  background: #14141f;
+  background: transparent;
   color: #ece9ff;
+  /*: base-select 下 option 是 flex —— padding 才生效 */
+  display: flex;
+  align-items: center;
+  padding: 7px 12px;
+  border-radius: 7px;
+  font-size: 12.5px;
+}
+
+/*: 去掉选中项前面那个 ✓（旧界面的下拉没有它）*/
+select.input option::checkmark {
+  display: none;
+  content: '';
+}
+
+select.input option:hover,
+select.input option:focus {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+select.input option:checked {
+  background: rgba(120, 110, 255, 0.32);
 }
 
 /* 数字框去掉浏览器默认的上下箭头（Qt 版是左右加减按钮）*/
@@ -4180,6 +4325,39 @@ input.input[type="number"] {
 
 input.input[type="text"] {
   flex: 1 1 auto;
+}
+
+/*: ★★★ 2026-11-03 **修「数量框被撑到 555px」**
+ *
+ * ## 症状
+ *
+ * 声骸批量调频页的「数量」输入框（本应 90px）在 1224px 宽的卡片里
+ * 被拉成 **555px**，〔−〕〔+〕被推到两头，看着完全不像旧界面。
+ *
+ * ## 根因（CSS 优先级 + 书写顺序）
+ *
+ * .. code:: text
+ *
+ *     L2581   .cfg-count-box      { flex: 0 0 90px; }   ← 想让它固定 90px
+ *     L4326   input.input[type=text] { flex: 1 1 auto; } ← 位置更后、而且**更具体**
+ *
+ *   ``input.input[type="text"]`` = (0,2,1) → 优先级**高于**
+ *   ``.cfg-count-box`` = (0,1,0)。
+ *
+ *   于是 ``flex: 1 1 auto`` 赢，90px 被无视，输入框吃掉整行剩余空间。
+ *
+ * ## 修法
+ *
+ * 用**同等或更高**的优先级把固定宽度赢回来：``input.cfg-count-box``
+ * = (0,1,1) 仍然不够（0,2,1 更大），所以直接用
+ * ``input.input.cfg-count-box`` = (0,3,1) —— 明确压过通用规则。
+ *
+ * ⚠ 教训：**通用规则写在文件末尾时，会把前面所有组件级的尺寸意图盖掉。**
+ *   改这类"尺寸不生效"的 bug 时，先算优先级，别盲目加 ``!important``。
+ */
+input.input.cfg-count-box {
+  flex: 0 0 90px;
+  width: 90px;
 }
 
 /* ── 变更摘要区（资源库更新）── */

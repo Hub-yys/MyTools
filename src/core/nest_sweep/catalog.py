@@ -98,6 +98,14 @@ class SweepTarget:
     version: str = ""
     #: 别名 / 简称 —— 匹配时和 ``name`` 一起试（OCR 容易漏字，别名很管用）
     aliases: tuple[str, ...] = ()
+    #: ★ 这一处**能刷到哪些声骸套装**（套装名，和 ``wuwa_echo_sets.json`` 对得上）。
+    #:
+    #: 界面上显示成"图标 + 名称"，让用户**刷之前就知道这趟值不值** ——
+    #: 用户 2026-10-13：「残像聚落显示的卡片，应该展示他可以出的声骸套装图片+名称」。
+    #:
+    #: ⚠ 空元组 = **不知道**（不是"没有套装"）。界面上不画那一条，
+    #:   而不是画一个"0 套" —— 后者看起来像"这里什么都不掉"。
+    sets: tuple[str, ...] = ()
     #: 名字是不是**核对过**的。False 时界面显示「待核对」角标。
     verified: bool = True
 
@@ -177,6 +185,7 @@ def parse_target(raw: dict, *, index: int = 0) -> SweepTarget | None:
         count=max(0, _to_int(raw.get("count"), 0)),
         version=str(raw.get("version", "") or "").strip(),
         aliases=_parse_aliases(raw.get("aliases")),
+        sets=_parse_aliases(raw.get("sets")),
         # ⚠ 只有**显式**写了 false 才算未核对。缺字段的老数据按"已核对"处理，
         #   免得整页挂满角标（用户加条目时不会想着写这个字段）。
         verified=raw.get("verified", True) is not False,
@@ -186,11 +195,22 @@ def parse_target(raw: dict, *, index: int = 0) -> SweepTarget | None:
 def parse_catalog(raw) -> tuple[SweepTarget, ...]:
     """把整个数据文件的 dict 解析成有序目标表。
 
-    排序规则：**先分类（聚落在前）、再 order、最后 name**。
+    ## 排序规则（2026-10-13 用户改过）
 
-    ⚠ 一定要有**兜底排序键**（``name``）：order 相同时（用户新加条目很容易
-    都写 0）如果只按 order 排，顺序就取决于 JSON 里的书写顺序 ——
-    看起来能用，但没有任何保证。加上 name 之后至少是**确定**的。
+    **按聚落推出的时间倒序** —— 越新的版本排在越前面
+    （用户原话：「整体按照聚落出的时间顺序倒叙排序」）。
+
+    以前是「先分类（聚落在前/梦魇在后）、再 order」；现在**不打乱品类**、
+    只按版本号从新到旧排。同一版本内用 ``order``（数据文件里手写的顺序）
+    兜底，最后再用 ``name`` —— 一定要有稳定的兜底键，否则同一版本内的
+    先后取决于 JSON 书写顺序，看起来能用但没有任何保证。
+
+    ⚠ 版本号是**字符串**（``"3.7"`` / ``"2.5"``），直接比字符串会得到
+    ``"2.10" < "2.5"`` 这种错序，所以按**数值段**逐段比（见
+    :func:`_version_key`）。
+
+    ⚠ **没有版本号的条目排在最后**（不是最前）—— 它们在数据文件里
+    通常是"还没核实的新条目"，排最前会盖住有据可查的那些。
     """
     if not isinstance(raw, dict):
         return ()
@@ -214,10 +234,32 @@ def parse_catalog(raw) -> tuple[SweepTarget, ...]:
         seen.add(target.key)
         parsed.append(target)
 
-    kind_rank = {kind: i for i, kind in enumerate(KIND_ORDER)}
-    parsed.sort(key=lambda t: (kind_rank.get(t.kind, len(kind_rank)),
-                               t.order, t.name))
+    #: -版本号（取负 → 从新到旧）、order、name
+    parsed.sort(key=lambda t: (_version_key(t.version), t.order, t.name))
     return tuple(parsed)
+
+
+def _version_key(version: str) -> tuple:
+    """版本号 → **可倒序**的排序键（新的排前面）。
+
+    做法：把 ``"3.7"`` 拆成 ``(0, -3, -7)``。第一个 0 是"有没有版本号"的
+    标志位 —— 有版本号的排前面（0 < 1），没有的排最后。
+
+    ⚠ 必须**逐段转成数字**再比，不能直接比字符串：
+    ``"2.10" < "2.5"`` 在字符串序里成立，但 2.10 明显更新。
+    """
+    text = str(version or "").strip()
+    if not text:
+        #: 没有版本号 → 排最后（标志位 1 大于任何有版本号的 0）
+        return (1, 0, 0)
+    nums: list[int] = []
+    for part in text.split("."):
+        digits = "".join(c for c in part if c.isdigit())
+        #: 非数字段（"3.7beta" 这种）当 0，不让它把整条排除掉
+        nums.append(int(digits) if digits else 0)
+    while len(nums) < 2:
+        nums.append(0)
+    return (0, -nums[0], -nums[1], -nums[2] if len(nums) > 2 else 0)
 
 
 # --------------------------------------------------------------------- 落点

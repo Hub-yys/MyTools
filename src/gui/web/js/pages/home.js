@@ -68,29 +68,40 @@
   function renderHome(section, app) {
     const tools = app.tools || [];
     const total = tools.length;
-    const ready = tools.filter(function (t) { return !t.comingSoon; }).length;
 
     // ── 页头 ──
+    //
+    //: ★★★ 2026-11-03 用户圈图：「标记处都干掉」
+    //:
+    //: 砍掉的是：
+    //:   * 标题栏里的「主页」三个字（页面已经高亮在侧栏，标题重复）
+    //:   * 副标题「v1.1.2 · 已收录 7 个工具，点击卡片直接打开」
+    //:   * 统计芯片条（7 个工具 / 7 个可直接运行 / 2 个分类 / 2 个壁纸）
+    //:   * 右上角「换壁纸」「任务中心」两个按钮
+    //:
+    //: ## 为什么砍（不用纠结"这是功能不是说明文字"）
+    //:
+    //: 旧界面 ``HomeInterface`` 只有 **标题 + 副标题 + 工具网格**，
+    //: 没有任何统计条和右上角按钮 —— 用户三次强调「不要擅自修改原先的
+    //: 布局内容」「再对着旧界面的代码复刻」。
+    //:
+    //: 这几块都是我自己加的「信息密度装饰」，现在按用户要求删掉。
+    //:
+    //: ⚠ 副标题一并删了 —— 用户的原话是「标记处都干掉」，
+    //:   而副标题正是他自己圈出来的那一行。
     const head = P.pageHead({
-      title: app.info.displayName || '鸣潮工具箱',
-      subtitle: 'v' + (app.info.version || '—') +
-                ' · 已收录 ' + total + ' 个工具，点击卡片直接打开'
+      //: ★★★ 2026-11-03（第二批）用户又圈了一次：这个页头标题写
+      //: 「鸣潮工具箱」不对，**「改成主页」**。
+      //:
+      //: ⚠ 别和「标题栏里的页面名」搞混 —— 那个上一轮已经删了
+      //: （``index.html`` 的 ``#titlebar-title``，侧栏已高亮当前页）。
+      //: 这里是**内容区的页头标题**（``.page-title``）。
+      //:
+      //: 旧界面 ``HomeInterface`` 用的是 ``TitleLabel(APP_DISPLAY_NAME)``，
+      //: 但用户现在明确要求「主页」—— 以最新要求为准。
+      title: '主页'
     });
-
-    //: 「换壁纸」按钮 —— 桥接的双向能力展示（切壁纸真的走 Python）
-    if (app.wallpapers && app.wallpapers.length) {
-      head.actions.appendChild(buildWallpaperButton(app));
-    }
-    //: 「任务」入口
-    head.actions.appendChild(P.button('任务中心', {
-      icon: 'TASK',
-      size: 'sm',
-      onClick: function () { app.go('tasks'); }
-    }));
     section.appendChild(head.head);
-
-    // ── 统计条 ──
-    section.appendChild(buildStats(app, tools));
 
     // ── 工具网格 ──
     if (!total) {
@@ -127,69 +138,6 @@
     //: 页面是懒渲染 + 常驻 DOM，这里不主动退订（页面永不销毁）；
     //: 但记在 section 上，万一将来支持重建也能收尾。
     section._offs = (section._offs || []).concat(offs);
-  }
-
-  // ────────────────────────────────────────────────────────────────────────
-  //  统计条
-  // ────────────────────────────────────────────────────────────────────────
-  function buildStats(app, tools) {
-    const bar = P.el('div', { class: 'home-stats' });
-
-    function chip(label, value, accent) {
-      return P.el('div', { class: 'stat-chip' + (accent ? ' is-accent' : '') }, [
-        P.el('b', { text: String(value) }),
-        P.el('span', { text: label })
-      ]);
-    }
-
-    bar.appendChild(chip('个工具', tools.length, true));
-    bar.appendChild(chip('可直接运行',
-      tools.filter(function (t) { return !t.comingSoon; }).length));
-
-    //: 分类去重（ToolMeta.category.display_name）
-    const categories = [];
-    for (const tool of tools) {
-      const name = tool.categoryName || tool.category;
-      if (name && categories.indexOf(name) < 0) categories.push(name);
-    }
-    if (categories.length) categories.length = Math.min(categories.length, 99);
-    bar.appendChild(chip('个分类', categories.length));
-
-    if (app.wallpapers && app.wallpapers.length) {
-      bar.appendChild(chip('个壁纸', app.wallpapers.length));
-    }
-    return bar;
-  }
-
-  // ────────────────────────────────────────────────────────────────────────
-  //  壁纸切换按钮
-  // ────────────────────────────────────────────────────────────────────────
-  function buildWallpaperButton(app) {
-    const items = app.wallpapers || [];
-    let index = items.findIndex(function (w) {
-      return app.wallpaper && w.id === app.wallpaper.id;
-    });
-    if (index < 0) index = 0;
-
-    const btn = P.button('换壁纸', {
-      size: 'sm',
-      title: '在 ' + items.length + ' 个壁纸之间切换',
-      onClick: async function () {
-        if (!items.length) return;
-        index = (index + 1) % items.length;
-        btn.disabled = true;
-        const result = await P.call('setWallpaper', items[index].id);
-        btn.disabled = false;
-        if (result.ok && result.data && result.data.ok) {
-          //: Python 那边已经 emit 了 wallpaperChanged；这里顺手同步一次，
-          //: 免得事件比回调先到 / 后到导致的状态差
-          app.setWallpaper(result.data);
-        } else if (!result.ok) {
-          console.warn('[home] 切壁纸失败:', result.error);
-        }
-      }
-    });
-    return btn;
   }
 
   // ────────────────────────────────────────────────────────────────────────

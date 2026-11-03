@@ -12,17 +12,53 @@
 **运行按钮**（按勾选的顺序跑）。顺序逻辑全在
 :mod:`src.core.nest_sweep`（纯逻辑、有单测），本页只管画和接线。
 
-## 两种卡片
+## ★ 卡片长什么样（2026-10-13 用户**五轮**调整后的最终版）
 
-====================================  ==========================================
-残像聚落 / 梦魇残像                   一张卡 = 一个**能刷的目标**（可勾选）
-梦魇残像**声骸**清单                   一张卡 = 一份**资料**（不可勾选）
-====================================  ==========================================
+::
 
-⚠ 为什么要分开：游戏指南里**能点的是"聚落"**，不是单个怪。
-一个聚落里含多个梦魇残像，所以"勾单个怪"在游戏里**没有对应的操作**。
-把 25 个声骸做成可勾的卡片会造出一个点了没用的界面 ——
-所以它们列在下面当资料，让用户知道这一趟能刷到哪些声骸。
+    ┌────────────────────────────────┐
+    │    [图]套装A  [图]套装B          │   ← ★ 套装在上（图标 + 名称）
+    │    [图]套装C  [图]套装D          │      ⚠ 没有「可出套装」小标题
+    │    [图]套装E  [图]套装F          │      ⚠ 高度**固定 4 行** → 各卡对齐
+    │    [图]套装G                     │
+    │        复生丘原残像聚落           │   ← ★ 名字**自己居中**（偏移 0）
+    │              ☑                 │   ← ★ 勾选框在名字**下面**、单独居中
+    └────────────────────────────────┘
+
+用户原话（按时间顺序）::
+
+    ① 残像聚落显示的卡片，应该展示他可以出的声骸套装图片+名称
+    ② 卡片展示为：上方套装图标+套装名称，下方聚落名称
+    ③ 放在聚落名称下面，可出套装也去掉，另外整体按聚落出的时间顺序倒叙排序
+       （图上还标了「居中」）
+    ④ 排列要整齐 … 这些说明直接干掉
+    ⑤ 名称在上，按钮在下 … 没有对齐 / 像这样对齐
+
+刷之前就知道这一趟值不值。**每一轮改动的细节（以及为什么）见
+:class:`TargetCard` 的类文档。**
+
+## ★ 只有一张卡片墙 —— **不再区分残像聚落 / 梦魇聚落**
+
+原话：「不再区分残像聚落/梦魇聚落，统一叫残像聚落」。
+
+所以**不再按 kind 分段**（原先分两段还各加一行小标题，现在都去掉了），
+所有目标平铺成一张卡片墙。数据里的 ``kind`` 字段仍然保留 ——
+任务侧的三层定位（名称 → 别名 → 行号）还要用它区分分组。
+
+## ★ 卡片顺序 = 版本从新到旧
+
+原话：「整体按照聚落出的时间顺序倒叙排序」。
+排序逻辑在 :func:`src.core.nest_sweep.catalog._version_key`，本页只显示。
+
+## ⚠ 曾经有过一张"梦魇声骸清单"卡片（**已删**）
+
+第一版下面还铺了一块「当前版本的梦魇残像声骸」（25 个名字的资料卡）。
+用户 2026-10-13 把它整块划掉：「**干掉**」。
+
+删掉的理由（现在回头看）：那 25 个里有约 10 个是**大世界野外刷新**的，
+本来就不在这 5 处聚落里 —— 那块清单既不完整、又和上面的聚落卡片重复，
+留着只会让人以为"打完聚落能拿全这 25 个"。
+数据文件里的 ``_nightmare_echoes`` 一节**保留**（是资料，别的用途可能还要）。
 
 ## ⚠ 卡片不写成"全选后 50 个框一起动会卡"
 
@@ -33,15 +69,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
+    QLabel,
     QVBoxLayout,
     QWidget,
 )
 from qfluentwidgets import (
-    BodyLabel,
     CaptionLabel,
     CardWidget,
     CheckBox,
@@ -55,15 +94,14 @@ from qfluentwidgets import (
 from ....core import paths
 from ....core.categories import ToolCategory
 from ....core.nest_sweep import (
-    KIND_NAMES,
     SweepTarget,
     build_plan,
-    catalog_by_kind,
     load_catalog,
     load_selection,
     save_selection,
     selection_summary,
 )
+from ....core.game_data import icon_path
 from ....core.registry import registry
 from ....core.tool_base import BaseTool
 from ....gui.widgets import ConfigCard
@@ -81,6 +119,77 @@ CARD_COLUMNS = 3
 #: 卡片最小宽度 —— 比这窄的话名字会折成两行，卡片高度就参差不齐了
 CARD_MIN_WIDTH = 260
 
+#: 套装图标显示尺寸（px）。32 能看清图形、又不至于把卡片撑高。
+SET_ICON_SIZE = 32
+
+#: 套装图标在磁盘上的位置（``assets/game/echo_sets/<套装名>.png``）
+SET_ICON_DIR = "echo_sets"
+
+#: ⚠ 这里**没有**「套装区固定几行」那样的常量了。
+#:
+#: 第 ④ 轮曾经有（``SET_ROWS = 4``，为了"排列整齐"），
+#: 但用户第 ⑨ 轮指出：「这种只有一种的，卡片自适应所需，**内容并且居中**」——
+#: 固定 4 行会让只有 1 套的 5 张梦魇卡各留 3 行空白（约 105px 的洞）。
+#: 现在高度按**实际行数**算（:meth:`TargetCard._sets_rows`），
+#: 同行卡片被拉高时靠**上下 stretch** 让内容居中。
+
+#: 一行放几个套装
+SET_COLUMNS = 2
+
+#: 套装**列之间**的间距（px）。
+#:
+#: ⚠ 列位置必须由 ``QGridLayout`` 统一决定（见 ``_build_sets_block``）——
+#:   用"每行一个 QHBoxLayout"时列宽会随每行内容漂，
+#:   实测第 2 列 x 在 [181, 181, 129] 之间跳（52px！），那就是用户说的"没对齐"。
+SET_COL_GAP = 6
+
+#: 套装行之间的间距（px）。
+#:
+#: ⚠ 这个值必须和 :meth:`TargetCard._sets_block_height` 里算的**完全一致**：
+#: 固定高度和实际内容高度对不上时，Qt 会把差额**摊到各行上**，
+#: 行距就漂了 —— 实测 6 套的卡行距 41/42、7 套的 40/41，并排看就是"没对齐"。
+SET_ROW_GAP = 3
+
+#: 勾选框控件至少要这么宽（px）—— Qt 会把更小的值钳到这个数，实测值。
+CHECK_INDICATOR_WIDTH = 20
+
+#: 把**指示器**（不是控件）推到中线上所需的左侧垫片（px）。
+#:
+#: ``CheckBox("")`` 的指示器**画在固定的左侧位置** —— 实测中心离控件左缘
+#: ``a ≈ 10.5px``，**与控件宽度无关**。控件被 Qt 钳到 ``W ≈ 29px``，所以
+#: 控件居中时指示器偏左 ``W/2 - a ≈ 4px``。
+#:
+#: 推导（见 :class:`TargetCard` 的注释）::
+#:
+#:     S = W - 2a = 29 - 21 = 8
+#:
+#: ``setFixedWidth`` / ``setContentsMargins`` 都**改不动**这个偏移
+#: （位置由 paintEvent 直接算），所以只能在布局里垫。
+CHECK_NUDGE = 8
+
+
+def set_icon_pixmap(name: str) -> QPixmap | None:
+    """取套装图标；**文件不在就返回 ``None``**（界面自己留白）。
+
+    ⚠ ``assets/game/`` **不进仓库**（是库洛画面衍生物，见 .gitignore）——
+    所以"图标不在"是**正常情况**，不是错误。这里绝不能抛异常，
+    也不能画一个破图占位：宁可只显示名字。
+    """
+    stem = str(name or "").strip()
+    if not stem:
+        return None
+    try:
+        target = Path(icon_path(f"{SET_ICON_DIR}/{stem}.png"))
+    except Exception:                                 # noqa: BLE001
+        return None
+    if not target.exists():
+        return None
+    pix = QPixmap(str(target))
+    if pix.isNull():
+        return None
+    return pix.scaled(SET_ICON_SIZE, SET_ICON_SIZE,
+                      Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
 
 def _muted(label) -> None:
     """把说明文字刷成统一的灰。"""
@@ -91,12 +200,59 @@ def _muted(label) -> None:
 
 
 class TargetCard(CardWidget):
-    """一个可勾选的目标卡片：**勾选框 + 名称 + 区域/数量**。
+    """一个可勾选的目标卡片：**套装图标 + 聚落名**。
 
-    ## 为什么勾选框放**左上角**而不是整卡可点
+    ## ★ 布局（2026-10-14 用户第⑨轮调整 —— 现在的样子）
 
-    整卡可点会和"点卡片看详情"这类未来需求打架，而且误触率高。
-    左上角是这类多选列表的惯例位置。
+    ::
+
+        ┌────────────────────────────────┐
+        │    [图]套装A  [图]套装B          │   ← ★ 套装在上（图标 + 名称）
+        │    [图]套装C  [图]套装D          │      ⚠ 高度按**实际行数**（不固定）
+        │    [图]套装E  [图]套装F          │
+        │    [图]套装G                     │
+        │        复生丘原残像聚落           │   ← ★ 名字**自己居中**（不带勾选框）
+        │              ☑                 │   ← ★ 勾选框在名字**下面**、单独居中
+        └────────────────────────────────┘
+
+    用户原话（按时间顺序）::
+
+        ① 残像聚落显示的卡片，应该展示他可以出的声骸套装图片+名称
+        ② 卡片展示为：上方套装图标+套装名称，下方聚落名称
+        ③ 放在聚落名称下面，可出套装也去掉，另外整体按聚落出的时间顺序倒叙排序
+        ④ 排列要整齐 … 这些说明直接干掉
+        ⑤ 名称在上，按钮在下 … 没有对齐 / 像这样对齐
+        ⑥ 没修啊，还是不对齐（行距漂移）
+        ⑦ 每个卡片背景加上，使用这些套装的角色头像  → **第⑨轮又要求去掉**
+        ⑧ 还是没对齐啊 … 陷足流川这是对齐（列位置漂移）
+        ⑨ 角色的背景图片还是干掉吧
+           ＋ 这种只有一种的，卡片自适应所需，内容并且居中
+
+    ## ★ 第⑨轮的「只有一种的，卡片自适应所需，内容并且居中」
+
+    **背景图片已删**（第⑦轮加的，第⑨轮去掉）——
+    连配套的数据文件、读取模块、测试、刷新脚本一起删了，不留死代码。
+
+    高度不再固定 4 行：1 套的卡就是 1 行高。
+    但同一网格行里 ``QGridLayout`` 会把卡片拉成等高 ——
+    所以**上下各加一个 stretch**，让内容落在中间，
+    而不是顶着上边、下面留一个洞（用户圈的正是那个洞）。
+
+    ## ★ 第④轮的「这些说明直接干掉」
+
+    原先名字下面还有两行：``梦枢天罗 · 每日 48 · 3.7 版本`` 和
+    ``别名：梦枢天罗 / 梦枢天罗残象聚落``。用户在图里把这两行整块划掉。
+
+    **删掉是有代价的**：别名原本是给"名称对不上时自己改数据文件"用的提示。
+    现在改看 :mod:`src.core.nest_sweep.catalog` 里的数据文件注释
+    （``_how_to_edit`` 已经写明怎么改 aliases）。
+    区域 / 版本也还在数据里，只是不在卡片上显示了。
+
+    ## 勾选框为什么不再放左上角
+
+    第一版按"多选列表惯例"放了左上角，后来用户要求跟名字走
+    （第③轮并排 → 第⑤轮改成名字下面）。
+    —— 整卡可点仍然不做（会和"点卡片看详情"打架，且误触率高）。
     """
 
     def __init__(self, target: SweepTarget, checked: bool, on_toggle, parent=None):
@@ -106,46 +262,207 @@ class TargetCard(CardWidget):
 
         self.setMinimumWidth(CARD_MIN_WIDTH)
         box = QVBoxLayout(self)
-        box.setContentsMargins(14, 10, 14, 12)
-        box.setSpacing(6)
+        box.setContentsMargins(14, 12, 14, 12)
+        box.setSpacing(8)
 
-        # ── 第一行：勾选框 + 名称
-        head = QHBoxLayout()
-        head.setSpacing(8)
+        #: ★★ 上下各加一个 stretch —— **内容整体垂直居中**。
+        #:
+        #: 用户第 ⑨ 轮：「这种只有一种的，卡片自适应所需，**内容并且居中**」。
+        #:
+        #: 为什么需要：同一网格行里的卡片会被拉成等高（``QGridLayout`` 的
+        #: 行为），只有 1 套的那张自然比同行的 7 套卡矮 ——
+        #: 不加 stretch 的话内容**顶着上边**，下面留一个大洞（用户圈的正是这个）。
+        #: 两头都加 stretch，内容就落在中间。
+        box.addStretch(1)
+
+        #: ★ 套装（图标 + 名称）—— 用户 2026-10-13 要求：
+        #: 「残像聚落显示的卡片，应该展示他可以出的声骸套装图片+名称」。
+        #: 刷之前就知道这趟值不值。
+        #: ⚠ 「可出套装」那行小标题**去掉**了（用户第二次要求）——
+        #:   图标 + 套装名本身就够说明，多一行标题只是占地方。
+        #: ⚠ 高度按**实际行数**（见 :meth:`_sets_rows`）——
+        #:   用户第⑨轮：「这种只有一种的，卡片自适应所需，内容并且居中」。
+        if target.sets:
+            block = self._build_sets_block(target.sets)
+            box.addWidget(block)
+        box.addSpacing(2)
+
+        # ── 聚落名（**居中一行**）
+        #: ★ 用户 2026-10-13 第五次调整：「**名称在上，按钮在下**」。
+        #:   原先勾选框和名字**并排**（``[☑ 名称]`` 作为整体居中），
+        #:   结果是勾选框占了左边宽度、把名字推右 —— 实测**恒定偏移 +32px**，
+        #:   名字不在卡片中线上（用户在图上标了「没有对齐」）。
+        #:   改成上下排列后，名字自己居中（偏移 0），勾选框在它正下方。
+        self.name_label = StrongBodyLabel(target.name, self)
+        self.name_label.setWordWrap(True)
+        self.name_label.setAlignment(Qt.AlignCenter)
+        box.addWidget(self.name_label)
+
+        #: ★ 勾选框在**名字下面**、单独居中
+        #:
+        #: ⚠⚠ 这个勾选框**不是简单地放在 stretch 之间就完事** —— 里面有两层
+        #: "假居中"，都是量了才知道的：
+        #:
+        #:   ① ``CheckBox("")`` 默认控件有 ~57px 宽（**文本区照留**），
+        #:      而可见指示器只有 ~20px → 控件居中时指示器**偏左约 18px**。
+        #:   ② 压掉文本区之后，指示器**画在固定的左侧位置**（实测中心离
+        #:      控件左边缘约 10.5px，**与控件宽度无关**）→ 控件自身仍偏左 4px。
+        #:      ``setFixedWidth`` / ``setContentsMargins`` 都改不动这个偏移
+        #:      （位置由 paintEvent 直接算）。
+        #:
+        #:   所以最终做法：**不试图让控件居中**，而是按实测偏移量把控件
+        #:   **整体右移**，让"指示器"落在中线上 —— 见 :data:`CHECK_NUDGE`。
+        #:
+        #:   实测教训（2026-10-13）：我第一版只量了**控件几何**，报告
+        #:   "偏移 0、已居中"，但用户在图上标的是「**这个位置偏了**」——
+        #:   因为眼睛看到的是**指示器**。另外 ``widget.grab()`` 出的图
+        #:   **比控件大**（355 的卡 grab 出 444，有阴影边距），
+        #:   拿图里的像素当控件坐标会算出 +40px 的**假偏移**。
+        #:   → 量对齐要用 ``mapTo`` 换到**同一坐标系**，并量**看得见的东西**。
+        check_row = QHBoxLayout()
+        check_row.setContentsMargins(0, 2, 0, 0)
+        check_row.setSpacing(0)
+        check_row.addStretch(1)
+        #: ★ 左侧垫一块 S —— 布局顺序 [stretch, S, 控件, stretch]
+        #:   推导（W=控件宽, a=指示器中心离控件左缘, S=垫片）::
+        #:       控件左边 = (CW - S - W)/2 + S
+        #:       指示器中心 = 控件左边 + a   ← 要等于 CW/2
+        #:       ⇒ S = W - 2a
+        #:   实测 W=29、a=10.5 ⇒ **S = 8**（见 CHECK_NUDGE）
+        check_row.addSpacing(CHECK_NUDGE)
         self.check = CheckBox("", self)
         self.check.setChecked(bool(checked))
         self.check.stateChanged.connect(self._toggled)
-        head.addWidget(self.check)
+        #: 压掉假文本区：控件宽度 = 指示器宽度。
+        #: ⚠ Qt 会把过小的值钳到最小宽度（实测 ~29），这没关系 ——
+        #:   公式里用的就是钳完之后的真实宽度。
+        self.check.setFixedWidth(CHECK_INDICATOR_WIDTH)
+        check_row.addWidget(self.check)
+        check_row.addStretch(1)
+        box.addLayout(check_row)
 
-        self.name_label = StrongBodyLabel(target.name, self)
-        self.name_label.setWordWrap(True)
-        head.addWidget(self.name_label, 1)
-        box.addLayout(head)
+        #: ★★ 底部 stretch —— 和顶部那个配对，内容才**垂直居中**。
+        box.addStretch(1)
 
-        # ── 第二行：区域 · 每日数量（有什么写什么，都没有就整行不画）
-        details = []
-        if target.region:
-            details.append(target.region)
-        if target.count:
-            details.append(f"每日 {target.count}")
-        if target.version:
-            details.append(f"{target.version} 版本")
-        if not target.verified:
-            #: ★ 名单没核对过的条目要**明说**，别让它看起来和别的一样可信
-            details.append("待核对")
-        if details:
-            info = CaptionLabel(" · ".join(details), self)
-            _muted(info)
-            info.setWordWrap(True)
-            box.addWidget(info)
+    @staticmethod
+    def _sets_rows(sets) -> int:
+        """这块套装区要占**几行**（按实际数量算）。
 
-        #: 别名（有才显示）—— 让用户知道"任务会拿哪些名字去找这一行"，
-        #: 名称对不上时能自己往 aliases 里补
-        if target.aliases:
-            alias = CaptionLabel("别名：" + " / ".join(target.aliases), self)
-            _muted(alias)
-            alias.setWordWrap(True)
-            box.addWidget(alias)
+        ★ 用户第 ⑨ 轮：「这种只有一种的，卡片自适应所需，内容并且居中」。
+
+        ⚠ 第 ④ 轮当时是**固定 4 行**（为了"排列整齐"）——
+        但那让只有 1 套的 5 张梦魇卡各空了 **3 行**（约 105px 的洞）。
+        现在改成按实际行数：1 套 → 1 行，7 套 → 4 行。
+        同一网格行里的卡片仍会被拉伸到等高（``QGridLayout`` 的行为），
+        但**内容会垂直居中**，不再顶在上面留一个大洞。
+        """
+        if not sets:
+            return 0
+        return (len(sets) + SET_COLUMNS - 1) // SET_COLUMNS
+
+    @staticmethod
+    def _sets_block_height(rows: int) -> int:
+        """套装区占 ``rows`` 行时的高度。
+
+        ## ⚠ 这个数必须**精确等于实际内容高度**
+
+        否则 Qt 会把差额摊到各行上（布局会拉伸子项），
+        行距就漂了 —— 实测 6 套的卡行距 41/42、7 套的 40/41，
+        并排看就是"这一格怎么歪了"。
+
+        算式：``上边距 + N 行 × 行高 + (N-1) 个行距``，
+        其中行高 = :data:`SET_ICON_SIZE`（chip 被 ``setFixedHeight`` 锁死）。
+        """
+        top = 2                                    #: 和 col.setContentsMargins 对齐
+        if rows <= 0:
+            return top
+        return top + rows * SET_ICON_SIZE + (rows - 1) * SET_ROW_GAP
+
+    def _build_sets_block(self, sets) -> QWidget:
+        """把「这处能出的套装」画成 图标 + 名称 的**网格**（固定高度）。
+
+        ⚠ 这里**不画**「可出套装」小标题 —— 用户 2026-10-13 明确要求去掉
+        （图标 + 套装名本身就够说明，多一行标题只是占地方）。
+
+        ## ★★ 为什么用 ``QGridLayout`` 而不是「每行一个 QHBoxLayout」
+
+        **这是用户第 8 轮的「还是没对齐啊」的根因。**
+
+        每行各自一个 ``QHBoxLayout`` 时，**列宽是由该行内容决定的**：
+
+        ::
+
+            第1行   [茜染怀想之花] [衔梦照世之心]   ← 第1格宽，第2格被推到 x=181
+            第2行   [镜影流电之瞬] [羽落空尘之歌]   ← 同上
+            第3行   [清邪荡煞之心]                  ← 只剩 1 格，没有第2格约束
+
+        更糟的是**跨行**：第 1 格文字长短不同，第 2 格的 x 就跟着漂。
+
+        实测（我自己的渲染）::
+
+            梦枢天罗  第2列 x = [181, 181, 129]   ★ 漂移 52px
+            落渊南丘  第2列 x = [181, 181, 129]   ★ 漂移 52px
+            陷足流川  第2列 x = [181, 181, 181]   ✔ 齐（恰好内容一样宽）
+
+        换成 ``QGridLayout``：**列宽由整列最宽的那个决定**，
+        所有行的同一列必然落在同一个 x 上 —— 这就是用户要的"对齐"。
+
+        ## 高度按**实际行数**（第 ⑨ 轮改的）
+
+        用户第 ⑨ 轮：「这种只有一种的，卡片自适应所需，内容并且居中」。
+
+        先前是固定 :data:`SET_ROWS` 行 + 补等高占位 —— 那让只有 1 套的
+        5 张梦魇卡各留了 **3 行空白**（约 105px 的洞），名字被顶到很下面。
+        现在按 :meth:`_sets_rows` 算真实行数，不再补占位。
+
+        > 同一网格行里的卡片仍会被拉成等高（``QGridLayout`` 的行为），
+        > 但**内容垂直居中**，所以那张矮卡看起来是"内容居中"而不是"有洞"。
+        """
+        rows = self._sets_rows(sets)
+        holder = QWidget(self)
+        holder.setAttribute(Qt.WA_StyledBackground, True)
+        #: ★ 高度 = **实际内容高度**（不多不少）
+        holder.setFixedHeight(self._sets_block_height(rows))
+
+        grid = QGridLayout(holder)
+        grid.setContentsMargins(0, 2, 0, 0)
+        #: ⚠ 行距必须和 :meth:`_sets_block_height` 里算的**一致**，
+        #:   否则固定高度和实际内容高度对不上，Qt 会把差额摊到各行上，
+        #:   行距就漂了（实测 6 套的卡行距 41/42、7 套的 40/41）。
+        grid.setVerticalSpacing(SET_ROW_GAP)
+        grid.setHorizontalSpacing(SET_COL_GAP)
+        #: 多出来的一列用来"吸走"剩余宽度，免得两列被拉开
+        grid.setColumnStretch(SET_COLUMNS, 1)
+
+        for i, name in enumerate(sets):
+            chip = self._build_set_chip(name, holder)
+            #: ★ 每个格子**固定高度** —— 不让它被垂直拉伸。
+            #:   拉伸量各卡不同（行数 1/3/4 不等），会直接把行距拉歪。
+            chip.setFixedHeight(SET_ICON_SIZE)
+            grid.addWidget(chip, i // SET_COLUMNS, i % SET_COLUMNS)
+        return holder
+
+    def _build_set_chip(self, name: str, parent) -> QWidget:
+        """一个套装 = 小图标 + 名字。"""
+        chip = QWidget(parent)
+        chip.setAttribute(Qt.WA_StyledBackground, True)
+        lay = QHBoxLayout(chip)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(5)
+
+        pix = set_icon_pixmap(name)
+        if pix is not None:
+            icon = QLabel(chip)
+            icon.setFixedSize(SET_ICON_SIZE, SET_ICON_SIZE)
+            icon.setPixmap(pix)
+            icon.setToolTip(name)
+            lay.addWidget(icon)
+
+        label = CaptionLabel(name, chip)
+        label.setToolTip(name)
+        lay.addWidget(label)
+        lay.addStretch(1)
+        return chip
 
     def _toggled(self, _state: int) -> None:
         self._on_toggle(self.target.key, self.check.isChecked())
@@ -160,24 +477,6 @@ class TargetCard(CardWidget):
 
     def is_checked(self) -> bool:
         return self.check.isChecked()
-
-
-class EchoNameCard(CardWidget):
-    """梦魇残像**声骸**的资料卡（**不可勾选**）。
-
-    见模块说明：指南里能点的是"聚落"，不是单个怪 ——
-    把它做成可勾选会造出一个点了没用的界面。
-    """
-
-    def __init__(self, name: str, parent=None):
-        super().__init__(parent)
-        self.setMinimumWidth(CARD_MIN_WIDTH)
-        box = QVBoxLayout(self)
-        box.setContentsMargins(14, 10, 14, 10)
-        box.setSpacing(0)
-        label = BodyLabel(name, self)
-        label.setWordWrap(True)
-        box.addWidget(label)
 
 
 class NestSweepWidget(ScrollArea):
@@ -206,7 +505,6 @@ class NestSweepWidget(ScrollArea):
 
         layout.addWidget(self._build_run_card(page))
         layout.addWidget(self._build_targets_card(page))
-        layout.addWidget(self._build_echo_list_card(page))
         layout.addStretch(1)
         self.setWidget(page)
 
@@ -248,7 +546,7 @@ class NestSweepWidget(ScrollArea):
         card = ConfigCard(
             "扫荡残像聚落",
             "勾选要刷的目标，点「运行」后**按下面的顺序一个一个刷**"
-            "（顺序 = 卡片顺序，也就是清单里的 order）。",
+            "（顺序 = 卡片顺序 = **版本从新到旧**，同一版本内看 order）。",
             parent,
         )
 
@@ -298,34 +596,25 @@ class NestSweepWidget(ScrollArea):
         return card
 
     def _build_targets_card(self, parent) -> ConfigCard:
-        card = ConfigCard(
-            "可以刷的目标",
-            "卡片顺序就是刷取顺序。名称和游戏里对不上时，"
-            "改 src/core/data/wuwa_sweep_targets.json 的 aliases 即可（两种“象/像”写法已内置）。",
-            parent,
-        )
+        """卡片墙那块。
+
+        ★ 用户第 ⑩ 轮：标题从「可以刷的目标」**改成「残像聚落」**，
+        下面那整段说明文字**干掉**。
+
+        > ⚠ **删说明是有代价的**（和卡片上删「别名：…」时一样）：
+        > 那段文字原本是唯一一处告诉用户"名称对不上时改
+        > ``wuwa_sweep_targets.json`` 的 aliases"的地方。
+        > 现在界面上**没有任何提示**了 —— 改数据文件的知识只在
+        > :mod:`src.core.nest_sweep.catalog` 的模块文档里。
+        > 真出问题时用户不会知道能自己改。
+        """
+        card = ConfigCard("残像聚落", "", parent)
         self.targets_host = QWidget(card)
         self.targets_grid = QGridLayout(self.targets_host)
         self.targets_grid.setContentsMargins(0, 4, 0, 0)
         self.targets_grid.setHorizontalSpacing(12)
         self.targets_grid.setVerticalSpacing(12)
         card.add(self.targets_host)
-        return card
-
-    def _build_echo_list_card(self, parent) -> ConfigCard:
-        """梦魇残像**声骸**清单（资料，不可勾选）。"""
-        card = ConfigCard(
-            "当前版本的梦魇残像声骸",
-            "梦魇残像里能刷到的声骸（资料用 · 不可单独勾选 —— "
-            "指南里能点的是“聚落”，一个聚落含多个残像）。",
-            parent,
-        )
-        self.echoes_host = QWidget(card)
-        self.echoes_grid = QGridLayout(self.echoes_host)
-        self.echoes_grid.setContentsMargins(0, 4, 0, 0)
-        self.echoes_grid.setHorizontalSpacing(12)
-        self.echoes_grid.setVerticalSpacing(10)
-        card.add(self.echoes_host)
         return card
 
     def _rebuild_cards(self) -> None:
@@ -336,47 +625,18 @@ class NestSweepWidget(ScrollArea):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-        while self.echoes_grid.count():
-            item = self.echoes_grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
 
-        #: ★ 按**分类**分段，每段前面加一行小标题 —— 用户要"展示所有的
-        #:   残像聚落和梦魇残像"，两类混在一起排会看不出分界
-        row = 0
-        for kind, group in catalog_by_kind(self._targets).items():
-            title = StrongBodyLabel(KIND_NAMES.get(kind, kind), self.targets_host)
-            self.targets_grid.addWidget(title, row, 0, 1, CARD_COLUMNS)
-            row += 1
-            for index, target in enumerate(group):
-                card = TargetCard(target, target.key in self._selected,
-                                  self._on_card_toggle, self.targets_host)
-                self.targets_grid.addWidget(card, row + index // CARD_COLUMNS,
-                                            index % CARD_COLUMNS)
-                self._cards[target.key] = card
-            row += (len(group) + CARD_COLUMNS - 1) // CARD_COLUMNS
-
-        names = self._echo_names()
-        for index, name in enumerate(names):
-            self.echoes_grid.addWidget(EchoNameCard(name, self.echoes_host),
-                                       index // CARD_COLUMNS, index % CARD_COLUMNS)
+        #: ★ 2026-10-13 用户要求：**不再区分残像聚落 / 梦魇聚落，统一叫残像聚落**。
+        #:   所以这里**不再按 kind 分段**，所有目标平铺成一张卡片墙
+        #:   （原先分两段还各加一行小标题，现在那两行也去掉了）。
+        for index, target in enumerate(self._targets):
+            card = TargetCard(target, target.key in self._selected,
+                              self._on_card_toggle, self.targets_host)
+            self.targets_grid.addWidget(card, index // CARD_COLUMNS,
+                                        index % CARD_COLUMNS)
+            self._cards[target.key] = card
 
         self._refresh_selection_label()
-
-    def _echo_names(self) -> tuple[str, ...]:
-        """从数据文件里读梦魇残像声骸清单（读不到就是空的，不报错）。"""
-        try:
-            import json
-
-            path = paths.game_data_dir() / "wuwa_sweep_targets.json"
-            with path.open(encoding="utf-8") as fh:
-                raw = json.load(fh)
-            block = raw.get("_nightmare_echoes") or {}
-            items = block.get("list") or []
-            return tuple(str(x) for x in items if str(x).strip())
-        except Exception:  # noqa: BLE001 - 资料读不出来不该让整页崩
-            return ()
 
     # ------------------------------------------------------------------ 勾选
     def _on_card_toggle(self, key: str, checked: bool) -> None:
@@ -532,14 +792,14 @@ class NestSweepWidget(ScrollArea):
 @registry.register(
     category=ToolCategory.GAME,
     name="扫荡残像聚落",
-    description="展示当前版本的残像聚落与梦魇残像，勾选后按顺序逐个扫荡",
+    description="展示当前版本的残像聚落（含能出的声骸套装），勾选后按顺序逐个扫荡",
     icon_name="GAME",
     coming_soon=False,
 )
 class NestSweepTool(BaseTool):
     key = "nest_sweep"
     name = "扫荡残像聚落"
-    description = "勾选残像聚落 / 梦魇残像，按顺序一个一个自动扫荡"
+    description = "勾选残像聚落，按顺序一个一个自动扫荡"
     version = "0.1.0"
     tags = ("自动", "声骸", "日常")
     coming_soon = False

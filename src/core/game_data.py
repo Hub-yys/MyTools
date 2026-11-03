@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -170,6 +171,34 @@ class CharacterInfo:
     rarity: int = 0    # 0 表示未知
     element: str = ""  # 气动 / 冷凝 / 导电 / 热熔 / 湮灭 / 衍射
     weapon: str = ""   # 迅刀 / 长刃 / 佩枪 / 臂铠 / 音感仪
+    #: ★ **实装版本**，形如 ``"V3.8"``（来自库街区「实装版本」标签）。
+    #: 空串表示未知（手工补的角色可能没有）。
+    #:
+    #: ## 为什么是"实装版本"而不是别的
+
+    #: 用户 2026-10-24 原话：
+    #:
+    #: > 排序按照版本推出的新角色降序排列，
+    #: > **注意是新角色，不算复刻的角色**
+    #:
+    #: * **实装版本** —— 复刻**不改变**它 → 天然排除复刻 ✅
+    #: * ~~``content.updateAt``~~ —— 那是**词条修改时间**，
+    #:   wiki 批量改数据时会全刷新，导致今汐/长离这些老角色排到前面 ❌
+    #:   （我第一版就是用它，用户截图指出排序完全错乱）
+    release_version: str = ""
+
+    @property
+    def version_key(self) -> tuple[int, int]:
+        """版本号 → 可比较的元组。``"V3.8"`` → ``(3, 8)``。
+
+        ⚠ 不能按字符串排 —— ``"V3.10"`` 会排在 ``"V3.9"`` 前面。
+        """
+        text = str(self.release_version or "")
+        m = re.search(r"[Vv]?\s*(\d+)(?:\.(\d+))?", text)
+        if not m:
+            return (0, 0)
+        return (int(m.group(1)),
+                int(m.group(2)) if m.group(2) is not None else 0)
 
     @property
     def tagline(self) -> str:
@@ -230,6 +259,39 @@ def _load_json(filename: str) -> dict:
 
 
 def _build_characters(raw: dict) -> tuple[CharacterInfo, ...]:
+    """``wuwa_characters.json`` → 角色元组（**新版本推出的角色排前面**）。
+
+    ## ★ 2026-10-24：按「实装版本」降序
+
+    用户原话：
+
+    > 排序按照版本推出的新角色降序排列，
+    > **注意是新角色，不算复刻的角色**
+
+    **依据**：库街区「实装版本」标签（``V3.8`` / ``V3.7`` / …）。
+    复刻**不改变**实装版本，所以天然排除复刻 —— 正是用户要的语义。
+
+    ## ⚠ 我第一版用错了字段（用户截图指出）
+
+    我先用了 ``content.updateAt``，结果排序**完全错乱**：
+
+    ```
+    锁暝 琳奈 洛瑟菈 尤诺 千咲 心 莉莉 赞妮
+                      ↑ 千咲(V2.8) 夹在一堆 V3.x 中间
+    莫宁 绯雪 景燃 清宵 达妮娅 吟霖 忌炎 爱弥斯
+                            ↑ 吟霖(V1.x) 忌炎(V1.x) 跑到 V3.5 前面
+    ```
+
+    原因是 ``updateAt`` 是**词条最后修改时间** ——
+    wiki 批量改数据时所有词条被刷新，老角色也跟着"变新"了。
+
+    ## 排序规则
+
+    1. **版本号降序**（按 ``(major, minor)`` 数字比，不是字符串 ——
+       否则 ``V3.10`` 会排在 ``V3.9`` 前面）
+    2. **没有版本信息的排最后**（手工补的角色），按名字
+    3. 同版本按稀有度降序、再按名字 —— 保证**每次加载顺序一致**
+    """
     result: list[CharacterInfo] = []
     for item in raw.get("characters", []) or []:
         if not isinstance(item, dict):
@@ -244,8 +306,17 @@ def _build_characters(raw: dict) -> tuple[CharacterInfo, ...]:
                 rarity=int(item.get("rarity", 0) or 0),
                 element=str(item.get("element", "") or ""),
                 weapon=str(item.get("weapon", "") or ""),
+                release_version=str(item.get("release_version", "") or ""),
             )
         )
+
+    #: 按版本降序；无版本的垫底；再按稀有度/名字兜底
+    result.sort(key=lambda c: (
+        0 if c.version_key != (0, 0) else 1,     #: 有版本 = 0（优先）
+        tuple(-v for v in c.version_key),        #: 版本降序
+        -c.rarity,                               #: 同版本 → 高星在前
+        c.name,                                  #: 再同名排序，保证稳定
+    ))
     return tuple(result)
 
 

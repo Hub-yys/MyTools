@@ -26,6 +26,7 @@ from src.core.nest_sweep.catalog import (  # noqa: E402
     KIND_NEST,
     KIND_NIGHTMARE,
     SweepTarget,
+    _version_key,
     catalog_by_kind,
     catalog_path,
     find_target,
@@ -33,6 +34,16 @@ from src.core.nest_sweep.catalog import (  # noqa: E402
     parse_catalog,
     parse_target,
 )
+
+
+def _ver_tuple(text: str) -> tuple:
+    """把版本号变成**可正序比**的元组（复用生产代码的解析，但不取负）。
+
+    :func:`catalog._version_key` 返回的是"取负版"（为了倒序），
+    这里取回来方便断言"版本非递增"。
+    """
+    _flag, *rest = _version_key(text)
+    return tuple(-n for n in rest)
 
 
 class TestParseTarget(unittest.TestCase):
@@ -115,15 +126,86 @@ class TestMatchNames(unittest.TestCase):
 class TestParseCatalog(unittest.TestCase):
     """整份清单的解析。"""
 
-    def test_sorted_by_kind_then_order_then_name(self):
-        """分类（聚落在前）→ order → 名称。"""
+    def test_sorted_by_version_desc_then_order_then_name(self):
+        """★ 2026-10-13 用户要求：「整体按照聚落出的时间顺序倒叙排序」。
+
+        即**越新的版本排越前**；同一版本内才看 ``order``、再看名称。
+        以前是「先分类（聚落在前）、再 order」，现在品类**不打乱**。
+        """
         raw = {"targets": [
-            {"name": "N2", "kind": KIND_NIGHTMARE, "order": 1},
-            {"name": "P2", "kind": KIND_NEST, "order": 2},
-            {"name": "P1", "kind": KIND_NEST, "order": 1},
+            {"name": "旧", "kind": KIND_NIGHTMARE, "version": "2.5", "order": 1},
+            {"name": "新", "kind": KIND_NEST, "version": "3.7", "order": 1},
+            {"name": "中", "kind": KIND_NEST, "version": "3.0", "order": 1},
         ]}
         got = [t.name for t in parse_catalog(raw)]
-        self.assertEqual(got, ["P1", "P2", "N2"])
+        self.assertEqual(got, ["新", "中", "旧"])
+
+    def test_same_version_uses_order_then_name(self):
+        """同一版本内：order 小的在前，order 相同按名称。"""
+        raw = {"targets": [
+            {"name": "B", "version": "3.0", "order": 2},
+            {"name": "A", "version": "3.0", "order": 1},
+            {"name": "D", "version": "3.0", "order": 2},
+            {"name": "C", "version": "3.0", "order": 2},
+        ]}
+        self.assertEqual([t.name for t in parse_catalog(raw)],
+                         ["A", "B", "C", "D"])
+
+    def test_version_compared_numerically_not_as_text(self):
+        """★★ 版本号必须**按数字**比，不能比字符串。
+
+        ``"2.10" < "2.5"`` 在字符串序里成立 —— 但 2.10 明显更新。
+        真版本号迟早会出现两位数小版本（2.10 / 3.10），那时字符串序就错了，
+        而且**错得毫无提示**（只是顺序看着有点怪）。
+        """
+        raw = {"targets": [
+            {"name": "二五", "version": "2.5"},
+            {"name": "二十", "version": "2.10"},
+            {"name": "三九", "version": "3.9"},
+            {"name": "三十", "version": "3.10"},
+        ]}
+        self.assertEqual([t.name for t in parse_catalog(raw)],
+                         ["三十", "三九", "二十", "二五"])
+
+    def test_no_version_goes_last(self):
+        """没有版本号的排**最后**（不是最前）。
+
+        它们在数据文件里通常是"还没核实的新条目"，
+        排最前会盖住有据可查的那些。
+        """
+        raw = {"targets": [
+            {"name": "没版本"},
+            {"name": "有二五", "version": "2.5"},
+        ]}
+        self.assertEqual([t.name for t in parse_catalog(raw)],
+                         ["有二五", "没版本"])
+
+    def test_same_order_is_deterministic(self):
+        """★ ``order`` 相同时按名称排 —— 顺序必须**确定**。
+
+        只按 order 排的话顺序取决于 JSON 书写顺序：看起来能用，
+        但每次读都可能不一样，卡片会莫名其妙地跳。
+        """
+        raw = {"targets": [
+            {"name": "丙", "order": 0},
+            {"name": "甲", "order": 0},
+            {"name": "乙", "order": 0},
+        ]}
+        got = [t.name for t in parse_catalog(raw)]
+        self.assertEqual(got, sorted(["甲", "乙", "丙"]))
+        #: 读两遍结果必须一样
+        self.assertEqual(got, [t.name for t in parse_catalog(raw)])
+
+    def test_real_catalog_is_newest_first(self):
+        """★ 真清单：第一张卡片必须是**最新版本**那一处（3.7 梦枢天罗）。"""
+        items = load_catalog()
+        if not items:
+            self.skipTest("清单为空")
+        self.assertEqual(items[0].name, "梦枢天罗残像聚落")
+        #: 版本号必须**非递增**
+        versions = [_ver_tuple(t.version) for t in items]
+        self.assertEqual(versions, sorted(versions, reverse=True),
+                         f"版本没有倒序: {[t.version for t in items]}")
 
     def test_same_order_is_deterministic(self):
         """★ ``order`` 相同时按名称排 —— 顺序必须**确定**。
@@ -251,6 +333,135 @@ class TestSweepTargetHelpers(unittest.TestCase):
     def test_unknown_kind_falls_back_to_raw(self):
         """分类名查不到时显示原样，不是空白。"""
         self.assertEqual(SweepTarget("k", "n", "custom").kind_name, "custom")
+
+
+class TestTargetSets(unittest.TestCase):
+    """★ 目标「能出哪些声骸套装」—— 用户 2026-10-13 要求卡片显示图标+名称。
+
+    数据来自**用户给的游戏内截图**（一手来源），不是攻略站。
+    """
+
+    def test_sets_default_is_empty_not_fabricated(self):
+        """没写 sets = **不知道**，不是「没有套装」。
+
+        空元组在界面上表现为「不画那一条」，而不是画一个「0 套」——
+        后者看起来像「这里什么都不掉」。
+        """
+        self.assertEqual(SweepTarget("k", "n").sets, ())
+
+    def test_parse_sets_from_list(self):
+        t = parse_target({"name": "X", "sets": ["甲", "乙", "丙"]})
+        self.assertEqual(t.sets, ("甲", "乙", "丙"))
+
+    def test_parse_sets_from_string(self):
+        """手写时逗号 / 顿号分隔也该认（和 aliases 同一套解析）。"""
+        t = parse_target({"name": "X", "sets": "甲、乙, 丙"})
+        self.assertEqual(t.sets, ("甲", "乙", "丙"))
+
+    def test_parse_sets_drops_blanks(self):
+        t = parse_target({"name": "X", "sets": ["甲", "", "  ", "乙"]})
+        self.assertEqual(t.sets, ("甲", "乙"))
+
+    def test_parse_sets_wrong_type_is_empty(self):
+        """写错类型不能炸（数据文件是手改的）。"""
+        for bad in (123, {"a": 1}, None):
+            with self.subTest(bad=bad):
+                t = parse_target({"name": "X", "sets": bad})
+                self.assertEqual(t.sets, ())
+
+    def test_sets_survive_the_real_catalog(self):
+        """★ 真清单里**三组**聚落的套装必须对（用户 2026-10-13 确认）。
+
+        分组：① 梦枢天罗 = 落渊南丘（6 套）
+              ② 盲望之塌 = 复生丘原 = 陷足流川（7 套）
+              ③ 5 处梦魇聚落各 1 套
+        """
+        targets = {t.name: t for t in load_catalog()}
+        six = ("茜染怀想之花", "衔梦照世之心", "镜影流电之瞬",
+               "羽落空尘之歌", "清邪荡煞之心", "冥途夜行之灯")
+        seven = ("雪落无声之愿", "剪心辑梦之影", "长路启航之星",
+                 "斑驳粉饰之沫", "听唤语义之愿", "逆光跃彩之约",
+                 "星构寻辉之环")
+        solo = {
+            "千殁沉岛梦魇聚落": ("失序彼岸之梦",),
+            "潮痕岩滩梦魇聚落": ("息界同调之律",),
+            "受蚀地梦魇聚落": ("荣斗铸锋之冠",),
+            "三王峰梦魇聚落": ("焚羽猎魔之影",),
+            "穗波市梦魇聚落": ("命理崩毁之弦",),
+        }
+        #: ① 两处同样的 6 套
+        for name in ("梦枢天罗残像聚落", "落渊南丘残像聚落"):
+            with self.subTest(name=name):
+                self.assertEqual(targets[name].sets, six)
+        #: ② 三处同样的 7 套
+        for name in ("盲望之塌残像聚落", "复生丘原残像聚落",
+                     "陷足流川残像聚落"):
+            with self.subTest(name=name):
+                self.assertEqual(targets[name].sets, seven)
+        #: ③ 梦魇各 1 套
+        for name, want in solo.items():
+            with self.subTest(name=name):
+                self.assertEqual(targets[name].sets, want)
+
+    def test_no_target_is_missing_sets(self):
+        """★ 现在**每一处都有** sets —— 用户把三组都给了。
+
+        留空会被界面当成「不知道」而**不画那一条**，
+        所以这条守住"别漏填"（漏了不会报错，只是卡片上少一块）。
+        """
+        for t in load_catalog():
+            with self.subTest(target=t.name):
+                self.assertTrue(t.sets, f"{t.name} 没有 sets")
+
+    def test_every_named_set_exists_in_the_set_database(self):
+        """★ 引用的套装名必须**真的存在于** ``wuwa_echo_sets.json``。
+
+        写错一个字 → 界面拿不到图标（只剩名字）、用户也搜不到那个套装，
+        而且**全程不报错**。
+        """
+        data = json.loads(
+            (ROOT / "src" / "core" / "data" / "wuwa_echo_sets.json")
+            .read_text(encoding="utf-8"))
+        known = {s["name"] for s in data["sets"]}
+
+        for t in load_catalog():
+            for name in t.sets:
+                with self.subTest(target=t.name, echo_set=name):
+                    self.assertIn(name, known,
+                                  f"{t.name} 引用了不存在的套装「{name}」")
+
+    def test_three_groups_stay_identical(self):
+        """★ 用户明确说过"这几处一致"，数据必须**一直**一致。
+
+        ① 梦枢天罗 = 落渊南丘（6 套）
+        ② 盲望之塌 = 复生丘原 = 陷足流川（7 套）
+
+        ⚠ 别小看这条：**改其中一个而忘了另一个**，界面上会显示两套不同的
+        套装清单，而用户以为它们本来就该一样 —— 那会直接导致"刷错地方"。
+        """
+        groups = [
+            ("梦枢天罗残像聚落", "落渊南丘残像聚落"),
+            ("盲望之塌残像聚落", "复生丘原残像聚落", "陷足流川残像聚落"),
+        ]
+        by_name = {t.name: t for t in load_catalog()}
+        for group in groups:
+            with self.subTest(group=group):
+                first = by_name[group[0]].sets
+                for other in group[1:]:
+                    self.assertEqual(
+                        by_name[other].sets, first,
+                        f"{other} 和 {group[0]} 的套装不一致"
+                        f"（用户说过这几处应该一样）")
+
+    def test_counts_corrected_from_the_screenshot(self):
+        """★ 用户截图补全的两处每日数量（此前三路检索都查不到）。
+
+        截图原文：「落渊南丘残像聚落 已击败残象 0/41」
+                  「梦枢天罗残像聚落 已击败残象 0/48」
+        """
+        targets = {t.name: t for t in load_catalog()}
+        self.assertEqual(targets["落渊南丘残像聚落"].count, 41)
+        self.assertEqual(targets["梦枢天罗残像聚落"].count, 48)
 
 
 if __name__ == "__main__":

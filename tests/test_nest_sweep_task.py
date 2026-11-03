@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import importlib
 import sys
 import unittest
@@ -237,6 +238,94 @@ class TestTaskClassLazy(unittest.TestCase):
         self.assertIn("MyToolsNestSweepTask", cleared,
                       "任务类里没有写 supported_languages = []，"
                       "宿主 headless 环境下这个任务会被 ok-script 静默跳过")
+
+    def test_no_undefined_names_used_in_run(self):
+        """★★ ``MyToolsNestSweepTask.run`` 里**不能出现没绑定的名字**。
+
+        ## 这条拦的是用户 2026-10-14 报的「点运行没反应」
+
+        当时 ``run()`` 里写着 ``WWOneTimeTask.run(self)``，
+        但 ``WWOneTimeTask`` 只在 ``okww.task.NightmareNestTask``
+        里被 import —— **没有**进到本模块的名字空间 →
+        一执行就 ``NameError``。
+
+        **症状特别迷惑人**（值得记下来）：
+
+        * 引擎日志里任务**确实启动了**（``queued onetime_task``）
+        * 界面显示"已交给引擎：残像聚落 3 个"
+        * 0.03 秒后在那一行炸掉，而 ok-script **把异常吞在自己的
+          ``execute()`` 里** → 界面**没有任何提示**
+        * 用户看到的就是「点了运行没反应」
+
+        ## 为什么用 AST 而不是"跑一遍"
+
+        跑一遍要真的去操作游戏窗口（本测试**绝不能**那么干）。
+        静态查名字够用，而且能在 CI 里跑。
+        """
+        source = Path(okww_task.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        #: ① 收集"在模块/函数作用域里被绑定过"的名字
+        bound: set[str] = set(dir(builtins))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                for a in node.names:
+                    bound.add((a.asname or a.name).split(".")[0])
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                   ast.ClassDef)):
+                bound.add(node.name)
+                for d in getattr(node, "decorator_list", []):
+                    for sub in ast.walk(d):
+                        if isinstance(sub, ast.Name):
+                            bound.add(sub.id)
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                bound.add(node.id)
+            elif isinstance(node, ast.arg):
+                bound.add(node.arg)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                bound.add(node.name)
+            elif isinstance(node, (ast.comprehension,)):
+                for sub in ast.walk(node.target):
+                    if isinstance(sub, ast.Name):
+                        bound.add(sub.id)
+            elif isinstance(node, ast.Global):
+                bound.update(node.names)
+            elif isinstance(node, ast.Nonlocal):
+                bound.update(node.names)
+
+        #: ② 找出 ``MyToolsNestSweepTask`` 类体里所有 Load 的名字
+        target_cls = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "MyToolsNestSweepTask":
+                target_cls = node
+                break
+        self.assertIsNotNone(target_cls, "找不到 MyToolsNestSweepTask 类")
+
+        used: dict[str, int] = {}
+        for node in ast.walk(target_cls):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                used.setdefault(node.id, node.lineno)
+
+        #: ③ 排除"类体里的局部定义"（方法名、类属性）
+        local = set()
+        for stmt in target_cls.body:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                local.add(stmt.name)
+            elif isinstance(stmt, ast.Assign):
+                for t in stmt.targets:
+                    if isinstance(t, ast.Name):
+                        local.add(t.id)
+
+        undefined = sorted(
+            (name, line) for name, line in used.items()
+            if name not in bound and name not in local)
+
+        self.assertEqual(
+            undefined, [],
+            "MyToolsNestSweepTask 里用了没绑定的名字 %s —— "
+            "这类错会在**任务启动之后**才炸（ok-script 吞掉异常，"
+            "界面上看不到任何提示，表现就是「点运行没反应」）。"
+            % undefined)
 
 
 class TestTabMapping(unittest.TestCase):

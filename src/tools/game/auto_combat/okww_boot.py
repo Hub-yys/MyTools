@@ -38,10 +38,6 @@ TASKS = {
     # 声骸批量调频（改主属性）：ok-ww 的 ChangeEchoTask 流程 + MyTools 的容错
     # （原版会在「目标属性相同」等常见情况下直接抛异常把任务打断）
     "声骸批量调频": "MyToolsChangeEchoTask",
-    # 查缺补漏：整条流程都是 MyTools 的（视觉伺服），不基于 ok-ww 任务。
-    # ⚠ 这个任务**不进**「工具页点启动」的默认流程 —— 它需要先建参考库
-    #   并标定转向比例，没标定就跑会乱走。只在任务流程里手动选用。
-    "查缺补漏": "MyToolsExploreGapTask",
     # 扫荡残像聚落：复用 ok-ww 的 NightmareNestTask（传送/战斗/捡取），
     # 只把「刷哪个」换成按工具页勾选的清单、按顺序一个一个刷。
     "扫荡残像聚落": "MyToolsNestSweepTask",
@@ -124,12 +120,35 @@ def build_config() -> dict:
         # ok-ww 原配置是 gui qt；宿主是无 GUI 的（resolve_ui_config(None) → headless）
         "config_folder": str(user_dir / "configs"),
         "global_configs": [key_config_option, char_config_option, monthly_card_config_option],
-        # ok-ww 原配置 use_openvino/use_npu=True；本机没装 openvino，
-        # onnxocr 走 onnxruntime（MyTools 已装且声骸工具在用）
+        # ★★★ 2026-10-27：与 ok-ww **完全对齐** —— use_openvino=True, use_npu=True。
+        #
+        # ## 为什么（用户：角色反复死亡，代码/配置全部逐字一致）
+        #
+        # 之前这里是 ``False, False``，理由是「本机没装 openvino」。
+        # 但 ok-ww 的 requirements.txt 里明确写着::
+        #
+        #     openvino==2026.3.0
+        #     openvino-telemetry==2025.2.0
+        #
+        # 而 ok-ww 的 config.py 也是 ``use_openvino: True, use_npu: True``。
+        # 也就是说 **ok-ww 一直用 OpenVINO/NPU 跑 OCR，我们一直用纯 CPU**。
+        #
+        # OCR 在 4C 刷本里并不只是「读几个字」—— 每轮战斗都要:
+        #   * 识别 Boss 名字（日志里的 ``boss_string is []``）
+        #   * 识别拾取文字（"吸收"/"Absorb"）
+        #   * 识别等级/血量数字
+        #
+        # CPU OCR 慢 → 主循环被拖住 → 战斗响应迟钝 → 角色站桩挨打。
+        # 这和「主循环每秒动作比 ok-ww 少」「匹配耗时是 ok-ww 的 8~10 倍」
+        # 全部吻合。
+        #
+        # 现已安装 openvino==2026.3.0 + openvino-telemetry==2025.2.0（与 ok-ww 同版本）。
+        # 若某台机器没装 openvino，onnxocr 会自动回退到 onnxruntime（见
+        # ``onnxocr/predict_base.py`` 的 ``is_openvino`` 判断），不会崩。
         "ocr": {
             "lib": "onnxocr",
             "auto_simplify": True,
-            "params": {"use_openvino": False, "use_npu": False},
+            "params": {"use_openvino": True, "use_npu": True},
         },
         "my_app": ["okww.globals", "Globals"],
         "start_timeout": 120,
@@ -157,9 +176,21 @@ def build_config() -> dict:
             "exe": "Client-Win64-Shipping.exe",
             "hwnd_class": "UnrealWindow",
             "interaction": "PostMessage",    # 后台按键，不抢前台
-            "capture_method": ["WGC", "BitBlt_RenderFull"],
+            # ★★ 2026-10-25 按本机 ok-ww（D:\ok-ww）原文补齐 —— 之前少了 WGC_HDR
+            #
+            # 本机 ok-ww 是::
+            #
+            #     'capture_method': ['WGC', 'WGC_HDR', 'BitBlt_RenderFull']
+            #
+            # 我们原来只有 ``['WGC', 'BitBlt_RenderFull']`` —— **少了 WGC_HDR**。
+            # 游戏开 HDR 时普通 WGC 抓不到正确画面（拿到的是 SDR 映射或黑屏），
+            # 而 WGC_HDR 专门处理这种情况。缺了它 → 抓到的帧内容不对 →
+            # 所有模板匹配失效 → ``in_team()`` 失败 → ``in_combat()`` 永远 False
+            # → 4C 原地平A。
+            "capture_method": ["WGC", "WGC_HDR", "BitBlt_RenderFull"],
             "check_hdr": False,
             "force_no_hdr": False,
+            "check_auto_hdr": True,          # ok-ww 原文有，我们之前漏了
             "check_night_light": True,
             "force_no_night_light": False,
         },
@@ -184,10 +215,6 @@ def build_config() -> dict:
             #   app.locale 是 en_US → init_tasks() 会**静默跳过**它，
             #   页面上一切正常、点「启动」却什么任务都找不到。
             ["src.tools.game.echo_change.okww_task", "MyToolsChangeEchoTask"],
-            # 查缺补漏（视觉伺服，不用世界坐标）。
-            # ⚠ 类名走的是本模块的 PEP 562 ``__getattr__`` 懒构造 ——
-            #   平时 import 不碰 ok-ww，ok-script ``getattr`` 时才建类。
-            ["src.tools.game.explore_gap.okww_task", "MyToolsExploreGapTask"],
             # 扫荡残像聚落：ok-ww 的 NightmareNestTask 流程 + 本工具的勾选清单。
             # ⚠ 别退回成 ["okww.task.NightmareNestTask", "NightmareNestTask"]：
             #   原版是「刷所有」（只认行尾计数器，不看那行叫什么），
@@ -514,6 +541,9 @@ class OkwwHost:
         #: 本次运行的起止时刻（0 = 没跑过 / 还没停）
         self._report_started_at = 0.0
         self._report_stopped_at = 0.0
+        #: ★ 工具页按了「跳过」→ 置 True，任务在检查点取走并清掉。
+        #: 见 :meth:`request_skip_current` 与 ``okww_task._consume_skip_request``。
+        self._skip_current_requested = False
         #: 报告读哪个任务 —— 跑完 _running_task 会清空，所以要单独记着
         self._report_task_key: str | None = None
         #: 最近一次"启动任务失败"的信息。工具页取走并弹一次 InfoBar ——
@@ -524,8 +554,10 @@ class OkwwHost:
         #: 不存一份快照的话，结果报告会丢掉最后几百毫秒里的数字。
         self._finished_info: dict[str, dict] = {}
         #: 任务**成功启动**后的回调（宿主不认识 GUI，由界面层注册）。
-        #: 界面用它做「点运行后自动缩到托盘 + 把游戏切到前台」。
         self._task_started_listeners: list = []
+        #: 任务**结束**（跑完 / 失败 / 被停）后的回调。用户 2026-10-25 要求
+        #: 「启动/运行完成后最小化该工具」—— 界面层注册它来缩窗口。
+        self._task_done_listeners: list = []
 
     # ------------------------------------------------------------ 任务启动通知
     def add_task_started_listener(self, listener) -> None:
@@ -568,6 +600,45 @@ class OkwwHost:
             log.info("[宿主] 通知完成")
 
         threading.Thread(target=_fire, name="okww-notify-started",
+                         daemon=True).start()
+
+    # ------------------------------------------------------------ 任务结束通知
+    def add_task_done_listener(self, listener) -> None:
+        """注册「任务已结束」回调（参数是任务 key）。
+
+        用户 2026-10-25：
+
+        > 再增加启动/运行完成后，最小化该工具
+
+        界面层注册它来缩窗口。**同样不依赖 Qt** —— 宿主只喊一声。
+
+        ⚠ 与 :meth:`add_task_started_listener` 一样，回调会在**独立线程**里
+        跑（见 :meth:`_notify_task_started` 那段 2026-09-27 卡死的说明），
+        所以界面侧必须转成 Qt 信号，不能直接碰控件。
+        """
+        with self._lock:
+            if listener not in self._task_done_listeners:
+                self._task_done_listeners.append(listener)
+
+    def _notify_task_done(self, task_key: str) -> None:
+        """通知界面层「任务结束了」。**绝不能阻塞调用方**（原因同上）。"""
+        with self._lock:
+            listeners = list(self._task_done_listeners)
+        if not listeners:
+            return
+        log = logging.getLogger(__name__)
+        log.info("[宿主] 通知界面：任务已结束（%s，%d 个监听者）",
+                 task_key, len(listeners))
+
+        def _fire() -> None:
+            for fn in listeners:
+                try:
+                    fn(task_key)
+                except Exception:  # noqa: BLE001 - 界面回调炸了不能影响引擎
+                    log.exception("任务结束回调失败: %s", task_key)
+            log.info("[宿主] 通知完成（结束）")
+
+        threading.Thread(target=_fire, name="okww-notify-done",
                          daemon=True).start()
 
     # ------------------------------------------------------------ 状态查询
@@ -631,6 +702,55 @@ class OkwwHost:
             return None
         return report.read_report(task, baseline=baseline, started_at=started,
                                   stopped_at=stopped, running=running)
+
+    def report_started_at(self) -> float:
+        """本次运行的开始时间戳（0 = 还没跑过）。
+
+        给「历史记录」用：界面在检测到「运行中 → 停止」时要把这次跑
+        拍成一条历史，需要知道开始时刻才能算出「什么时候跑的」。
+        直接读 ``_report_started_at`` 也行，但那是私有字段，
+        给个访问器免得以后改内部结构时界面跟着崩。
+        """
+        with self._lock:
+            return float(self._report_started_at or 0.0)
+
+    def request_skip_current(self) -> bool:
+        """★ 界面 → 任务 的「跳过当前声骸」请求（工具页那个按钮用的）。
+
+        ## 语义
+
+        用户 2026-10-30 确认：
+
+        > 跳过相当与他已经强化好了，需要跳过同类型同名声骸
+
+        所以按一下 = 把这个声骸**当成已强化好**记下来：
+        跳过它本身 + 之后同名同类型的（含「异相」版）都跳过
+        + 成套模式下计入该 Cost 档的种类数。
+
+        ## 为什么要在宿主上中转
+
+        任务跑在引擎线程里，界面线程直接改它的属性有两个问题：
+          * 竞态（界面改了、任务正好在读写）
+          * 任务实例可能还没建出来 / 已经被 disable
+
+        所以界面只往宿主上放一个**一次性标志**，任务自己在检查点取走。
+        宿主有锁，读写安全。
+
+        ## 返回
+
+        ``True`` = 已记下请求（任务到检查点会执行）。
+        ``False`` = 当前没有正在跑的强化任务，跳过无处可去。
+
+        ⚠ 只是"记下请求" —— 任务要等到下一个检查点
+        （``check_echo_stats`` / ``find_add_mat``）才真正执行。
+        """
+        with self._lock:
+            if not self._running_task:
+                return False
+            if self._running_task != "声骸自动强化":
+                return False
+            self._skip_current_requested = True
+            return True
 
     def take_start_error(self) -> str | None:
         """取出并清空"最近一次启动失败"（取过即清，不会重复弹）。
@@ -929,6 +1049,8 @@ class OkwwHost:
                         self._report_stopped_at = time.time()
                 self._log("■ 任务结束：%s" % key)
                 self._notice_task_done(key, info)
+                # ★ 用户 2026-10-25：「启动/运行完成后，最小化该工具」
+                self._notify_task_done(key)
 
     def _notice_task_done(self, key: str, info) -> None:
         """给刚结束的任务记一条消息（见 :meth:`poll_done` 的说明）。

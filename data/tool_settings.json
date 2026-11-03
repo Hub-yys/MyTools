@@ -8,14 +8,44 @@
       "攻击百分比",
       "共鸣效率"
     ],
-    "crit_min": 7.5,
-    "crit_dmg_min": 15.0,
-    "enable_crit_check": false,
+    "crit_min": 6.9,
+    "crit_dmg_min": 13.8,
+    "enable_crit_check": true,
     "enable_max_roll_lock": true,
-    "min_valid_count": 3
+    "min_valid_count": 3,
+    "enable_auto_stop": true
   },
   "echo_change": {
-    "target_stat": "暴击伤害",
-    "max_count": 4
+    "target_stat": "攻击",
+    "max_count": 20
+  },
+  "auto_combat": {
+    "shutdown_enabled": false,
+    "shutdown_minutes": 120
+  },
+  "character_build": {
+    "feature_code": "137856011",
+    "mobile": "19128896241"
+  },
+  "nest_sweep": {
+    "selected": [
+      "nest:梦枢天罗",
+      "nest:落渊南丘",
+      "nest:盲望之塌",
+      "nest:陷足流川",
+      "nest:复生丘原",
+      "nightmare:穗波市",
+      "nightmare:三王峰",
+      "nightmare:潮痕岩滩",
+      "nightmare:受蚀地",
+      "nightmare:千殁沉岛"
+    ]
+  },
+  "auto_combat_style": {
+    "style": "smart"
+  },
+  "__bad__": {},
+  "web_echo_profile_pick": {
+    "profile_id": ""
   }
 }

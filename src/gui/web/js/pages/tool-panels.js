@@ -171,9 +171,77 @@
   const MAX_SHUTDOWN_MINUTES = 1440;
   const SHUTDOWN_WARN_SECONDS = 60;
 
+  //: 「正在启动…」的有效期（毫秒）
+  //:
+  //: ★ 取 **120 秒** —— 对齐 ok-ww 自己的 ``start_timeout: 120``
+  //: （见 ``okww_boot`` 的 config）。引擎首次冷启动要加载 ok-ww +
+  //: onnxocr + openvino，实测 20 秒左右，但慢机器/首次装模型会更久。
+  //:
+  //: ⚠ 第一版写的 30 秒**不够**：实测完整套件跑下来，引擎冷启动 +
+  //: 主线程被 ``runOkwwTask`` 阻塞叠加，30 秒就过期了，轮询立刻把
+  //: 「正在启动…」擦掉 —— 看起来像"点完没反应"。
+  //:
+  //: 过期后轮询会接管（显示运行中/被占用/就绪），所以这个值只影响
+  //: 「最坏情况下这行字挂多久」，取大一点没有副作用。
+  const PENDING_START_MS = 120000;
+
+  /**
+   * ★ 标记「刚点了运行，引擎正在起来」（2026-11-03）。
+   *
+   * ## 为什么需要（实测踩到）
+   *
+   * 点「运行」时写一行「引擎：正在启动…」，但**轮询每 1.5 秒重算状态行**，
+   * 而引擎冷启动要 ~20 秒 —— 期间后端 ``getOkwwState()`` 返回的还是
+   * ``state: "idle"``（初始化在别的线程）。轮询看到 idle 就把文案清掉：
+   *
+   * .. code:: text
+   *
+   *     t+0.0s  写「引擎：正在启动…」
+   *     t+1.5s  轮询 sees idle → 清空  ← 用户看到"点了一下就没反应"
+   *     t+20s   引擎才真的 booting
+   *
+   * 用户视角就是「按钮坏了」。所以给个**截止时间**，在那之前轮询
+   * 不许清掉这条反馈。
+   *
+   * @param {object} state - COMBAT_STATE / CHANGE_STATE / SWEEP_STATE
+   */
+  function markPendingStart(state) {
+    state.pendingUntil = Date.now() + PENDING_START_MS;
+  }
+
+  /** 当前是否还在「刚点运行」的有效期内 */
+  function isPendingStart(state) {
+    return Date.now() < (state.pendingUntil || 0);
+  }
+
+  /** 结束「正在启动」标记（失败 / 停止 / 轮询确认跑起来之后调） */
+  function clearPendingStart(state) {
+    state.pendingUntil = 0;
+  }
+
+  /**
+   * ★ 轮询里调：确认引擎真的进入运行态后，撤掉「正在启动」标记。
+   *
+   * 为什么不在提交成功后直接撤：引擎冷启动 ~20 秒，那段期间后端
+   * ``getOkwwState()`` 还报 ``idle``，撤了就没人维持「正在启动…」，
+   * 轮询看到 idle 会把状态行清空（实测 0.8 秒就白屏）。
+   *
+   * @returns {boolean} 是否已撤离（true 表示交给正常状态逻辑）
+   */
+  function settlePendingStart(state, running, pending, stateName) {
+    if (!state.pendingUntil) return true;
+    const started = !!(running || pending) || stateName === 'booting'
+      || stateName === 'running';
+    if (started) {
+      clearPendingStart(state);
+      return true;
+    }
+    //: 还没起来 —— 继续维持「正在启动…」（除非已超时）
+    return !isPendingStart(state);
+  }
+
   const COMBAT_STATE = {
     style: null,
-    styleHint: null,
     styles: null,
     shutdownCheck: null,
     shutdownEdit: null,
@@ -181,6 +249,19 @@
     reportHost: null,
     historyHost: null,
     stateLabel: null,
+    //: ★ 2026-11-03：「正在启动…」的有效期
+    //:
+    //: ## 为什么需要（踩到了）
+    //:
+    //: 点「运行」时先写「引擎：正在启动…」，但**轮询每 1.5 秒会把状态行
+    //: 重算一遍** —— 而引擎首次冷启动要 ~20 秒，这期间后端 ``state`` 还是
+    //: ``idle``（引擎在别的线程初始化），轮询看到 idle 就把文案清空了。
+    //:
+    //: 结果：用户点完只闪一下，之后 20 秒一片空白 —— 正是我们想避免的。
+    //:
+    //: 现在记一个**截止时间**：在这之前，轮询不许清掉「正在启动…」。
+    //: 超时（默认 30 秒，覆盖实测 ~20 秒冷启动）后交还给轮询逻辑。
+    pendingUntil: 0,
     btnStart: null,
     btnStop: null,
     tracker: null,
@@ -218,7 +299,12 @@
 
     COMBAT_STATE.stateLabel = P.el('div', {
       class: 'cfg-state',
-      text: '引擎：后台加载中 · 就绪后点「启动」开跑'
+      text: '',
+      //: ★ 2026-11-03 用户圈图「去掉」——常态下不显示任何说明文字。
+      //: 失败 / 占用 / 运行中时才由 ``combatUpdateState'' 显示出来。
+      //: 见 ``Panels.setStateLabel`` 的说明（不能直接删元素，
+      //: 否则连失败反馈一起没了 → 静默失败）。
+      hidden: true
     });
     built.body.appendChild(COMBAT_STATE.stateLabel);
     void app; void meta;
@@ -231,7 +317,16 @@
       '战斗方式',
       ''
     );
-    const row = P.el('div', { class: 'cfg-inline-row' });
+    //: ★ 2026-11-03（第二批）用户圈图：「这个调整成居中」
+    //:
+    //: 旧界面这一行是 ``[下拉框 160px][说明文字 flex:1]`` —— 说明文字
+    //: 撑满右边，所以下拉框**看起来**是靠左但整行是满的。
+    //: 上一轮按用户要求把说明文字删了，于是整行只剩一个 160px 的下拉框
+    //: 贴在 1224px 宽的卡片最左边，右边一大片空白，很空。
+    //:
+    //: 现在用 ``.cfg-row-center`` 让这一个控件在行内**水平居中**
+    //: （只加在这张卡上，不动 ``.cfg-inline-row`` —— 那个有 8 处在用）。
+    const row = P.el('div', { class: 'cfg-inline-row cfg-row-center' });
     COMBAT_STATE.style = Panels.select(
       COMBAT_STYLES_FALLBACK.map(function (s) {
         return { value: s.value, label: s.label };
@@ -240,22 +335,22 @@
     );
     COMBAT_STATE.style.el.classList.add('cfg-select');
     row.appendChild(COMBAT_STATE.style.el);
-    COMBAT_STATE.styleHint = P.el('div', { class: 'cfg-hint-inline' });
-    row.appendChild(COMBAT_STATE.styleHint);
-    COMBAT_STATE.style.el.addEventListener('change', combatUpdateStyleHint);
+    //: ★★★ 2026-11-03 用户圈图「去掉」——删掉了下拉框右边那行说明：
+    //:
+    //:   「ok-ww 原生调度：按 buff 剩余时间和角色定位挑人。
+    //:     这是 ok-ww 官方行为，默认就用它。」
+    //:
+    //: 用户在前面几轮已经要求「7 个工具页的说明文字全删」，
+    //: 这行是漏网的一个 —— 它跟着下拉选项变，藏得比较深。
+    //:
+    //: ⚠ 连 ``styleHint`` 节点、``combatUpdateStyleHint()`` 函数、
+    //:   ``change`` 监听**一起删干净**了 —— 只删节点、留着对
+    //:   ``COMBAT_STATE.styleHint`` 的引用，会触发 ``js_sanity`` 的
+    //:   「静默失败」检查（引用了但从未赋值的字段恒为 null），
+    //:   那正是本项目反复踩过的坑。
     built.body.appendChild(row);
-    combatUpdateStyleHint();
     return built.card;
   }
-
-  function combatUpdateStyleHint() {
-    const hint = COMBAT_STATE.styleHint;
-    const selected = COMBAT_STATE.style.get();
-    const styles = COMBAT_STATE.styles || COMBAT_STYLES_FALLBACK;
-    const hit = styles.find(function (s) { return s.value === selected; });
-    if (hint) hint.textContent = hit && hit.desc ? hit.desc : '';
-  }
-
   // ── ③ 定时关机卡（旧界面 L602-652）─────────────────────────────────────
   function buildCombatShutdownCard() {
     const built = cfgCard(
@@ -301,10 +396,17 @@
   function combatRefreshShutdownState() {
     const el = COMBAT_STATE.shutdownState;
     if (!el) return;
+    //: ★ 2026-11-03 用户圈图「去掉」——「未启用（不勾选就不会关机）。」
+    //: 这行是**纯说明**（复选框本身就是"启用/未启用"的表达），删掉。
+    //:
+    //: ⚠ 「已启用：跑够 N 分钟后关机。」**保留** —— 那是**当前设置的
+    //: 回显**（勾上之后必须能看见自己设了多少分钟），不是说明文字。
     if (!COMBAT_STATE.shutdownCheck.checked) {
-      el.textContent = '未启用（不勾选就不会关机）。';
+      el.textContent = '';
+      el.hidden = true;
       return;
     }
+    el.hidden = false;
     el.textContent = '已启用：跑够 ' +
       COMBAT_STATE.shutdownEdit.get() + ' 分钟后关机。';
   }
@@ -379,7 +481,6 @@
       if (savedStyle && legal.indexOf(savedStyle) >= 0) {
         COMBAT_STATE.style.set(savedStyle);
       }
-      combatUpdateStyleHint();
     }
 
     // ── 定时关机：**独立接口** ``getShutdownTimer()`` ──
@@ -444,19 +545,36 @@
 
     const label = COMBAT_STATE.stateLabel;
     if (label) {
+      //: ★★★ 2026-11-03 用户圈图「去掉」—— 删掉了这两条**静态说明**：
+      //:
+      //:   「引擎：就绪 · 点「启动」开始 4C 刷声骸」  ← 常态挂着那行字
+      //:   「引擎：后台加载中…」
+      //:
+      //: ⚠ 但**「启动中」不能删**：引擎首次冷启动实测 ~20 秒
+      //: （ok-ww + onnxocr + openvino 初始化）。这期间界面一声不吭的话，
+      //: 用户会以为按钮坏了反复点。
+      //:
+      //: 判据：**状态会自己变回去的** = 反馈（留）；
+      //:       **一直挂着不动的** = 说明（删）。
       if (state === 'error') {
-        label.textContent = '引擎：启动失败 —— ' +
-          String(data.bootError || '详见日志');
+        Panels.setStateLabel(label, '引擎：启动失败 —— ' +
+          String(data.bootError || '详见日志'));
       } else if (running && myTask && running !== myTask) {
-        label.textContent = '引擎：被占用（正在跑 ' + running + '）';
-      } else if (pending) {
-        label.textContent = '引擎：启动中…（就绪后自动开始）';
+        Panels.setStateLabel(label, '引擎：被占用（正在跑 ' + running + '）');
       } else if (running) {
-        label.textContent = '引擎：运行中 —— ' + running + ' · 点「停止」结束';
-      } else if (state === 'booting') {
-        label.textContent = '引擎：后台加载中…';
+        Panels.setStateLabel(label,
+          '引擎：运行中 —— ' + running + ' · 点「停止」结束');
+      } else if (pending || state === 'booting') {
+        //: ★ 反馈：引擎正在起来（会被下面的「运行中 / 失败」覆盖掉）
+        Panels.setStateLabel(label, '引擎：正在启动…');
+      } else if (!settlePendingStart(COMBAT_STATE, running, pending, state)) {
+        //: ★ 刚点完运行、引擎还在冷启动（后端此时仍报 idle）——
+        //: 别清掉「正在启动…」，否则用户 20 秒看不到任何反应。
+        //: 见 ``settlePendingStart`` 的说明。
+        Panels.setStateLabel(label, '引擎：正在启动…');
       } else {
-        label.textContent = '引擎：就绪 · 点「启动」开始 4C 刷声骸';
+        //: 就绪 —— 常态，不显示任何说明
+        Panels.setStateLabel(label, '');
       }
     }
 
@@ -526,47 +644,55 @@
         onGiveUp: function () {}
       });
       COMBAT_STATE.tracker.reset();
-      if (COMBAT_STATE.stateLabel) {
-        COMBAT_STATE.stateLabel.textContent = '引擎：正在启动…';
-      }
+      //: ★★★ 2026-11-03 **「正在启动…」必须保留**
+      //:
+      //: 我一开始把它当"说明文字"删了 —— 那是错的：
+      //: 引擎是**首次冷启动**（实测 ~20 秒：加载 ok-ww + onnxocr +
+      //: openvino 初始化）。这期间点「运行」如果界面一声不吭，
+      //: 用户会以为按钮坏了，反复点。
+      //:
+      //: 判据：**状态会自己变回去的**就是反馈，**一直挂着不动的**才是说明。
+      //: 「正在启动…」→「运行中 / 失败」，属于前者。
+      markPendingStart(COMBAT_STATE);
+      setStateLabel(COMBAT_STATE.stateLabel, '引擎：正在启动…');
       const result = await P.call('runOkwwTask', JSON.stringify({
         taskKey: 'auto_combat'
       }));
       if (!result.ok) {
-        if (COMBAT_STATE.stateLabel) {
-          COMBAT_STATE.stateLabel.textContent = '引擎：启动请求失败（接口未就绪）';
-        }
+        clearPendingStart(COMBAT_STATE);
+        setStateLabel(COMBAT_STATE.stateLabel,
+          '引擎：启动请求失败（接口未就绪）');
         return;
       }
       const data = result.data || {};
       if (data.ok === false) {
-        if (COMBAT_STATE.stateLabel) {
-          COMBAT_STATE.stateLabel.textContent = '引擎：' +
-            String(data.message || data.reason || '启动失败');
-        }
+        clearPendingStart(COMBAT_STATE);
+        setStateLabel(COMBAT_STATE.stateLabel,
+          '引擎：' + String(data.message || data.reason || '启动失败'));
         return;
       }
+      //: ★ 受理成功也**保留** pending 标记 —— 引擎冷启动期间后端还报 idle，
+      //: 立刻清掉会让轮询把「正在启动…」擦干净（实测 0.8 秒就没了）。
+      //: 标记会在轮询真正看到 running/booting 后自然失效，或 30 秒超时。
       if (COMBAT_STATE.tracker) COMBAT_STATE.tracker.accept();
       return;
     }
 
-    if (COMBAT_STATE.stateLabel) {
-      COMBAT_STATE.stateLabel.textContent = '引擎：正在停止…';
-    }
+    //: ★ 停止也要有即时反馈（同「正在启动」的理由 —— 停引擎要几秒）
+    clearPendingStart(COMBAT_STATE);
+    setStateLabel(COMBAT_STATE.stateLabel, '引擎：正在停止…');
     const r = await P.call('stopOkwwTask');
     if (!r.ok) {
-      if (COMBAT_STATE.stateLabel) {
-        COMBAT_STATE.stateLabel.textContent = '引擎：停止失败（接口未就绪）';
-      }
+      setStateLabel(COMBAT_STATE.stateLabel,
+        '引擎：停止失败（接口未就绪）');
       return;
     }
     const d = r.data || {};
-    if (d.ok === false && COMBAT_STATE.stateLabel) {
-      COMBAT_STATE.stateLabel.textContent = '引擎：' +
-        String(d.message || d.reason || '没有正在运行的任务');
+    if (d.ok === false) {
+      setStateLabel(COMBAT_STATE.stateLabel,
+        '引擎：' + String(d.message || d.reason || '没有正在运行的任务'));
     }
   }
-
   // ════════════════════════════════════════════════════════════════════════
   //  ⑦ 资源库更新  wuwa_library_update   （**照抄旧界面 2 块**）
   //
@@ -920,6 +1046,9 @@
     target: null,
     count: null,
     stateLabel: null,
+    //: ★ 2026-11-03：「正在启动…」有效期（轮询不许清掉）——
+    //: 引擎首次冷启动 ~20 秒，期间后端 state 还是 idle。见 COMBAT_STATE 的说明。
+    pendingUntil: 0,
     runBtn: null,
     stopBtn: null,
     tracker: null,
@@ -987,16 +1116,19 @@
     countRow.appendChild(P.el('div', { style: 'flex:1 1 auto' }));
     built.body.appendChild(countRow);
 
-    // ── ③ 数量说明（旧界面 L198-206，灰色、不渲染 markdown）──
-    built.body.appendChild(P.el('div', {
-      class: 'cfg-muted',
-      text: '数量最多**成功调频**多少个（点 −/+ 每次 1 个；填 0 = 不限）。' +
-        '已经是目标属性的声骸会被**跳过**（不会中断任务），' +
-        '跳过的**不计入**数量；但如果过滤器里一直有它，' +
-        '工具会停下来提醒你收紧过滤条件。'
-    }));
+    //: ★★★ 2026-11-03 用户：「另外文字说明也去掉，再检查其他地方有没有类似情况」
+    //:
+    //: 这里删掉的是「数量最多**成功调频**多少个（点 −/+ 每次 1 个；填 0 = 不限）。
+    //: 已经是目标属性的声骸会被**跳过**（不会中断任务）……」那整段灰字。
+    //:
+    //: ⚠ 旧界面确实有这段（``echo_change/tool.py`` L198-206），但用户
+    //: 2026-11-02 起**反复要求「工具页的说明文字全删」**，之前几轮就
+    //: 删过 7 个工具页的说明，只是这一段漏了 —— 属于「用户主动推翻
+    //: 旧设计」，不是我们擅自修改。
+    //:
+    //: 上限仍然存在（后端夹 0~MAX），只是不再用一段话解释它。
 
-    // ── ④ 运行 / 停止（各占一半）──
+    // ── ④ 运行 / 停止 ──
     const btnRow = P.el('div', { class: 'cfg-btn-row' });
     CHANGE_STATE.runBtn = P.el('button', {
       class: 'cfg-btn cfg-btn-primary', type: 'button', text: '运行',
@@ -1011,9 +1143,12 @@
     built.body.appendChild(btnRow);
 
     // ── ⑤ 状态行（旧界面 self.state_label）──
+    //: ★ 2026-11-03 用户圈图「去掉」—— 常态不显示说明文字。
+    //: 失败反馈仍会由 ``Panels.setStateLabel`` 显示出来（不能删元素）。
     CHANGE_STATE.stateLabel = P.el('div', {
       class: 'cfg-state',
-      text: '引擎：后台加载中 · 就绪后点「运行」开始调频'
+      text: '',
+      hidden: true
     });
     built.body.appendChild(CHANGE_STATE.stateLabel);
 
@@ -1125,19 +1260,24 @@
 
     const label = CHANGE_STATE.stateLabel;
     if (label) {
+      //: ★ 2026-11-03 与 4C / 扫荡 统一：
+      //:   常态（就绪 / 后台加载）**不显示说明文字**（用户圈图要求删）；
+      //:   失败 / 占用 / 运行中 / 启动中 是**反馈**，必须显示。
       if (state === 'error') {
-        label.textContent = '引擎：启动失败 —— ' +
-          String(data.bootError || '详见日志');
+        Panels.setStateLabel(label, '引擎：启动失败 —— ' +
+          String(data.bootError || '详见日志'));
       } else if (running && myTask && running !== myTask) {
-        label.textContent = '引擎：被占用（正在跑 ' + running + '）';
-      } else if (pending) {
-        label.textContent = '引擎：启动中…（就绪后自动开始）';
+        Panels.setStateLabel(label, '引擎：被占用（正在跑 ' + running + '）');
       } else if (running) {
-        label.textContent = '引擎：运行中 —— ' + running + ' · 点「停止」结束';
-      } else if (state === 'booting') {
-        label.textContent = '引擎：后台加载中…';
+        Panels.setStateLabel(label,
+          '引擎：运行中 —— ' + running + ' · 点「停止」结束');
+      } else if (pending || state === 'booting') {
+        Panels.setStateLabel(label, '引擎：正在启动…');
+      } else if (!settlePendingStart(CHANGE_STATE, running, pending, state)) {
+        //: 引擎冷启动 ~20 秒，期间后端可能还报 idle —— 别清掉反馈
+        Panels.setStateLabel(label, '引擎：正在启动…');
       } else {
-        label.textContent = '引擎：就绪 · 点「运行」开始调频';
+        Panels.setStateLabel(label, '');
       }
     }
 
@@ -1156,6 +1296,11 @@
   /** 运行 / 停止（旧界面 ``_on_run`` / ``_on_stop``）*/
   async function changeAction(action) {
     if (action === 'run') {
+      //: ★ 先给反馈，再做任何 await —— 点下去立刻有反应
+      //: （``changeSaveSettings`` 也是排队异步的，前一个面板占着桥时会卡住）
+      markPendingStart(CHANGE_STATE);
+      Panels.setStateLabel(CHANGE_STATE.stateLabel, '引擎：正在启动…');
+
       //: 先把界面上的参数存盘（引擎跑的时候读 tool_settings）
       await changeSaveSettings();
 
@@ -1166,10 +1311,6 @@
       });
       CHANGE_STATE.tracker.reset();
 
-      if (CHANGE_STATE.stateLabel) {
-        CHANGE_STATE.stateLabel.textContent = '引擎：正在启动…';
-      }
-
       const result = await P.call('runOkwwTask', JSON.stringify({
         taskKey: 'echo_change',
         config: {
@@ -1179,39 +1320,53 @@
       }));
 
       if (!result.ok) {
-        if (CHANGE_STATE.stateLabel) {
-          CHANGE_STATE.stateLabel.textContent =
-            '引擎：启动请求失败（接口未就绪）';
-        }
+        clearPendingStart(CHANGE_STATE);
+        Panels.setStateLabel(CHANGE_STATE.stateLabel,
+          '引擎：启动请求失败（接口未就绪）');
         return;
       }
       const data = result.data || {};
       if (data.ok === false) {
-        if (CHANGE_STATE.stateLabel) {
-          CHANGE_STATE.stateLabel.textContent = '引擎：' +
-            String(data.message || data.reason || '启动失败');
-        }
+        clearPendingStart(CHANGE_STATE);
+        Panels.setStateLabel(CHANGE_STATE.stateLabel,
+          '引擎：' + String(data.message || data.reason || '启动失败'));
         return;
       }
+      //: ★★★ 2026-11-03 **受理成功也不能清掉 pending 标记**
+      //:
+      //: 踩到过：这里原本写着 ``clearPendingStart()`` —— 意思是
+      //: 「后端受理了，交给轮询」。但引擎**冷启动要 ~20 秒**，
+      //: 这期间 ``getOkwwState()`` 返回的还是 ``state:"idle"``，
+      //: 轮询一看 idle、又没有 pending 标记 → 立刻把「正在启动…」清空。
+      //:
+      //: 实测时间线（探针）：
+      //:
+      //: .. code:: text
+      //:
+      //:     点完立刻    「引擎：正在启动…」   ← 对
+      //:     点完 0.8s   （空，hidden）        ← 被轮询清了
+      //:
+      //: 用户视角就是「点了一下，然后就没了」。
+      //:
+      //: 正确做法：**保留标记**，让 ``isPendingStart()`` 一直撑到
+      //: 轮询真的看到 ``running`` / ``booting`` 为止（或 30 秒超时）。
       if (CHANGE_STATE.tracker) CHANGE_STATE.tracker.accept();
       return;
     }
 
     // ── 停止 ──
-    if (CHANGE_STATE.stateLabel) {
-      CHANGE_STATE.stateLabel.textContent = '引擎：正在停止…';
-    }
+    clearPendingStart(CHANGE_STATE);
+    Panels.setStateLabel(CHANGE_STATE.stateLabel, '引擎：正在停止…');
     const r = await P.call('stopOkwwTask');
     if (!r.ok) {
-      if (CHANGE_STATE.stateLabel) {
-        CHANGE_STATE.stateLabel.textContent = '引擎：停止失败（接口未就绪）';
-      }
+      Panels.setStateLabel(CHANGE_STATE.stateLabel,
+        '引擎：停止失败（接口未就绪）');
       return;
     }
     const d = r.data || {};
-    if (d.ok === false && CHANGE_STATE.stateLabel) {
-      CHANGE_STATE.stateLabel.textContent = '引擎：' +
-        String(d.message || d.reason || '没有正在运行的任务');
+    if (d.ok === false) {
+      Panels.setStateLabel(CHANGE_STATE.stateLabel,
+        '引擎：' + String(d.message || d.reason || '没有正在运行的任务'));
     }
   }
 
@@ -1278,6 +1433,9 @@
     targets: [],
     selected: null,          //: Set
     stateLabel: null,
+    //: ★ 2026-11-03：「正在启动…」有效期（轮询不许清掉）——
+    //: 引擎首次冷启动 ~20 秒，期间后端 state 还是 idle。见 COMBAT_STATE 的说明。
+    pendingUntil: 0,
     progressLabel: null,
     selectionLabel: null,
     gridHost: null,
@@ -1344,7 +1502,10 @@
     SWEEP_STATE.stateLabel = P.el('span', {
       class: 'cfg-muted',
       style: 'margin-left:10px',
-      text: '引擎：未启动 · 点「运行」会先加载引擎再开跑'
+      text: '',
+      //: ★ 2026-11-03 用户要求删说明文字 —— 常态不显示
+      //: （失败/占用仍由 ``Panels.setStateLabel`` 显示出来）
+      hidden: true
     });
     runRow.appendChild(SWEEP_STATE.stateLabel);
     built.body.appendChild(runRow);
@@ -1591,6 +1752,18 @@
         }
         return;
       }
+      //: ★★★ 2026-11-03 **先给反馈，再做任何 await**
+      //:
+      //: 踩到过：反馈原来写在 ``await sweepSaveSelection()`` **之后** ——
+      //: 而 QWebChannel 调用是异步排队的，前一个面板（比如 4C）还在
+      //: 等 ``runOkwwTask`` 时，这里会卡住不返回 → 用户点完按钮
+      //: **几秒钟毫无反应**，测试也读不到任何变化（实测 full-suite
+      //: 里 nest_sweep.P5 一直失败）。
+      //:
+      //: 现在先写「正在启动…」再存盘，点下去立刻有反应。
+      markPendingStart(SWEEP_STATE);
+      Panels.setStateLabel(SWEEP_STATE.stateLabel, '引擎：正在启动…');
+
       //: 先把勾选存盘（ok-ww 的 MyToolsNestSweepTask 读的是 tool_settings）
       if (SWEEP_STATE.saveTimer) {
         clearTimeout(SWEEP_STATE.saveTimer);
@@ -1605,46 +1778,41 @@
       });
       SWEEP_STATE.tracker.reset();
 
-      if (SWEEP_STATE.stateLabel) {
-        SWEEP_STATE.stateLabel.textContent = '引擎：正在启动…';
-      }
       const result = await P.call('runOkwwTask', JSON.stringify({
         taskKey: 'nest_sweep'
       }));
       if (!result.ok) {
-        if (SWEEP_STATE.stateLabel) {
-          SWEEP_STATE.stateLabel.textContent =
-            '引擎：启动请求失败（接口未就绪）';
-        }
+        clearPendingStart(SWEEP_STATE);
+        Panels.setStateLabel(SWEEP_STATE.stateLabel,
+          '引擎：启动请求失败（接口未就绪）');
         return;
       }
       const data = result.data || {};
       if (data.ok === false) {
-        if (SWEEP_STATE.stateLabel) {
-          SWEEP_STATE.stateLabel.textContent = '引擎：' +
-            String(data.message || data.reason || '启动失败');
-        }
+        clearPendingStart(SWEEP_STATE);
+        Panels.setStateLabel(SWEEP_STATE.stateLabel,
+          '引擎：' + String(data.message || data.reason || '启动失败'));
         return;
       }
+      //: ★ 受理成功也保留 pending 标记（引擎冷启动期间后端还报 idle，
+      //: 立刻清掉会让轮询擦掉「正在启动…」）。见 CHANGE_STATE 处的说明。
       if (SWEEP_STATE.tracker) SWEEP_STATE.tracker.accept();
       return;
     }
 
     // ── 停止 ──
-    if (SWEEP_STATE.stateLabel) {
-      SWEEP_STATE.stateLabel.textContent = '引擎：正在停止…';
-    }
+    clearPendingStart(SWEEP_STATE);
+    Panels.setStateLabel(SWEEP_STATE.stateLabel, '引擎：正在停止…');
     const r = await P.call('stopOkwwTask');
     if (!r.ok) {
-      if (SWEEP_STATE.stateLabel) {
-        SWEEP_STATE.stateLabel.textContent = '引擎：停止失败（接口未就绪）';
-      }
+      Panels.setStateLabel(SWEEP_STATE.stateLabel,
+        '引擎：停止失败（接口未就绪）');
       return;
     }
     const d = r.data || {};
-    if (d.ok === false && SWEEP_STATE.stateLabel) {
-      SWEEP_STATE.stateLabel.textContent = '引擎：' +
-        String(d.message || d.reason || '没有正在运行的任务');
+    if (d.ok === false) {
+      Panels.setStateLabel(SWEEP_STATE.stateLabel,
+        '引擎：' + String(d.message || d.reason || '没有正在运行的任务'));
     }
   }
 
@@ -1667,19 +1835,24 @@
 
     const label = SWEEP_STATE.stateLabel;
     if (label) {
+      //: ★ 2026-11-03 用户要求删说明文字 —— 常态（就绪）不显示；
+      //: **启动中 / 失败 / 占用 / 运行中**这些反馈仍然显示
+      //: （引擎首次冷启动 ~20 秒，不给反馈用户会以为按钮坏了）。
       if (state === 'error') {
-        label.textContent = '引擎：启动失败 —— ' +
-          String(data.bootError || '详见日志');
+        Panels.setStateLabel(label, '引擎：启动失败 —— ' +
+          String(data.bootError || '详见日志'));
       } else if (running && myTask && running !== myTask) {
-        label.textContent = '引擎：被占用（正在跑 ' + running + '）';
-      } else if (pending) {
-        label.textContent = '引擎：启动中…（就绪后自动开始）';
+        Panels.setStateLabel(label, '引擎：被占用（正在跑 ' + running + '）');
       } else if (running) {
-        label.textContent = '引擎：运行中 —— ' + running + ' · 点「停止」结束';
-      } else if (state === 'booting') {
-        label.textContent = '引擎：后台加载中…';
+        Panels.setStateLabel(label,
+          '引擎：运行中 —— ' + running + ' · 点「停止」结束');
+      } else if (pending || state === 'booting') {
+        Panels.setStateLabel(label, '引擎：正在启动…');
+      } else if (!settlePendingStart(SWEEP_STATE, running, pending, state)) {
+        //: 引擎冷启动 ~20 秒，期间后端可能还报 idle —— 别清掉反馈
+        Panels.setStateLabel(label, '引擎：正在启动…');
       } else {
-        label.textContent = '引擎：就绪 · 点「运行」开始扫荡';
+        Panels.setStateLabel(label, '');
       }
     }
 
@@ -1769,18 +1942,69 @@
    * 这里显示基础数值 + 一句「完整图文详情请用旧界面查看」。
    */
   registerPanel('character_build', function renderCharacterBuild(container, app, meta) {
-    const panel = Panels.create(container, {
-      key: 'character_build',
-      title: nameOf(meta, '查询角色练度'),
-      desc: (meta && meta.desc)
-        || '登录库街区后拉取你账号里的角色与声骸数据，用来比对哪些角色的声骸属性需要重刷。',
-      runLabel: '刷新',
-      stopLabel: '',
-      onRun: function () { buildLoad(); },
-      onStop: function () { /* 只读页面，没有停止语义 */ }
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★★★ 2026-11-03 **不再用 ``Panels.create()`` 骨架**
+    //  （用户：「查询角色练度与原来页面区别太大，按照原来的样子改一下」）
+    //
+    //  ## 基准是**真跑旧界面截的图**（不是读代码猜的）
+    //
+    //  ``_oldbuild.py`` 直接实例化 ``CharacterBuildPanel`` 抓的控件树：
+    //
+    //  .. code:: text
+    //
+    //    TitleLabel   '查询角色练度'                      ← 页头标题（有！）
+    //    BodyLabel    '登录库街区后拉取你账号里的角色与…'   ← 页头描述（有！）
+    //    CardWidget   ① 登录库街区 / ② 账号概览 / ③ 共鸣者
+    //                 ④ 共鸣者详情 / 日志                  ← 5 张卡
+    //
+    //  ## 之前错在哪
+    //
+    //  只有这一个面板用了 ``Panels.create()`` —— 它额外画出两块旧界面
+    //  **根本没有**的东西：
+    //
+    //  .. code:: text
+    //
+    //    ..run-panel..  状态胶囊 + 进度条 + 步骤文字   ← 旧界面没有
+    //    ..log-box ..   "日志 0 行 / 清空"             ← 旧界面只有一块日志
+    //                     （而且这块是第二块，和⑤重复）
+    //
+    //  ## 现在的结构（和旧界面逐项对齐）
+    //
+    //  .. code:: text
+    //
+    //    .page-head   「查询角色练度」+ 描述            ← 保留（旧界面有）
+    //    ① 登录库街区  ② 账号概览  ③ 共鸣者  ④ 详情  ⑤ 日志
+    //
+    //  ⚠ **没有**页面级「刷新」按钮 —— 旧界面的「刷新数据」在**①号卡片里**
+    //    （``_build_login_card`` 的 btn_row），Web 版一直也在那儿，没丢。
+    //
+    //  ⚠ 下面的 ``panel`` 是个**极小的 shim**，只为了不改动 ``buildLoad()``
+    //    里那些 ``panel.setState(...)`` / ``panel.setProgress(...)`` 调用 ——
+    //    那些调用负责「读取中 / 读取失败 / 已加载 N 个角色」的反馈，
+    //    是有用的（不能删）。
+    //
+    //    shim 把状态写到 **日志卡**里（旧界面 ``_say()`` 也是写日志），
+    //    不再画那个旧界面没有的状态胶囊。``setProgress`` 是**空实现** ——
+    //    这个页面是只读缓存读取，没有进度可言，旧界面也没有进度条。
+    // ══════════════════════════════════════════════════════════════════════
+    //: 页头（旧界面 ``_build`` L676-679：TitleLabel + BodyLabel）
+    const buildHead = P.pageHead({
+      title: (meta && meta.name) || '查询角色练度',
+      subtitle: (meta && meta.desc)
+        || '登录库街区后拉取你账号里的角色与声骸数据，'
+        + '用来比对哪些角色的声骸属性需要重刷。'
     });
+    container.appendChild(buildHead.head);
+
+    const panel = {
+      setState: function (state, text) {
+        //: 旧界面的反馈只有一个出口：日志（``self._say(...)``）
+        if (text) buildLog(String(text), state === 'blocked' ? 'warn' : 'info');
+      },
+      setProgress: function () { /* 只读页面，没有进度条（旧界面也没有）*/ }
+    };
     BUILD_STATE.handle = panel;
-    panel.stopBtn.style.display = 'none';
+
 
     // ══════════════════════════════════════════════════════════════════════
     //  ① 登录卡 —— **照抄旧界面外观**（``_build_login_card`` L690-748）
@@ -1887,7 +2111,7 @@
       text: 'Web 版不支持登录，字段来自上次在旧界面保存的缓存。' +
         '要更新请用旧界面：MYTOOLS_WEB_SHELL=0 python main.py'
     }));
-    panel.body.appendChild(loginCard);
+    container.appendChild(loginCard);
 
     // ══════════════════════════════════════════════════════════════════════
     //  ② 账号概览 —— **照抄旧界面 ``_format_base``**（L1300-1315）
@@ -1917,7 +2141,7 @@
       P.el('div', { class: 'build-overview-empty', text: '尚未拉取数据' })
     ]);
     overviewCard.appendChild(BUILD_STATE.summaryEl);
-    panel.body.appendChild(overviewCard);
+    container.appendChild(overviewCard);
 
     // ══════════════════════════════════════════════════════════════════════
     //  ③ 共鸣者（★ 单行横向滚动）
@@ -1971,7 +2195,7 @@
       id: 'build-roles'
     });
     rolesCard.appendChild(BUILD_STATE.rolesHost);
-    panel.body.appendChild(rolesCard);
+    container.appendChild(rolesCard);
 
     // ══════════════════════════════════════════════════════════════════════
     //  ④ 共鸣者详情
@@ -1990,7 +2214,7 @@
       })
     ]);
     detailCard.appendChild(BUILD_STATE.detailHost);
-    panel.body.appendChild(detailCard);
+    container.appendChild(detailCard);
 
     // ══════════════════════════════════════════════════════════════════════
     //  ⑤ 日志（默认折叠，旧界面 ``_log_toggle``）
@@ -2022,7 +2246,7 @@
       hidden: true
     });
     logCard.appendChild(BUILD_STATE.logHost);
-    panel.body.appendChild(logCard);
+    container.appendChild(logCard);
 
     buildLoad();
     void app;
@@ -3561,17 +3785,20 @@
     }
     container.appendChild(titleRow);
 
-    // ══════════════════════════════════════════════════════════════════════
-    //  说明（旧界面 L494-504，**逐字照抄**，含日志路径）
-    // ══════════════════════════════════════════════════════════════════════
-    container.appendChild(P.el('div', {
-      class: 'enh-intro',
-      text: '在背包 → 声骸界面用过滤器筛好、按等级升序排序，再点运行。' +
-        '强化流程由 ok-ww 引擎执行（与「4C 自动战斗」同一个引擎，' +
-        '后台按键不抢前台）：符合条件的上锁保留，不符合条件的自动弃置。\n' +
-        '运行日志按日期落盘：data/okww/logs' +
-        '（出问题把当天那个文件发过来即可）'
-    }));
+    //: ★★★ 2026-11-03 用户：「另外文字说明也去掉，再检查其他地方有没有类似情况」
+    //:
+    //: 删掉的是这一整段（旧界面 ``echo_enhance/tool.py`` L494-504 逐字照抄的）：
+    //:
+    //:   「在背包 → 声骸界面用过滤器筛好、按等级升序排序，再点运行。
+    //:     强化流程由 ok-ww 引擎执行（与「4C 自动战斗」同一个引擎，
+    //:     后台按键不抢前台）：符合条件的上锁保留，不符合条件的自动弃置。
+    //:     运行日志按日期落盘：data/okww/logs（出问题把当天那个文件发过来即可）」
+    //:
+    //: ⚠ 全站只有这一段是「逐字照抄旧界面」的说明，其他工具页早在
+    //: P5~P8 就按用户要求删掉了 —— 这里漏了，用户圈图点名。
+    //:
+    //: 日志路径信息仍有价值，但它属于「出问题时才需要」的东西，
+    //: 需要的时候在 ``data/okww/logs`` 找即可，不必常驻在页面上。
 
     // ══════════════════════════════════════════════════════════════════════
     //  设置编辑器（6 张卡，``settings_editor.EchoSettingsEditor``）
@@ -3609,10 +3836,61 @@
     history.body.appendChild(ENHANCE_STATE.historyHost);
     container.appendChild(history.card);
 
+    //: ★★★ 2026-11-03 **把「改动即存盘」接上**（旧界面 L509 的
+    //: ``self.editor.changed.connect(self._save_settings)``）
+    //:
+    //: 旧界面语义（``tool.py`` L478-485 的注释）：
+    //:
+    //: * **界面**每次进入都是出厂默认 —— 不回填存盘值
+    //: * **改动照样存盘** —— 任务运行读的是存盘那份
+    //:
+    //: 两条同时成立才是对的。原来 Web 版只做了"读回来回填"（错），
+    //: 完全没有"存"（也错）—— 结果界面上改的判定条件**从来没生效过**，
+    //: 引擎跑的是上一次存盘的值。这是会毁结果的静默 bug。
+    enhanceBindSave();
     enhanceLoadSettings();
     enhanceLoadHistory();
     void app; void meta;
   });
+
+  /**
+   * 给所有设置控件挂「变更就存盘」监听（旧界面 ``editor.changed``）。
+   *
+   * ⚠ 用 ``change`` 而不是 ``input``：数字框在用户还在一半输入时
+   * （比如敲了 "1" 准备敲 "13"）不该存盘 —— ``change`` 在失焦/回车时
+   * 才触发，和 Qt 的 ``textChanged``+``editingFinished`` 语义接近。
+   */
+  function enhanceBindSave() {
+    const save = function () { enhanceSaveSettings(); };
+    for (const stat of ENHANCE_ALL_STATS) {
+      const cb = ENHANCE_STATE.coreBoxes[stat];
+      if (cb) cb.addEventListener('change', save);
+      const opt = ENHANCE_STATE.optionalBoxes[stat];
+      if (opt) opt.addEventListener('change', save);
+    }
+    const fields = [ENHANCE_STATE.critField, ENHANCE_STATE.critDmgField,
+                    ENHANCE_STATE.validStepper];
+    for (const f of fields) {
+      //: ``Panels.numberInput`` 暴露 ``.input``（真正的 <input>）+
+      //: ``.el``（外壳，含 −/+ 按钮）。按钮点完会触发 input 的 change，
+      //: 所以只监听 input 就够。
+      if (f && f.input) f.input.addEventListener('change', save);
+      if (f && f.el) {
+        f.el.addEventListener('click', function (ev) {
+          //: 兜底：±按钮改值时不一定冒泡 change，这里再存一次
+          if (ev.target && ev.target.closest
+            && ev.target.closest('button')) {
+            setTimeout(save, 0);
+          }
+        });
+      }
+    }
+    const toggles = [ENHANCE_STATE.critSwitch, ENHANCE_STATE.maxrollSwitch,
+                     ENHANCE_STATE.autostopSwitch];
+    for (const t of toggles) {
+      if (t) t.addEventListener('change', save);
+    }
+  }
 
   // ── 核心属性（CollapsibleCard，默认收起）──────────────────────────────
   //
@@ -3685,8 +3963,20 @@
     }
   }
 
-  // ── 双爆下限（★ **裸行**，没有卡片包裹 —— 旧界面 ``_build_crit_card``）──
+  // ── 双爆下限（★ 2026-11-03 加了玻璃卡底 —— 用户圈图「这个卡片怎么没了」）──
+  //
+  //  旧界面 ``_build_crit_card`` 这一行**确实没有** CardWidget 包裹
+  //  （见 ``settings_editor.py``：它直接 ``layout.addWidget(row)``）。
+  //
+  //  ⚠ 但网页里上下文不一样：上下五块全是玻璃卡，中间突然来一条裸行，
+  //  用户看到的就是「**少了一张卡**」—— 而且那行里还有三个控件
+  //  （两个数字输入 + 一个开关），info 密度远高于其他裸行。
+  //
+  //  所以这里套 ``.enh-crit-card``（同样的玻璃底 + 内边距），
+  //  开关 ``margin-left:auto`` 靠右 —— 和下面「满值锁定 / 自动停止」
+  //  两张卡的开关**左右对齐**（用户：「这个启用要对齐」）。
   function buildEnhanceCritRow() {
+    const card = P.el('div', { class: 'enh-crit-card card-glass' });
     const row = P.el('div', { class: 'enh-crit-row' });
     row.appendChild(P.el('span', { class: 'enh-inline-label', text: '暴击不低于' }));
     ENHANCE_STATE.critField = Panels.numberInput(ENHANCE_DEFAULT_CRIT_MIN, {
@@ -3703,13 +3993,14 @@
     ENHANCE_STATE.critDmgField.el.classList.add('cfg-number');
       ENHANCE_STATE.critDmgField.input.classList.add('cfg-number-input');
     row.appendChild(ENHANCE_STATE.critDmgField.el);
-    row.appendChild(P.el('div', { style: 'flex:1 1 auto' }));
-    //: 开关（旧界面 SwitchButton，圆角药丸形）
+    //: 开关（旧界面 SwitchButton，圆角药丸形）—— 靠右对齐由 CSS 负责
     const sw = P.toggle('启用', true, function (on) { enhanceOnCritToggle(on); },
       { onText: '启用', offText: '不启用' });
     row.appendChild(sw);
     ENHANCE_STATE.critSwitch = sw.querySelector('input[type="checkbox"]');
-    return row;
+
+    card.appendChild(row);
+    return card;
   }
 
   function enhanceOnCritToggle(on) {
@@ -3834,8 +4125,14 @@
     return coll.card;
   }
 
-  // ── 有效词条（裸行）──────────────────────────────────────────────────
+  // ── 有效词条（★ 2026-11-03 加玻璃卡底 —— 用户圈图「这里也是」）──
+  //
+  //  旧界面这一行同样**没有** CardWidget 包裹（``_build_valid_card``
+  //  直接 ``layout.addWidget``）。但它在网页里夹在「可选属性」卡片和
+  //  「结果报告」卡片之间，**裸行夹在两块玻璃中间**看起来像少了一张卡
+  //  —— 和双爆下限那行是同一个问题。
   function buildEnhanceValidCard() {
+    const card = P.el('div', { class: 'enh-crit-card card-glass' });
     const row = P.el('div', { class: 'enh-crit-row' });
     row.appendChild(P.el('span', { class: 'enh-inline-label', text: '有效词条' }));
     row.appendChild(P.el('span', { class: 'enh-inline-label', text: '至少' }));
@@ -3846,8 +4143,8 @@
       ENHANCE_STATE.validStepper.input.classList.add('cfg-number-input');
     row.appendChild(ENHANCE_STATE.validStepper.el);
     row.appendChild(P.el('span', { class: 'enh-inline-label', text: '条' }));
-    row.appendChild(P.el('div', { style: 'flex:1 1 auto' }));
-    return row;
+    card.appendChild(row);
+    return card;
   }
 
   // ── 结果报告 ─────────────────────────────────────────────────────────
@@ -3883,47 +4180,141 @@
 
   // ── 数据 ─────────────────────────────────────────────────────────────
   async function enhanceLoadSettings() {
+    //: ★★★ 2026-11-03 **不把存盘值回填到界面**（用户：「可选属性默认是空的」）
+    //:
+    //: ## 旧界面怎么做的（``echo_enhance/tool.py`` L478-485）
+    //:
+    //: .. code:: python
+    //:
+    //:     #: 本页当前的一套设置。**每次打开页面都是出厂默认**（用户 2026-09-24
+    //:     #: 明确要求："不要遗留上次的东西，每次进入都是默认配置"）——
+    //:     #: 所以这里不用 ``EchoSettings.load()``。改动仍然存盘，任务流程
+    //:     #: 读的就是存下来那份。
+    //:     self._settings = EchoSettings()
+    //:
+    //: **关键区别**：
+    //:   * **界面**永远从出厂默认开始（核心=双爆 / 可选=空 / 有效词条=3）
+    //:   * **改动照样存盘**，任务运行读的是存盘那份
+    //:
+    //: 也就是说"界面显示"和"存盘值"是**故意分开的** —— 用户要的是
+    //: 每次进来干净的一块白纸。
+    //:
+    //: ## 之前错在哪
+    //:
+    //: Web 版读 ``getToolSettings('echo_enhance')`` 然后全量回填，
+    //: 于是打开就显示上次（甚至是 10-09 那次）的勾选状态 ——
+    //: 用户看到的「可选属性里勾了 攻击百分比 / 共鸣效率」就是这么来的。
+    //:
+    //: ## 现在
+    //:
+    //: 什么都不回填 —— 界面用 HTML 里写死的出厂默认值
+    //: （``DEFAULT_ENHANCE_*`` / ``DEFAULT_CORE`` ...）。
+    //: ``changeSaveSettings`` 仍然照常存盘，任务流程不受影响。
+    //:
+    //: ⚠ 只保留一个"读"的用途：确认后端接口在不在（失败要能说出来，
+    //:   不能静默）。但**不写回控件**。
     const result = await P.call('getToolSettings', 'echo_enhance');
-    if (!result.ok || !result.data || result.data.ok === false) return;
-    const s = result.data.settings || {};
-
-    //: 核心属性
-    const core = Array.isArray(s.core_stats) ? s.core_stats : null;
-    if (core) {
-      for (const stat of ENHANCE_ALL_STATS) {
-        const cb = ENHANCE_STATE.coreBoxes[stat];
-        if (!cb) continue;
-        const forced = stat === ENHANCE_CRIT || stat === ENHANCE_CRIT_DMG;
-        cb.checked = forced || core.indexOf(stat) >= 0;
+    if (!result.ok) {
+      //: 读不到设置**不影响界面可用性**（界面本来就是出厂默认），
+      //: 但要说出来 —— 否则用户以为自己的设置被吞了。
+      //: 这个面板没有 ``stateLabel``，失败出口是「结果报告」区。
+      const host = ENHANCE_STATE.reportHost;
+      if (host) {
+        P.fill(host, null);
+        host.appendChild(P.el('div', {
+          class: 'cfg-state',
+          style: 'color:#ff8f88',
+          text: '设置接口未就绪 —— 界面显示的是出厂默认值'
+        }));
       }
-      enhanceOnCoreChange();
+      return;
     }
-    //: 可选属性
-    const optional = Array.isArray(s.optional_stats) ? s.optional_stats : [];
+    //: 注意：**到此为止**。不 setSettings / 不回填任何控件。
+    void result;
+  }
+
+  /**
+   * 收集界面上当前这套判定条件（旧界面 ``self.editor.settings()``）。
+   *
+   * @returns {object} ``{core_stats, optional_stats, crit_min, ...}``
+   *
+   * ⚠ 字段名用**下划线**（``core_stats``），和 ``EchoSettings.from_dict``
+   * 一致 —— 它只认下划线，写驼峰会被静默丢掉（交接文档第五节 C
+   * 「写操作要验往返一致」就是踩的这个）。
+   */
+  function enhanceCollectSettings() {
+    const core = [];
+    const optional = [];
     for (const stat of ENHANCE_ALL_STATS) {
-      const cb = ENHANCE_STATE.optionalBoxes[stat];
-      if (cb) cb.checked = optional.indexOf(stat) >= 0;
+      const coreBox = ENHANCE_STATE.coreBoxes[stat];
+      if (coreBox && coreBox.checked) core.push(stat);
+      const optBox = ENHANCE_STATE.optionalBoxes[stat];
+      if (optBox && optBox.checked) optional.push(stat);
     }
-    //: 双爆下限
-    if (ENHANCE_STATE.critField && s.crit_min != null) {
-      ENHANCE_STATE.critField.set(s.crit_min);
-    }
-    if (ENHANCE_STATE.critDmgField && s.crit_dmg_min != null) {
-      ENHANCE_STATE.critDmgField.set(s.crit_dmg_min);
-    }
-    const critOn = s.enable_crit_check !== false;
-    if (ENHANCE_STATE.critSwitch) {
-      ENHANCE_STATE.critSwitch.checked = critOn;
-      enhanceOnCritToggle(critOn);
-    }
-    if (ENHANCE_STATE.maxrollSwitch) {
-      ENHANCE_STATE.maxrollSwitch.checked = s.enable_max_roll_lock !== false;
-    }
-    if (ENHANCE_STATE.autostopSwitch) {
-      ENHANCE_STATE.autostopSwitch.checked = s.enable_auto_stop !== false;
-    }
-    if (ENHANCE_STATE.validStepper && s.min_valid_count != null) {
-      ENHANCE_STATE.validStepper.set(s.min_valid_count);
+    const num = function (field, fallback) {
+      if (!field) return fallback;
+      const v = parseFloat(String(field.get()));
+      return isFinite(v) ? v : fallback;
+    };
+    return {
+      core_stats: core,
+      optional_stats: optional,
+      crit_min: num(ENHANCE_STATE.critField, ENHANCE_DEFAULT_CRIT_MIN),
+      crit_dmg_min: num(ENHANCE_STATE.critDmgField,
+                        ENHANCE_DEFAULT_CRIT_DMG_MIN),
+      min_valid_count: parseInt(
+        String(ENHANCE_STATE.validStepper ? ENHANCE_STATE.validStepper.get()
+                                          : ENHANCE_DEFAULT_VALID), 10)
+        || ENHANCE_DEFAULT_VALID,
+      enable_crit_check: !!(ENHANCE_STATE.critSwitch
+        && ENHANCE_STATE.critSwitch.checked),
+      enable_max_roll_lock: !!(ENHANCE_STATE.maxrollSwitch
+        && ENHANCE_STATE.maxrollSwitch.checked),
+      enable_auto_stop: !!(ENHANCE_STATE.autostopSwitch
+        && ENHANCE_STATE.autostopSwitch.checked)
+    };
+  }
+
+  /**
+   * 把「界面当前值」存盘（旧界面 ``_save_settings``）。
+   *
+   * ## 为什么必须有（2026-11-03 发现缺失）
+   *
+   * 旧界面 ``tool.py`` L509：``self.editor.changed.connect(self._save_settings)``
+   * —— 控件一动就存盘，**任务流程运行时读的就是存盘那份**
+   * （``okww_task`` 里走 ``EchoSettings.load()``）。
+   *
+   * Web 版原来**只读不写**：界面上改了判定条件，存盘的还是旧值，
+   * 一点「运行」引擎读到的和你看到的**不是同一套条件** ——
+   * 这是会毁结果的静默 bug（而且完全看不出来）。
+   *
+   * ## 和 ``enhanceLoadSettings`` 的分工
+   *
+   * | 方向 | 规则 |
+   * |---|---|
+   * | 读（打开页面）| **不回填** —— 永远出厂默认（用户 2026-09-24 要求）|
+   * | 写（改动控件）| **必须存** —— 任务流程读的是这份 |
+   *
+   * 这两条同时成立才是旧界面的语义：界面是干净的白纸，
+   * 但你这次勾的条件会生效。
+   */
+  async function enhanceSaveSettings() {
+    const settings = enhanceCollectSettings();
+    if (!settings) return;
+    const r = await P.callMulti('setToolSettings', [JSON.stringify({
+      toolKey: 'echo_enhance', settings: settings
+    })]);
+    if (!r.ok) {
+      //: 存不下来要说出来 —— 否则用户以为条件生效了，实际引擎用的是旧值
+      const host = ENHANCE_STATE.reportHost;
+      if (host) {
+        P.fill(host, null);
+        host.appendChild(P.el('div', {
+          class: 'cfg-state',
+          style: 'color:#ff8f88',
+          text: '判定条件**没能保存**（接口未就绪）—— 运行时会用旧条件'
+        }));
+      }
     }
   }
 

@@ -84,13 +84,16 @@ def _install_fake_messagebox(outcome: str):
 
 
 class TestCloseQuestion(unittest.TestCase):
-    """文案是纯函数，直接断言 —— 这段最容易写错又最难人工覆盖。"""
+    """文案是纯函数，直接断言 —— 这段最容易写错又最难人工覆盖。
 
-    def test_idle_mentions_both_choices(self):
+    ★ 2026-10-24 用户要求：「关闭窗口时，提示改为退出或取消」。
+    所以现在**只有两个按钮**，而且**任何文案里都不许再出现"托盘"**。
+    """
+
+    def test_idle_offers_quit_and_cancel(self):
         title, text, yes_text, cancel_text = tray.close_question(None)
-        self.assertIn("托盘", yes_text)
-        self.assertIn("退出", cancel_text)
-        self.assertIn("托盘", text)
+        self.assertEqual(yes_text, "退出")
+        self.assertEqual(cancel_text, "取消")
         self.assertIn("退出", text)
 
     def test_running_names_the_task(self):
@@ -98,12 +101,26 @@ class TestCloseQuestion(unittest.TestCase):
         title, text, yes_text, cancel_text = tray.close_question("声骸自动强化")
         self.assertIn("声骸自动强化", text)
         self.assertIn("正在执行", title)
-        self.assertIn("停止", yes_text)
-        self.assertIn("托盘", cancel_text)
+        self.assertEqual(yes_text, "退出")
+        self.assertEqual(cancel_text, "取消")
 
     def test_running_warns_about_stopping(self):
         _t, text, _y, _c = tray.close_question("4C 刷声骸")
         self.assertIn("停止", text)
+
+    def test_never_mentions_tray(self):
+        """★★ 文案里**绝对不能**再出现"托盘"（用户明确去掉了那个选项）。"""
+        for running in (None, "声骸自动强化", "4C 刷声骸"):
+            with self.subTest(running=running):
+                title, text, yes_text, cancel_text = tray.close_question(running)
+                for part in (title, text, yes_text, cancel_text):
+                    self.assertNotIn("托盘", part,
+                                     f"文案里还有「托盘」：{part!r}")
+
+    def test_allow_hide_no_longer_changes_text(self):
+        """★ ``allow_hide`` 保留但已无用处 —— 两种取值文案必须一致。"""
+        self.assertEqual(tray.close_question(None, allow_hide=True),
+                         tray.close_question(None, allow_hide=False))
 
 
 class TestRunningTaskName(unittest.TestCase):
@@ -142,13 +159,15 @@ class TestAskClose(unittest.TestCase):
             sys.modules.pop("qfluentwidgets", None)
 
     # ---- 无任务 ----
-    def test_idle_primary_hides(self):
+    def test_idle_primary_quits(self):
+        """★ 主按钮「退出」→ CLOSE_QUIT。"""
         _install_fake_messagebox("yes")
-        self.assertEqual(tray.ask_close(None, None), tray.CLOSE_HIDE)
-
-    def test_idle_secondary_quits(self):
-        _install_fake_messagebox("cancel")
         self.assertEqual(tray.ask_close(None, None), tray.CLOSE_QUIT)
+
+    def test_idle_secondary_cancels(self):
+        """★ 次按钮「取消」→ CLOSE_CANCEL（留在原地，不退出也不隐藏）。"""
+        _install_fake_messagebox("cancel")
+        self.assertEqual(tray.ask_close(None, None), tray.CLOSE_CANCEL)
 
     def test_idle_x_cancels(self):
         """★ 按 X / Esc 必须**什么都不做**，不能顺手退出。"""
@@ -160,9 +179,11 @@ class TestAskClose(unittest.TestCase):
         _install_fake_messagebox("yes")
         self.assertEqual(tray.ask_close(None, "声骸自动强化"), tray.CLOSE_QUIT)
 
-    def test_running_secondary_hides(self):
+    def test_running_secondary_cancels(self):
+        """★ 有任务时点「取消」也是什么都不做（任务继续跑）。"""
         _install_fake_messagebox("cancel")
-        self.assertEqual(tray.ask_close(None, "声骸自动强化"), tray.CLOSE_HIDE)
+        self.assertEqual(tray.ask_close(None, "声骸自动强化"),
+                         tray.CLOSE_CANCEL)
 
     def test_running_x_cancels(self):
         _install_fake_messagebox("x")
@@ -170,37 +191,40 @@ class TestAskClose(unittest.TestCase):
 
     # ---- 按钮文案 ----
     def test_button_texts_match_question(self):
-        _install_fake_messagebox("yes")
-        tray.ask_close(None, None)
-        box = _FakeMessageBox.last
-        self.assertEqual(box.yesButton.text, "隐藏到托盘")
-        self.assertEqual(box.cancelButton.text, "直接退出")
+        """★★ 两个按钮必须正好是「退出」和「取消」。"""
+        for running in (None, "4C 刷声骸"):
+            with self.subTest(running=running):
+                _install_fake_messagebox("yes")
+                tray.ask_close(None, running)
+                box = _FakeMessageBox.last
+                self.assertEqual(box.yesButton.text, "退出")
+                self.assertEqual(box.cancelButton.text, "取消")
 
-        _install_fake_messagebox("yes")
-        tray.ask_close(None, "4C 刷声骸")
-        box = _FakeMessageBox.last
-        self.assertEqual(box.yesButton.text, "停止并退出")
-        self.assertEqual(box.cancelButton.text, "隐藏到托盘")
+    # ---- 不可能再出现 CLOSE_HIDE ----
+    def test_never_returns_close_hide(self):
+        """★★ 任何组合都不该返回 ``CLOSE_HIDE``（那个出口已废）。
 
-    # ---- 没有托盘时 ----
-    def test_no_tray_never_offers_tray(self):
-        """拿不到系统托盘时不该再劝用户"隐藏到托盘"（那是死路）。"""
-        _install_fake_messagebox("yes")
-        tray.ask_close(None, None, allow_hide=False)
-        box = _FakeMessageBox.last
-        self.assertNotIn("托盘", box.yesButton.text)
-        self.assertNotIn("托盘", box.cancelButton.text)
-        self.assertIn("最小化", box.yesButton.text)
-
-    def test_no_tray_primary_still_goes_background(self):
-        """没托盘时点主按钮仍然是「别退出、去后台」——只是缩成最小化。
-
-        ``CLOSE_HIDE`` 的含义是"别退出"，**不是**"一定有托盘"。
+        ``CLOSE_HIDE`` 常量还留着（``closeEvent`` 有防御性分支），
+        但 ``ask_close`` 现在**永远**只返回 QUIT 或 CANCEL。
         """
-        _install_fake_messagebox("yes")
-        self.assertEqual(
-            tray.ask_close(None, None, allow_hide=False), tray.CLOSE_HIDE)
+        for running in (None, "声骸自动强化"):
+            for outcome in ("yes", "cancel", "x"):
+                with self.subTest(running=running, outcome=outcome):
+                    _install_fake_messagebox(outcome)
+                    got = tray.ask_close(None, running)
+                    self.assertNotEqual(got, tray.CLOSE_HIDE)
+                    self.assertIn(got, (tray.CLOSE_QUIT, tray.CLOSE_CANCEL))
 
+    # ---- allow_hide 已无影响 ----
+    def test_no_tray_does_not_change_outcome(self):
+        """★ ``allow_hide`` 现在不影响任何结果（参数只为兼容签名）。"""
+        for outcome in ("yes", "cancel", "x"):
+            with self.subTest(outcome=outcome):
+                _install_fake_messagebox(outcome)
+                a = tray.ask_close(None, None, allow_hide=True)
+                _install_fake_messagebox(outcome)
+                b = tray.ask_close(None, None, allow_hide=False)
+                self.assertEqual(a, b)
 
 class TestMakeTrayFailureIsVisible(unittest.TestCase):
     """托盘建不起来时**必须留下痕迹** —— 这条是本文件最贵的教训。

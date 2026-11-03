@@ -389,6 +389,8 @@ class WebShell(QObject):
         self._dialog_parent = None
         #: ★ 边缘缩放的 native 事件过滤器（见 :meth:`_install_resize_support`）
         self._native_filter = None
+        #: ★ 上次推给页面的「是否最大化」（去重用，见 :meth:`_push_window_state`）
+        self._pushed_maximized = None
 
     # ---------------------------------------------------------------- 属性
     @property
@@ -572,6 +574,13 @@ class WebShell(QObject):
         self._bridge = bridge
         self._channel = channel
 
+        #: ★ 把宿主挂给桥 —— 页面的 ``getWindowState()`` 要问它
+        #: （见 ``WebBridge._window_host`` 和 ``_push_window_state``）
+        try:
+            bridge._window_host = self  # noqa: SLF001 - 同包内部约定
+        except Exception:  # noqa: BLE001
+            logger.debug("web_shell：挂宿主给桥失败", exc_info=True)
+
         #: 桥 → 窗口控制
         bridge.windowActionRequested.connect(self._on_window_action)
         bridge.frontendReadySignal.connect(self._on_frontend_ready)
@@ -593,6 +602,19 @@ class WebShell(QObject):
         #:   * 双击最大化 → 页面调 ``windowAction('togglemaximize')``
         #:   * 边缘缩放 → :meth:`_install_resize_support`（``WM_NCHITTEST``）
         self._install_resize_support()
+
+        #: ★ 标题栏 □ 按钮要随最大化状态换图标（2026-11-03）
+        #:
+        #: ⚠ **不能只挂在托盘那条路上** —— ``setup_tray()`` 是
+        #: ``main.py`` 在 ``show()`` **之前**调的，而且拿不到系统托盘时
+        #: 会提前返回，eventFilter 就永远装不上。
+        #:
+        #: 这里挂是幂等的（同一个对象重复 install 无害），
+        #: 托盘那条路保持原样就行。
+        try:
+            view.installEventFilter(self)
+        except Exception:  # noqa: BLE001
+            logger.debug("web_shell：装窗口状态过滤器失败", exc_info=True)
 
         #: ⑤ 系统圆角 + 阴影（Win11 专属；Win10 静默跳过）
         #:
@@ -688,7 +710,20 @@ class WebShell(QObject):
             self._view.close()
 
     def eventFilter(self, obj, event):  # noqa: N802 - Qt 接口
-        """拦住窗口关闭，先问「退出还是取消」。
+        """窗口事件钩子：① 跟踪最大化状态 ② 拦住关闭先问「退出还是取消」。
+
+        ## ① 最大化状态 → 推给页面（2026-11-03）
+
+        页面标题栏的 □ 按钮原来把图标**写死**成 ``E922``（最大化方块），
+        所以窗口最大化之后**还是那个单框图标** —— 用户圈出来说：
+
+        > 放大后，这个缩小框不对把，应该右图那样
+
+        正确的是最大化时换成 ``E923``（ChromeRestore，两个叠起来的方框）。
+
+        ``WM_NCHITTEST`` 那条路没法知道窗口状态变化，得靠 Qt 的
+        ``QEvent.WindowStateChange``：用户点 □、双击标题栏、拖到屏幕
+        边缘 Aero Snap、系统菜单……**全都会**走到这里。
 
         ## 为什么用 eventFilter 而不是重写 closeEvent
 
@@ -696,7 +731,7 @@ class WebShell(QObject):
         —— 没法重写它的 ``closeEvent``。``QObject`` 的 ``eventFilter``
         是唯一的钩子。
 
-        ## 什么时候不管
+        ## 关闭确认：什么时候不管
 
         * 没挂托盘（``_tray is None``）→ 直接关（没有"退到托盘"的概念，
           弹框只会烦用户）
@@ -708,7 +743,14 @@ class WebShell(QObject):
         """
         from PySide6.QtCore import QEvent  # noqa: PLC0415
 
-        if event.type() != QEvent.Type.Close:
+        event_type = event.type()
+
+        #: ★ ① 最大化 / 还原 → 通知页面换图标
+        if event_type == QEvent.Type.WindowStateChange:
+            self._push_window_state()
+            return False
+
+        if event_type != QEvent.Type.Close:
             return False
         if self._really_close or self._tray is None:
             return False
@@ -746,6 +788,47 @@ class WebShell(QObject):
         except Exception:  # noqa: BLE001 - 确认流程崩了也不能挡住关窗口
             logger.warning("web_shell：关闭确认失败（直接关）", exc_info=True)
             return False
+
+    def _push_window_state(self) -> None:
+        """把「当前是否最大化」推给页面（标题栏 □ 按钮据此换图标）。
+
+        ## 为什么需要（2026-11-03 用户圈图反馈）
+
+        页面原来把图标**写死**成 ``E922``（最大化方块）：
+
+        .. code:: html
+
+            <button id="btn-max">&#xE922;</button>
+
+        窗口最大化之后**还是那个单框图标** —— 但这时候点它是「还原」，
+        图标应该变成 ``E923``（ChromeRestore，两个叠起来的方框）。
+
+        用户原话：
+
+            > 放大后，这个缩小框不对把，应该右图那样
+
+        ## 为什么由 Python 推、不是页面自己判
+
+        页面**看不到**原生窗口状态：用户可能是双击标题栏、点 □、
+        拖到屏幕边缘 Aero Snap、用 Win+↑、点任务栏预览菜单……
+        这些都不会经过 JS。只有 Qt 的 ``WindowStateChange`` 能全覆盖。
+
+        ## 幂等
+
+        ``WindowStateChange`` 会因为最小化/激活等无关变化反复触发，
+        所以记住上次推的值，**没变就不推**。
+        """
+        if self._bridge is None or self._view is None:
+            return
+        maximized = bool(self._view.isMaximized())
+        #: 最小化时也算"最大化态"——还原回来还是最大化，图标别闪
+        if maximized == self._pushed_maximized:
+            return
+        self._pushed_maximized = maximized
+        try:
+            self._bridge.pushWindowState(maximized)
+        except Exception:  # noqa: BLE001 - 推不动不该影响窗口
+            logger.debug("web_shell：推窗口状态失败", exc_info=True)
 
     def _retry_load(self) -> None:
         """★ 页面加载失败时自动重试（兜住启动竞态）。
@@ -813,6 +896,9 @@ class WebShell(QObject):
         #: 把 WS_CAPTION / WS_THICKFRAME 都清掉了。
         #: 不补的话 Windows 拒绝拖动（用户：「这整个窗口还是不能拖拽」）。
         self._restore_drag_style()
+        #: ★ 初始状态也推一次（2026-11-03）—— 页面加载完才知道窗口是不是
+        #: 最大化启动的。见 :meth:`_push_window_state`。
+        self._push_window_state()
 
     def close(self) -> None:
         """主动关窗口（置了 _really_close，closeEvent 不再拦）。
@@ -898,12 +984,56 @@ class WebShell(QObject):
             return
         try:
             import ctypes  # noqa: PLC0415
+            from ctypes import wintypes  # noqa: PLC0415
 
             hwnd = int(view.winId())
-            #: ``HTCAPTION`` = "点在标题栏上"，Windows 会接管拖动
-            ctypes.windll.user32.ReleaseCapture()
-            ctypes.windll.user32.SendMessageW(
-                hwnd, 0x00A2, 0x0002, 0)     #: WM_NCLBUTTONDOWN, HTCAPTION
+            if not hwnd:
+                return
+
+            #: ★★★ 2026-11-03 **三个错误一起修好才真的能拖**
+            #:
+            #: ## 错误 ①：消息号写成 ``0x00A2``（= WM_NCLBUTTON**UP**）
+            #:
+            #: 拖动要用的是 **``0x00A1`` = WM_NCLBUTTONDOWN**。
+            #: 发 UP 的语义是「鼠标左键在标题栏上松开了」——
+            #: 窗口管理器收到一条"松开"消息，没有"按下"配对，
+            #: **直接忽略**，窗口一动不动。
+            #:
+            #: 实测（真 ``SendInput`` 注入，DPR=1.25）：
+            #:
+            #: .. code:: text
+            #:
+            #:     发 0x00A2（旧）→ 窗口 (1250,875) 位置尺寸**完全没变**
+            #:     发 0x00A1（新）→ 窗口从 (300,200) 拖到 (444,260) ✅
+            #:
+            #: ## 错误 ②：``lParam`` 必须给**真实光标坐标**
+            #:
+            #: 旧代码传 ``0``。因为走的是客户区 mousedown（不是真的
+            #: 非客户区消息），窗口管理器要靠 ``lParam`` 里的屏幕坐标
+            #: 决定"从哪个点开始拖"。传 0 → 从屏幕左上角起算 →
+            #: 窗口瞬间跳到左上角再跟手，观感就是"拖拽错位/乱飞"。
+            #:
+            #: ## 错误 ③：``SendMessageW`` 没声明 argtypes
+            #:
+            #: 64 位下 ``hwnd`` 是 8 字节指针。不声明的话 ctypes 按
+            #: ``c_int`` 传 —— 句柄被截断成 32 位，消息发给了
+            #: **一个随机句柄**，我们自己的窗口当然不动（还不会有异常）。
+            #:
+            #: ⚠ ``ReleaseCapture()`` 仍然要有：页面已经用 JS 抓着鼠标，
+            #: 不释放的话窗口管理器的拖动循环拿不到鼠标。
+            user32 = ctypes.windll.user32
+            user32.SendMessageW.argtypes = [
+                wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+            user32.SendMessageW.restype = ctypes.c_ssize_t
+            user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+
+            user32.ReleaseCapture()
+            pt = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(pt))
+            lparam = ((pt.y & 0xFFFF) << 16) | (pt.x & 0xFFFF)
+            user32.SendMessageW(
+                wintypes.HWND(hwnd), 0x00A1, wintypes.WPARAM(0x0002),
+                wintypes.LPARAM(lparam))     #: WM_NCLBUTTONDOWN, HTCAPTION
         except Exception:  # noqa: BLE001 - 拖不了不该崩
             logger.warning("start_window_drag 失败", exc_info=True)
 
@@ -1001,8 +1131,14 @@ class WebShell(QObject):
         except Exception:  # noqa: BLE001
             logger.warning("toggle_maximize 失败", exc_info=True)
 
-    #: 边缘缩放的**命中宽度**（像素）—— 鼠标离窗口边缘多近算"在拉边框"
+    #: 边缘缩放的**命中宽度**（物理像素）—— 鼠标离窗口边缘多近算"在拉边框"
     RESIZE_MARGIN = 6
+
+    #: 标题栏高度（**页面 CSS 像素**，对应 ``layout.css`` 的 ``--titlebar-h``）
+    #:
+    #: ⚠ 是 CSS 像素不是物理像素 —— 命中测试里要乘 DPR 才能和 ``lParam`` 比。
+    #: 见 :meth:`_install_resize_support` 里的说明。
+    TITLEBAR_HIT_HEIGHT = 44
 
     def _install_resize_support(self) -> None:
         """装边缘缩放支持（四边 + 四角）。
@@ -1095,20 +1231,37 @@ class WebShell(QObject):
                     import ctypes  # noqa: PLC0415
                     from ctypes import wintypes  # noqa: PLC0415
 
-                    #: ★★★ 2026-11-02 **`message` 是 sip.voidptr，取值方式很绕**
+                    #: ★★★ 2026-11-03 **这才是「过滤器永远不生效」的真凶**
                     #:
-                    #: ⚠ 试过都不行：
+                    #: 前一版写的是::
                     #:
-                    #: * ``message.__int__()`` → ``AttributeError: 'c_void_p'
-                    #:   object has no attribute '__int__'``
-                    #: * ``int(message)`` → ``ValueError: invalid literal for
-                    #:   int() with base 10: b' \xfd\x01I_\x02\x00\x00'``
-                    #:   （它把 this 当成 bytes 在解析）
+                    #:     addr = ctypes.cast(message, ctypes.c_void_p).value
                     #:
-                    #: 正确做法：``sip.voidptr`` 转成整数要用 ``.asstring()``
-                    #: 拿原始字节，再 ``int.from_bytes``；但更稳的是直接用
-                    #: ``ctypes.cast(message, c_void_p).value``。
-                    addr = ctypes.cast(message, ctypes.c_void_p).value
+                    #: 在 PySide6 6.11.2 里 ``message`` 是
+                    #: :class:`PySide6.QtCore.VoidPtr`（不是 sip.voidptr
+                    #: 也不是 int），``ctypes.cast`` 对它会抛::
+                    #:
+                    #:     ArgumentError: argument 1: TypeError: wrong type
+                    #:
+                    #: 而这个异常被外层 ``except`` 吞掉 → 每条消息都
+                    #: ``return False, 0`` → **过滤器形同不存在**。
+                    #:
+                    #: 实测（探针脚本，真鼠标在窗口里划一圈）：
+                    #:
+                    #: .. code:: text
+                    #:
+                    #:     nativeEventFilter 被调用 36 次
+                    #:     其中成功解析出 message 的次数 = 0
+                    #:     每次都是 ArgumentError: wrong type
+                    #:
+                    #: ## 正确写法
+                    #:
+                    #: ``VoidPtr`` 实现了 ``__int__``，直接 ``int(message)``
+                    #: 就拿到地址（实测 36/36 全部成功）。不要 ``cast``。
+                    #:
+                    #: ⚠ 也可以用 ``message.__int__()``，但 ``int()`` 更稳
+                    #: （``__int__`` 是内部协议，哪天改成 ``__index__`` 就断）。
+                    addr = int(message)
                     if not addr:
                         return False, 0
 
@@ -1141,9 +1294,42 @@ class WebShell(QObject):
                     #: 屏幕坐标 → 窗口内坐标
                     x = ctypes.c_short(msg.lParam & 0xFFFF).value
                     y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
-                    geo = self._view.frameGeometry()
-                    left, top = geo.left(), geo.top()
-                    right, bottom = geo.right(), geo.bottom()
+
+                    #: ★★★ 2026-11-03 **必须用 ``GetWindowRect`` 而不是
+                    #: ``frameGeometry()`` —— 一个物理、一个逻辑**
+                    #:
+                    #: ``WM_NCHITTEST`` 的 ``lParam`` 是**物理屏幕像素**
+                    #: （DWM 坐标，不受 DPI 缩放影响）。
+                    #:
+                    #: 而 ``QWidget.frameGeometry()`` 返回**逻辑像素**
+                    #: （已经除过 DPR）。
+                    #:
+                    #: 实测本机 125% 缩放（DPR = 1.25）：
+                    #:
+                    #: .. code:: text
+                    #:
+                    #:     frameGeometry  = (150,140)-(1149,839)   逻辑，1000x700
+                    #:     GetWindowRect  = (188,175)-(1438,1050)  物理，1250x875
+                    #:
+                    #: 拿物理坐标去和逻辑矩形比 → 右边框判定
+                    #: ``x > right - m`` 里 ``right=1149``，而真实物理右边界
+                    #: 是 **1438** —— 鼠标在 x=1200 时明明在窗口里，
+                    #: 却算成"超出右边界 6px"；反过来真正贴着右边时
+                    #: 又不在判定范围。
+                    #:
+                    #: **结果：只有一部分屏幕位置上边缘能被抓住**，
+                    #: 用户体感就是「有时候能拉、有时候拉不动」。
+                    rect = wintypes.RECT()
+                    get_rect = ctypes.windll.user32.GetWindowRect
+                    #: ⚠ 必须声明 argtypes —— 64 位下 ``HWND`` 是 8 字节指针，
+                    #: 不声明会按 ``c_int`` 截断（和 ``SendMessageW`` 同一类坑）。
+                    get_rect.argtypes = [wintypes.HWND,
+                                         ctypes.POINTER(wintypes.RECT)]
+                    get_rect.restype = wintypes.BOOL
+                    if not get_rect(wintypes.HWND(hwnd), ctypes.byref(rect)):
+                        return False, 0
+                    left, top = rect.left, rect.top
+                    right, bottom = rect.right, rect.bottom
                     m = self._margin
 
                     #: ★★★ 2026-11-02 **标题栏区域完全放行给 Windows**
@@ -1185,7 +1371,14 @@ class WebShell(QObject):
                     #:   —— 那个 ``False`` 的含义是「我不处理，Qt/Windows 自己定」，
                     #:   和中间那些 ``return True, HTxxx`` 不同。
                     header_h = getattr(self, "TITLEBAR_HIT_HEIGHT", 44)
-                    in_header = top <= y < top + header_h
+                    #: ⚠ ``header_h`` 是**页面 CSS 像素**（标题栏 44px），
+                    #: 而 ``y`` 是物理像素 → 必须乘 DPR 才能比。
+                    #:
+                    #: 漏了这一步的后果：125% 缩放下标题栏实际占 55 物理像素，
+                    #: 却按 44 算 → 标题栏下面那 11px 被当成"内容区的上边缘"，
+                    #: 鼠标扫过标题栏底部时**变成拉伸光标**、拖动失效。
+                    dpr = float(self._view.devicePixelRatioF() or 1.0)
+                    in_header = top <= y < top + header_h * dpr
                     #: 角例外：左右两边落在角上仍然算拉伸（否则角拉不了）
                     corner_for_top = in_header and (
                         x < left + m or x > right - m)

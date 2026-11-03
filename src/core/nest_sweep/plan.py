@@ -15,9 +15,11 @@
 
 ## 为什么"顺序"要单独讲
 
-**清单的顺序 = 刷取顺序**，而清单来自数据文件的 ``order``（见 :mod:`.catalog`）。
-这里**只做过滤，不重排** —— 过滤时重排会让"我在文件里调了顺序"失效，
-而用户调顺序的目的正是控制刷的先后。
+**清单的顺序 = 刷取顺序**，而清单的顺序由 :mod:`.catalog` 决定
+（2026-10-13 起：**按聚落推出的版本从新到旧**，同一版本内看 ``order``）。
+
+这里**只做过滤，不重排** —— 过滤时重排会让"清单里的排序"失效，
+而用户调 ``order`` 的目的正是控制刷的先后。
 
 ## 勾选存盘：**只存 key，不存下标**
 
@@ -140,7 +142,8 @@ def build_plan(
     ## 两条规则
 
     1. **顺序完全按清单来**，不按勾选顺序、也不重排 ——
-       用户在数据文件里调 ``order`` 就是为了控制先后。
+       清单本身按版本从新到旧排（见 :mod:`.catalog`），
+       用户在数据文件里调 ``order`` 则控制**同一版本内**的先后。
     2. **认不出来的 key 直接丢掉**（返回的步骤里没有）。用户可能勾过一条
        后来从清单里删掉的目标；这时计划里没有它，但**存盘的勾选先留着**
        （见 :func:`clean_selection` 的说明），下次把清单改回来它就又生效了。
@@ -234,14 +237,13 @@ def selected_targets(
 def selection_summary(
     selected_keys, targets: tuple[SweepTarget, ...] | None = None,
 ) -> str:
-    """一行摘要，例如 ``已选 3 个（残像聚落 2 · 梦魇残像 1）``。"""
+    """一行摘要，例如 ``已选 3 个``。
+
+    ★ 2026-10-13 用户要求「不再区分残像聚落/梦魇聚落，统一叫残像聚落」，
+    所以这里**不再按分类拆开数**（原先写``已选 3 个（残像聚落 2 · 梦魇残像 1）``）。
+    用户看到的是一张统一的卡片墙，摘要再分两类只会让人以为界面还分两段。
+    """
     chosen = selected_targets(selected_keys, targets)
     if not chosen:
         return "未勾选任何目标"
-    #: 按**清单顺序**数分类（不用 set 遍历 —— 那个顺序是随机的，
-    #: 摘要会在两次调用之间莫名其妙地换位置）
-    counts: dict[str, int] = {}
-    for target in chosen:
-        counts[target.kind] = counts.get(target.kind, 0) + 1
-    parts = [f"{KIND_NAMES.get(kind, kind)} {n}" for kind, n in counts.items()]
-    return f"已选 {len(chosen)} 个（{' · '.join(parts)}）"
+    return f"已选 {len(chosen)} 个"

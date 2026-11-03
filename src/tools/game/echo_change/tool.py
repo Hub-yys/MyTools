@@ -69,7 +69,14 @@ class EchoChangeWidget(ScrollArea):
         layout.setSpacing(14)
 
         layout.addWidget(self._build_run_card(page))
-        layout.addWidget(self._build_note_card(page))
+        #: ★ 2026-10-28 用户：「前置条件（很关键）」那张卡**干掉**。
+        #:
+        #: 那五条（管理员运行 / 窗口模式 / 手动摆到声骸列表 / 过滤器别含目标属性 /
+        #: 日志位置）都是操作说明，看一次就够了 —— 每次打开页面都被它占掉
+        #: 半个屏幕，而用户早就记住了。真正会踩坑的是「没摆到正确界面」，
+        #: 那个运行时会**停下来提示**（见 okww_task 的界面检测），比静态文字有用。
+        #:
+        #: 要保留的是「管理员运行」那条 —— 它已经写进 README 和启动说明。
         layout.addStretch(1)
         self.setWidget(page)
 
@@ -219,24 +226,6 @@ class EchoChangeWidget(ScrollArea):
         self.log_line.setTextColor(*MUTED)
         self.log_line.setWordWrap(True)
         card.add(self.log_line)
-        return card
-
-    def _build_note_card(self, parent) -> ConfigCard:
-        card = ConfigCard("前置条件（很关键）", None, parent)
-        log_dir = paths.user_data_dir() / "okww" / "logs"
-        notes = (
-            "① **以管理员身份运行**本程序 —— 鸣潮带 ACE 反外挂，游戏跑在管理员权限下；"
-            "低权限的话点击会被系统丢掉，而且不报错；\n"
-            "② 游戏用**窗口模式**（无边框窗口最稳），独占全屏时截图不可靠；\n"
-            "③ 自己先走到：**背包(B) → 声骸 → 用过滤器筛出要调频的 → 按等级升序排序**，"
-            "停在这个列表界面上；\n"
-            "④ 过滤器**别把目标属性包含进来** —— 否则筛出的第一个就是目标属性，"
-            "工具会停下来提醒你；\n"
-            "⑤ 运行日志按日期落盘：" + str(log_dir) + "（出问题把当天那个文件发过来即可）。"
-        )
-        label = CaptionLabel(notes, card)
-        label.setWordWrap(True)
-        card.add(label)
         return card
 
     # ------------------------------------------------------------------ 槽

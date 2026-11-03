@@ -2,6 +2,11 @@
   "nav_order": [
     "HomeInterface",
     "tool_group",
-    "ConfigInterface"
-  ]
+    "ConfigInterface",
+    "TasksInterface",
+    "SkinInterface",
+    "UpdateInterface",
+    "WuwaLibraryInterface"
+  ],
+  "update_auto_check": true
 }

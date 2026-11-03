@@ -864,6 +864,55 @@
     return '';
   }
 
+  /**
+   * ★ 设置「引擎状态行」的文案，空串就整行隐藏（2026-11-03）。
+   *
+   * ## 为什么要一个 helper
+   *
+   * 用户圈图要求「说明文字都去掉」。但状态行里混着**两种东西**：
+   *
+   * ==================  ==========================================
+   * 类型                 例子
+   * ==================  ==========================================
+   * 静态说明（要删）      「引擎：就绪 · 点「启动」开始 4C 刷声骸」
+   * 动态反馈（必须留）    「引擎：启动失败 —— …」
+   *                      「引擎：被占用（正在跑 xxx）」
+   *                      「引擎：正在启动…」（冷启动 ~20 秒）
+   * ==================  ==========================================
+   *
+   * 直接删掉元素会**连失败反馈一起删掉** —— 那就变成静默失败，
+   * 正是交接文档里点名批评的头号坑。
+   *
+   * 所以：**留元素、空文案时隐藏**。
+   *
+   * ## ⚠ 用 ``.hidden`` 类，不用 ``hidden`` 属性（踩到过）
+   *
+   * HTML 的 ``hidden`` 属性只是一个 ``display:none`` 的**弱默认值**：
+   * 页面里任何一条 ``.some-class { display:flex }`` 都能盖掉它
+   * （本项目 ``.cfg-muted`` / ``.cfg-state`` / ``.sw`` 全都是 flex）。
+   *
+   * 实测：给 ``.cfg-muted`` 元素设 ``el.hidden = true`` 之后它照样显示。
+   *
+   * 本项目统一用 ``.hidden`` 类 —— ``base.css`` 里是
+   * ``display:none !important``，盖不掉。
+   *
+   * @param {HTMLElement} el - 状态行元素（可能是 null）
+   * @param {string} text - 空串 = 隐藏
+   */
+  function setStateLabel(el, text) {
+    if (!el) return;
+    const value = String(text == null ? '' : text);
+    if (value) {
+      el.textContent = value;
+      el.classList.remove('hidden');
+      el.hidden = false;          //: 双保险（万一有人只看属性）
+    } else {
+      el.textContent = '';
+      el.classList.add('hidden');
+      el.hidden = true;
+    }
+  }
+
   // ════════════════════════════════════════════════════════════════════════
   //  导出
   // ════════════════════════════════════════════════════════════════════════
@@ -881,6 +930,7 @@
     field: field,
     select: select,
     numberInput: numberInput,
-    textInput: textInput
+    textInput: textInput,
+    setStateLabel: setStateLabel
   };
 })();

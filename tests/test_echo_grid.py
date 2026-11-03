@@ -350,7 +350,11 @@ class TestTemplateActuallyLoads(unittest.TestCase):
 
         data = json.loads(self.COCO.read_text(encoding="utf-8"))
         names = {c["name"] for c in data["categories"]}
-        for wanted in ("char_xin", "echo_stack_icon"):
+        #: ⚠ 2026-10-25：「心」改用 ok-ww 官方实现后，``char_xin`` 已从
+        #: ok_tasks 的 coco 里删掉（只剩 ``echo_stack_icon``）。
+        #: 这条测的是**合并逻辑没把 ok_tasks 的特征挤掉**，
+        #: 所以用当前唯一还在的那个当代表即可。
+        for wanted in ("echo_stack_icon",):
             with self.subTest(name=wanted):
                 self.assertIn(wanted, names,
                               f"{wanted} 被挤掉了 —— 合并逻辑有 bug")

@@ -55,6 +55,47 @@ from __future__ import annotations
 
 import time
 
+#: ============================ 战斗方式 ============================
+#:
+#: 用户 2026-10-25 要求「之前的战斗方式加回来」。三种：
+#:
+#: ==========  ==========================================================
+#: smart        **智能切换** —— ok-ww 原生调度（按 buff 剩余 / 角色定位挑人）。
+#:              这是 ok-ww 官方行为，**我们不覆盖任何方法**。
+#: rotation     **轮切** —— 固定轴 3→2→1，协奏满就换。本文件实现。
+#: combo        **合轴** —— 待定，**当前等同 smart**（不覆盖）。
+#: ==========  ==========================================================
+STYLE_SMART = "smart"
+STYLE_ROTATION = "rotation"
+STYLE_COMBO = "combo"
+
+#: 默认 = 智能切换（= ok-ww 原版）。用户明确说过固定轴不如 ok-ww。
+DEFAULT_STYLE = STYLE_SMART
+
+#: ``(值, 显示名, 说明)`` —— 顺序就是下拉框顺序
+STYLES: tuple[tuple[str, str, str], ...] = (
+    (STYLE_SMART, "智能切换",
+     "ok-ww 原生调度：按 buff 剩余时间和角色定位挑人。"
+     "这是 ok-ww 官方行为，默认就用它。"),
+    (STYLE_ROTATION, "轮切",
+     "固定轴 3 → 2 → 1 循环，协奏一满就换人（超时 12 秒兜底）。"),
+    (STYLE_COMBO, "合轴",
+     "待定 —— 当前等同「智能切换」（不接管切人）。"),
+)
+
+
+def normalize_style(value) -> str:
+    """把任意输入校正成合法的战斗方式；认不出来 → ``smart``。
+
+    ⚠ **绝不抛异常** —— 这个在任务 ``__init__`` 里调，抛了 4C 就起不来。
+    """
+    text = str(value or "").strip().lower()
+    for style, _label, _desc in STYLES:
+        if text == style:
+            return style
+    return DEFAULT_STYLE
+
+
 #: 固定轴：按**队伍位置**（1 起）排的循环顺序。
 #: 用户要的是「3 → 2 → 1 → 3 …」，队伍的 1/2/3 号位分别是他自己定的。
 ROTATION = (3, 2, 1)

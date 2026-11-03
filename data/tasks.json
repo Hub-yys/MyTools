@@ -2,8 +2,8 @@
   "version": 1,
   "tasks": [
     {
-      "id": "42cdeebdf006",
-      "name": "赞妮-声骸自动强化",
+      "id": "16a74fd2b097",
+      "name": "秧秧·玄翎-声骸自动强化（小毕业 43311）",
       "steps": [
         {
           "type": "start",
@@ -13,14 +13,14 @@
         },
         {
           "type": "config",
-          "key": "26c1382c878d",
-          "name": "赞妮-声骸筛选",
+          "key": "fa515ece188c",
+          "name": "秧秧·玄翎-声骸筛选",
           "config_kind": "loadout"
         },
         {
           "type": "config",
-          "key": "475738345299",
-          "name": "赞妮-声骸强化",
+          "key": "f61cfbb370f4",
+          "name": "秧秧·玄翎-声骸强化",
           "config_kind": "echo_profile"
         },
         {
@@ -36,7 +36,7 @@
           "config_kind": ""
         }
       ],
-      "updated_at": "2026-09-27 22:45:14"
+      "updated_at": "2026-10-29 23:28:59"
     }
   ]
 }

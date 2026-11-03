@@ -179,28 +179,29 @@ class TestHelpers(unittest.TestCase):
         got = selected_targets(["nm:D", "nest:A"], self.targets)
         self.assertEqual([t.key for t in got], ["nest:A", "nm:D"])
 
-    def test_summary_counts_by_kind(self):
-        text = selection_summary(["nest:A", "nest:B", "nm:C"], self.targets)
-        self.assertIn("已选 3 个", text)
-        self.assertIn("残像聚落 2", text)
-        self.assertIn("梦魇残像 1", text)
-
     def test_summary_when_nothing_selected(self):
         for empty in ([], None):
             self.assertEqual(selection_summary(empty, self.targets),
                              "未勾选任何目标")
 
-    def test_summary_kind_order_is_stable(self):
-        """★ 分类在摘要里的先后必须稳定。
+    def test_summary_is_unified_no_kind_split(self):
+        """★ 2026-10-13 用户要求「不再区分残像聚落/梦魇聚落，统一叫残像聚落」。
 
-        用 set 遍历分类的话顺序是随机的 —— 同一份勾选，
-        两次调用摘要会长得不一样。
+        所以摘要**只报个数**，不再拆成「残像聚落 2 · 梦魇残像 1」——
+        用户看到的是一张统一的卡片墙，摘要再分两类会让人以为界面还分两段。
         """
+        text = selection_summary(["nest:A", "nest:B", "nm:C"], self.targets)
+        self.assertEqual(text, "已选 3 个")
+        for word in ("残像聚落", "梦魇残像", "聚落"):
+            with self.subTest(word=word):
+                self.assertNotIn(word, text)
+
+    def test_summary_is_stable_across_calls(self):
+        """同一份勾选，摘要每次都一样（别用 set 遍历去拼字符串）。"""
         keys = ["nm:C", "nest:A"]
         first = selection_summary(keys, self.targets)
         for _ in range(5):
             self.assertEqual(selection_summary(keys, self.targets), first)
-        self.assertLess(first.index("残像聚落"), first.index("梦魇残像"))
 
 
 class TestRealCatalogIntegration(unittest.TestCase):

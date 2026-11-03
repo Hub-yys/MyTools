@@ -732,6 +732,14 @@ class WebBridge(QObject):
     #: toggleMaximize / close）。由 :class:`src.gui.web_shell.WebShell` 接。
     windowActionRequested = Signal(str)
 
+    #: ★ 窗口最大化状态变了（2026-11-03）。
+    #:
+    #: JSON ``{maximized: bool}`` —— 页面据此把标题栏 □ 按钮的图标
+    #: 在 ``E922``（最大化）/ ``E923``（还原）之间切换。
+    #:
+    #: 用户：「放大后，这个缩小框不对把，应该右图那样」。
+    windowStateChanged = Signal(str)
+
     #: ★ 前端脚本加载完成（握手）。测试和日志用。
     frontendReadySignal = Signal()
 
@@ -754,6 +762,11 @@ class WebBridge(QObject):
         self._progress = 0
         #: JS 侧注册的事件回调在页面里；Python 只需要知道页面还在不在
         self._subscribe_count = 0
+        #: ★ 宿主窗口（:class:`src.gui.web_shell.WebShell` 在 build 时挂上来）。
+        #:
+        #: 用它回答 ``getWindowState()`` —— ``WebBridge`` 自己不持有窗口。
+        #: 为 None 时 ``getWindowState`` 一律返回「未最大化」（不崩）。
+        self._window_host = None
 
         #: ★ 资源库更新（P4）—— snapshot/report 必须在 check 之后留着，
         #: apply 拿它写盘。check 失败要作废（否则上一轮 snapshot 配新一轮
@@ -4636,6 +4649,37 @@ class WebBridge(QObject):
         return _json({"ok": True, "action": action})
 
     @Slot(result=str)
+    def getWindowState(self) -> str:
+        """★ 当前窗口状态（页面加载时问一次，2026-11-03）。
+
+        :return: ``{ok, maximized}``
+
+        ## 为什么需要（除了 ``windowStateChanged`` 推送）
+
+        ``WebShell.show()`` 里会推一次初始状态，但**那时页面可能还没连上
+        Bridge**（QWebChannel 握手在 ``window.onload`` 之后才完成）——
+        那条推送会丢。
+
+        页面加载完主动问一次才能保证图标正确。
+
+        ## 为什么要问宿主而不是自己算
+
+        页面里没有任何可靠的「窗口是否最大化」信号：
+        ``window.outerHeight === screen.availHeight`` 在多显示器、
+        任务栏自动隐藏、Aero Snap 分屏（只占一半屏幕）时全都会判错。
+
+        宿主侧 ``QWidget.isMaximized()`` 才是唯一准确的来源。
+        """
+        host = self._window_host
+        if host is None:
+            return _json({"ok": True, "maximized": False})
+        try:
+            return _json({"ok": True, "maximized": bool(host.isMaximized())})
+        except Exception:  # noqa: BLE001
+            logger.debug("getWindowState 失败", exc_info=True)
+            return _json({"ok": True, "maximized": False})
+
+    @Slot(result=str)
     def startWindowDrag(self) -> str:
         """开始拖拽窗口（页面标题栏 mousedown 调它）。
 
@@ -4743,6 +4787,28 @@ class WebBridge(QObject):
         payload = {"key": str(key or "")}
         self.pageRequested.emit(_json(payload))
         self.emitEvent("pageRequested", payload)
+
+    def pushWindowState(self, maximized: bool) -> None:
+        """★ 推「窗口是否最大化」（2026-11-03）。
+
+        页面标题栏 □ 按钮据此换图标：
+
+        ==========  ===========  ============================
+        窗口状态     图标码位      外观
+        ==========  ===========  ============================
+        普通         ``E922``     单个方框（ChromeMaximize）
+        最大化       ``E923``     两个叠起来的方框（ChromeRestore）
+        ==========  ===========  ============================
+
+        用户原话：「放大后，这个缩小框不对把，应该右图那样」。
+
+        ⚠ 光换图标不够 —— 点它必须真的**还原**。所以 ``btn-max``
+        发的是 ``toggleMaximize`` 而不是 ``maximize``（见 ``app.js``），
+        否则图标换了但点了没反应，比原来更让人困惑。
+        """
+        payload = {"maximized": bool(maximized)}
+        self.windowStateChanged.emit(_json(payload))
+        self.emitEvent("windowStateChanged", payload)
 
     # ================================================================ 内部
     def _pick_current(self, items: list[dict]) -> dict:

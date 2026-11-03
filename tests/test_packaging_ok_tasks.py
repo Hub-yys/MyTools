@@ -9,26 +9,32 @@
 
     File ".../vendor/okww/okww/char/CharFactory.py", line 203, in get_char_by_pos
         char = task.find_best_match_in_box(box, char_names, threshold=0.6)
-    ValueError: FeatureSet: Labels.char_xin not found in featureDict
+    ValueError: FeatureSet: Labels.XXX not found in featureDict
 
 ## 根因：打包漏了 ``vendor/okww/ok_tasks/``
 
 ``ok_tasks/assets/coco_annotations.json`` 是 ok-ww 的**官方扩展点**，
 ``FeatureSet.read_from_json`` 按**相对路径**去 merge 它。
-我们的「心」模板（``tools/make_xin_templates.py`` 生成）就放那儿。
+我们自造的扩展特征就放那儿。
 
 ``mytools.spec`` 只收了 ``assets/`` 和 ``i18n/`` —— **漏了 ok_tasks**。
-于是打包版里 ``char_xin`` 不在特征表。
+于是打包版里那些特征不在特征表。
 
-## ⚠ 为什么"缺一个角色的模板"会让**所有队伍**都打不了
+## ⚠ 为什么"缺一个特征"会让**所有队伍**都打不了
 
-``get_char_by_pos`` 是拿 ``char_names``（**整张角色表，61 个**）一次性
+``get_char_by_pos`` 是拿 ``char_names``（**整张角色表**）一次性
 ``find_best_match_in_box`` 的；``find_one_feature`` 遇到任何一个名字不在
-``featureDict`` 里就 ``raise``。所以缺 ``char_xin`` → **任何队伍**都认不出人，
-跟队伍里站的是谁完全无关（用户自然以为是"这三个角色有问题"）。
+``featureDict`` 里就 ``raise``。所以缺一个 → **任何队伍**都认不出人，
+跟队伍里站的是谁完全无关（用户自然以为是"这几个角色有问题"）。
 
-实测那次日志里 **162 次** ``char_xin not found`` + **156 次**
+实测那次日志里 **162 次** ``not found`` + **156 次**
 ``CombatCheck:do_check_in_combat`` 连环报错。
+
+## ⚠ 2026-10-25：「心」改用 ok-ww 官方实现
+
+``ok_tasks/assets`` 里原来自造的 5 个 ``xin_*`` / ``char_xin`` 特征已删，
+现在只剩 ``echo_stack_icon``（声骸堆叠图标）。**但 ``ok_tasks`` 目录本身
+仍然必须打包** —— 这个文件钉的就是这条。
 
 ## 这个文件钉什么
 
@@ -81,7 +87,9 @@ class TestOkTasksIsPackaged(unittest.TestCase):
         """先确认源文件在（不在的话下面几条会"假通过"）。"""
         coco = OK_TASKS / "assets" / "coco_annotations.json"
         self.assertTrue(coco.is_file(), f"源文件不在：{coco}")
-        png = OK_TASKS / "assets" / "images" / "xin_templates.png"
+        #: ⚠ 2026-10-25：「心」改用官方实现后，``xin_templates.png`` 已删，
+        #: ok_tasks/assets 只剩 ``echo_stack.png``（声骸堆叠图标）。
+        png = OK_TASKS / "assets" / "images" / "echo_stack.png"
         self.assertTrue(png.is_file(), f"源文件不在：{png}")
 
     def test_spec_collects_ok_tasks(self):
@@ -98,48 +106,69 @@ class TestOkTasksIsPackaged(unittest.TestCase):
             "打包版会认不出任何角色")
 
     def test_check_build_requires_ok_tasks(self):
-        """★★★ check_build 必须点名那**两个**文件（构建后拦一道）。
+        """★★★ check_build 必须点名 ok_tasks 的源文件（构建后拦一道）。
 
-        ⚠ 只查目录不够：``xin_templates.png`` 才是「心」的模板图，
-        少了它一样是"文件在、模板缺"。
+        ⚠ 只查目录不够 —— 少了具体的 json/png 一样是"目录在、模板缺"。
+
+        ⚠ 2026-10-25：「心」改用官方实现后，点名的是
+        ``echo_stack.png``（不再有 ``xin_templates.png``）。
 
         ⚠ 用 :func:`_list_literal` 解析，不 ``assertIn`` 全文 ——
         否则注释里的同名文字会让这条测试**假通过**。
         """
         required = _list_literal(CHECK, "REQUIRED_DATA")
         for want in ("vendor/okww/ok_tasks/assets/coco_annotations.json",
-                     "vendor/okww/ok_tasks/assets/images/xin_templates.png"):
+                     "vendor/okww/ok_tasks/assets/images/echo_stack.png"):
             with self.subTest(want=want):
                 self.assertIn(want, required,
                               f"check_build 的 REQUIRED_DATA 里没有 {want}"
                               f"（现有 {len(required)} 项）")
 
-    def test_coco_actually_contains_char_xin(self):
-        """★★ 源 coco 里真的定义了 ``char_xin``（否则是白收）。"""
+    def test_coco_actually_contains_echo_stack_icon(self):
+        """★★ 源 coco 里真的定义了 ``echo_stack_icon``（否则是白收）。
+
+        ⚠ 2026-10-25：「心」改用 ok-ww 官方实现后，``char_xin`` 已从这里删掉，
+        ``ok_tasks/assets`` 只剩 ``echo_stack_icon``（声骸堆叠图标，在用的）。
+        这条测的是「ok_tasks 真的被收集进来了」，用还在的那个当代表即可。
+        """
         import json
 
         coco = OK_TASKS / "assets" / "coco_annotations.json"
         data = json.loads(coco.read_text(encoding="utf-8"))
         names = {c.get("name") for c in (data.get("categories") or [])
                  if isinstance(c, dict)}
-        self.assertIn("char_xin", names,
-                      f"ok_tasks 的 coco 里没有 char_xin（有：{sorted(names)}）")
+        self.assertIn(
+            "echo_stack_icon", names,
+            f"ok_tasks 的 coco 里没有 echo_stack_icon（有：{sorted(names)}）")
 
-    def test_char_factory_expects_char_xin(self):
-        """★★★ 反向确认：ok-ww 的 ``char_names`` **包含** 会去查 char_xin。
+    def test_ok_tasks_features_are_used(self):
+        """★★★ 反向确认：``ok_tasks`` 里的特征，CharFactory 或别处**真的要用**。
 
-        这条是"为什么缺了它全盘皆输"的护栏：
-        ``get_char_by_pos`` 拿整张表匹配，表里有 char_xin 就一定会找它。
-        哪天上游把 char_xin 挪走，这条会提醒我们同步（届时删掉本测试）。
+        这条是"为什么缺了它全盘皆输"的护栏：特征表是全表匹配的，
+        只要 ``char_names`` 里有，每次认人都会去查。
+
+        ⚠ 2026-10-25 起 ``ok_tasks`` 只剩下 ``echo_stack_icon``
+        （「心」已改用官方 ``char_hsin``）。它在 ``echo_enhance`` 里用，
+        不在 ``CharFactory`` —— 所以这里查的是"整个 src 有没有提它"。
         """
         vendored = ROOT / "vendor" / "okww"
         if not vendored.is_dir():
             self.skipTest("vendor 不在（纯数据仓库）")
-        src = (vendored / "okww" / "char" / "CharFactory.py").read_text(
-            encoding="utf-8")
-        self.assertIn("char_xin", src,
-                      "CharFactory 里已经没有 char_xin 了 —— "
-                      "若上游已支持「心」，这条测试可以删")
+        #: 用的人可能在 src/ 或 vendor/okww/okww/ 里
+        hits = []
+        for base in (ROOT / "src", vendored / "okww"):
+            if not base.is_dir():
+                continue
+            for p in base.rglob("*.py"):
+                try:
+                    if "echo_stack_icon" in p.read_text(encoding="utf-8"):
+                        hits.append(str(p.relative_to(ROOT)))
+                except OSError:
+                    continue
+        self.assertTrue(
+            hits,
+            "没有任何代码在用 echo_stack_icon —— "
+            "那 ok_tasks 这个扩展目录就是白收的，应该删掉")
 
 
 class TestPackagedAppSymptomsCovered(unittest.TestCase):

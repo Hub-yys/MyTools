@@ -174,7 +174,7 @@
       // 2) 高亮侧栏
       this._syncNavActive(key);
 
-      // 3) 更新标题栏
+      // 3) 更新窗口标题（页面里不再有标题栏文字 —— 见 index.html 的说明）
       const title = this._titleFor(key);
       const el = document.getElementById('titlebar-title');
       if (el) el.textContent = title;
@@ -520,8 +520,63 @@
         });
       }
       hook('btn-min', 'minimize');
-      hook('btn-max', 'maximize');
+      //: ★★★ 2026-11-03 修「放大后不能缩小」：这里原本发的是 **'maximize'**
+      //:
+      //: ## 症状
+      //:
+      //: 用户：「程序启动后窗口不能拖拽，放大窗口后，还不能缩小」。
+      //:
+      //: 点一次 □ 窗口最大化 ✅，**再点一次不动了**（窗口永远停在最大化）。
+      //: 实测（真鼠标点两次同一个位置）：
+      //:
+      //: .. code:: text
+      //:
+      //:     第 1 次点 □ → isMaximized = True
+      //:     第 2 次点 □ → isMaximized = True    ← 还原不了
+      //:     对照 togglemaximize → isMaximized = False  ✅
+      //:
+      //: ## 原因
+      //:
+      //: Python 侧 ``maximize`` 是**单向**的：``view.showMaximized()``。
+      //: 窗口已经最大化时再调，还是最大化 —— 永远回不去。
+      //:
+      //: ## 修法
+      //:
+      //: 换成 ``toggleMaximize``（后端 ``_on_window_action`` 里有
+      //: ``togglemaximize`` 分支：已最大化就 ``showNormal()``）。
+      //:
+      //: ⚠ 顺带和双击标题栏的行为**统一**了 —— 那边一直用的是
+      //: ``toggleMaximize``，只有这个按钮写错成 ``maximize``。
+      hook('btn-max', 'toggleMaximize');
       hook('btn-close', 'close');
+
+      //: ★★★ 2026-11-03 修「放大后图标不对」
+      //:
+      //: ## 症状
+      //:
+      //: 用户圈图：「放大后，这个缩小框不对把，应该右图那样」。
+      //:
+      //: 窗口最大化之后，□ 按钮**还是那个单框图标** —— 但这时候点它是
+      //: 「还原」，应该显示成两个叠起来的方框（Windows 的 ChromeRestore）。
+      //:
+      //: ## 图标码位（Segoe Fluent Icons / Segoe MDL2 Assets）
+      //:
+      //: ==========  ===========  ============================
+      //: 窗口状态     码位          外观
+      //: ==========  ===========  ============================
+      //: 普通         ``E922``     单个方框（ChromeMaximize）
+      //: 最大化       ``E923``     两个叠起来的方框（ChromeRestore）
+      //: ==========  ===========  ============================
+      //:
+      //: ## 状态从哪来
+      //:
+      //: 页面自己**判断不了** —— 用户可能双击标题栏、点 □、拖到屏幕边缘
+      //: Aero Snap、按 Win+↑、点任务栏预览菜单…… 都不经过 JS。
+      //:
+      //: 所以由 Python 侧 ``WebShell._push_window_state()`` 监听 Qt 的
+      //: ``WindowStateChange`` 推过来（``windowStateChanged`` 事件）。
+      //: 这里只负责按状态换图标 + 改 tooltip。
+      this.bindMaxButtonIcon();
 
       //: 双击标题栏 = 最大化/还原
       const tb = document.getElementById('titlebar');
@@ -552,6 +607,64 @@
         });
       }
       void self;
+    },
+
+    /**
+     * ★ 按窗口最大化状态切换 □ 按钮的图标（2026-11-03）。
+     *
+     * @param {boolean} maximized - 是否最大化
+     *
+     * ## 为什么要单独一个方法
+     *
+     * 两个调用点：
+     *   ① ``bindTitlebar()`` 里绑一次 —— 处理「启动时就是最大化」的情况
+     *   ② ``handleEvent('windowStateChanged')`` —— 运行中状态变化
+     *
+     * ## 图标码位（Segoe Fluent Icons / Segoe MDL2 Assets）
+     *
+     * ==========  ===========  ============================
+     * 窗口状态     码位          外观
+     * ==========  ===========  ============================
+     * 普通         ``E922``     单个方框（ChromeMaximize）
+     * 最大化       ``E923``     两个叠起来的方框（ChromeRestore）
+     * ==========  ===========  ============================
+     *
+     * ⚠ ``aria-label`` 和 ``title`` 也要跟着改 —— 否则鼠标悬停还是
+     * 显示「最大化」，读屏软件也念错。
+     */
+    setMaxButtonIcon(maximized) {
+      const el = document.getElementById('btn-max');
+      if (!el) return;
+      maximized = !!maximized;
+      this.windowMaximized = maximized;
+      //: E922 = ChromeMaximize（单框） / E923 = ChromeRestore（双框）
+      const glyph = maximized ? '\uE923' : '\uE922';
+      const label = maximized ? '还原' : '最大化';
+      if (el.textContent !== glyph) el.textContent = glyph;
+      el.title = label;
+      el.setAttribute('aria-label', label);
+      el.setAttribute('data-state', maximized ? 'restore' : 'maximize');
+    },
+
+    /**
+     * 绑定 □ 按钮的图标初始化（兜住「页面加载时窗口已经最大化」）。
+     *
+     * ⚠ 页面**主动问一次** Python，别只等推送 ——
+     * ``_push_window_state()`` 在 ``show()`` 里就推了，
+     * 而那时页面的 ``Bridge`` 可能还没连上（QWebChannel 握手在
+     * ``window.onload`` 之后才完成），那条推送会丢。
+     */
+    bindMaxButtonIcon() {
+      const self = this;
+      //: 先按当前已知状态画一次（避免闪错图标）
+      this.setMaxButtonIcon(!!this.windowMaximized);
+      //: 再问 Python 要准确值（Bridge 未连上时会 reject，忽略即可）
+      if (typeof Bridge === 'undefined' || !Bridge) return;
+      Bridge.call('getWindowState').then(function (res) {
+        if (res && typeof res.maximized === 'boolean') {
+          self.setMaxButtonIcon(res.maximized);
+        }
+      }).catch(function () { /* 忽略：Bridge 没连上就用默认值 */ });
     },
 
     // ──────────────────────────────────────────────────────────────────────
@@ -927,6 +1040,10 @@
         break;
       case 'pageRequested':
         if (data && data.key) App.go(data.key, {silent: true});
+        break;
+      case 'windowStateChanged':
+        //: ★ 最大化/还原 → 换 □ 按钮图标（2026-11-03）
+        App.setMaxButtonIcon(!!(data && data.maximized));
         break;
       default:
         //: 未知事件 —— 用调试日志留痕，静默吞掉

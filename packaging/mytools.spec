@@ -43,6 +43,12 @@ datas += collect_data_files("onnxocr")
 # 根 config.py（宿主用 importlib 从文件路径加载，必须当数据放一份）
 OKWW = ROOT / "vendor" / "okww"
 datas += [
+    # ⚠ 整个 assets 目录收 —— 也包括我们**自己加的**模板图：
+    #   ``images/pickup_locked_full.png``（2026-10-28 加入）
+    #   它是「拾取声骸时提示框上的锁定角标」，从用户录屏裁的 28x30 图标
+    #   贴在 1920x1080 画布上，coco 里登记为特征 ``pickup_locked``。
+    #   战斗报告的「锁定声骸」计数就靠它（见 ``okww_farm.read_pickup_state``）。
+    #   漏了它 → 锁定声骸永远是 0，但不报错（很难发现）。
     (str(OKWW / "assets"), "vendor/okww/assets"),
     (str(OKWW / "i18n"), "vendor/okww/i18n"),
     (str(OKWW / "config.py"), "vendor/okww"),

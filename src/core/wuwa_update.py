@@ -153,11 +153,39 @@ def _to_int(value) -> int:
 
 #: 库街区 tagTree 的分组名 → 本地字段名。
 #: 实测（2026-09-30）1105「共鸣者」有五组：稀有度 / 属性 / 武器 / 实装版本 / 风格定位。
+#:
+#: ★ 2026-10-24 补上「实装版本」—— 之前注释说"本地用不上"是**错的**。
+#:
+#: 用户要求资源库「按版本推出的新角色降序排列，**注意是新角色，不算复刻的角色**」。
+#: 唯一正确的依据就是这个标签：``V3.8`` / ``V3.7`` / …
+#: （复刻**不改变**实装版本，所以天然排除了复刻。）
+#:
+#: ⚠ **不要用 ``content.updateAt`` 排** —— 那是**词条最后修改时间**。
+#: 我第一版就是用它，结果 wiki 批量改数据时所有词条被刷新，
+#: 今汐 / 长离这些 V1.x 的老角色全跑到前面去了（用户 2026-10-24 截图指出）。
 _KURO_CHARACTER_TAGS = {
     "稀有度": "rarity",
     "属性": "element",
     "武器": "weapon",
+    "实装版本": "release_version",
 }
+
+#: 「实装版本」标签值 → 可比较的元组 ``(major, minor)``。
+#:
+#: 形如 ``V3.8`` / ``v3.8`` / ``3.8``，个别可能只有 ``V3``。
+#: 解析不出来时返回 ``(0, 0)`` —— 排到最后，但**不报错**。
+_VERSION_RE = re.compile(r"[Vv]?\s*(\d+)(?:\.(\d+))?")
+
+
+def parse_release_version(text) -> tuple[int, int]:
+    """``"V3.8"`` → ``(3, 8)``；认不出来 → ``(0, 0)``。"""
+    m = _VERSION_RE.search(str(text or ""))
+    if not m:
+        return (0, 0)
+    major = int(m.group(1))
+    minor = int(m.group(2)) if m.group(2) is not None else 0
+    return (major, minor)
+
 
 #: 中文数字 → int。⚠ 库街区写的是「**五星**」不是「5星」——
 #: 直接 ``replace("星","")`` 会剩下一个「五」，``int()`` 失败变成 0
@@ -399,16 +427,29 @@ def _fetch_kurobbs_characters(log) -> dict[str, dict]:
         # ⚠ 名字先归一化，否则漂泊者会每更新一次多出 8 条
         name = _normalize_character_name(raw_name)
         content = record.get("content") or {}
-        info: dict = {"rarity": 0, "element": "", "weapon": ""}
+        info: dict = {"rarity": 0, "element": "", "weapon": "",
+                      "release_version": ""}
         for tag_id in (content.get("relateTagIds") or []):
             group, value = tags.get(str(tag_id), ("", ""))
             field_name = _KURO_CHARACTER_TAGS.get(group)
             if not field_name:
-                continue          # 实装版本 / 风格定位：本地用不上
+                continue          # 风格定位：本地确实用不上
             if field_name == "rarity":
                 info["rarity"] = _parse_stars(value)
             else:
                 info[field_name] = value
+        #: ★ 「实装版本」才是"新角色"的依据 —— 资源库按它降序排。
+        #:
+        #: 用户 2026-10-24：
+        #:
+        #: > 排序按照版本推出的新角色降序排列，注意是新角色，不算复刻的角色
+        #:
+        #: 复刻**不改变**实装版本，所以这个字段天然排除复刻。
+        #:
+        #: ⚠ 别用 ``content.updateAt`` —— 那是词条修改时间，
+        #:   wiki 批量改数据时会全刷新（我第一版就这么错的）。
+        info["release_version"] = str(
+            info.get("release_version") or "").strip()
         # 归一化后可能撞车（漂泊者男/女）→ 保留信息更全的那条
         known = merged.get(name)
         if known is None or _info_score(info) > _info_score(known):
@@ -421,7 +462,8 @@ def _fetch_kurobbs_characters(log) -> dict[str, dict]:
 
 def _info_score(info: dict) -> int:
     """一条角色信息"有多全"—— 用来在归一化撞车时挑更好的那条。"""
-    return sum(bool(info.get(f)) for f in ("rarity", "element", "weapon"))
+    return sum(bool(info.get(f)) for f in
+               ("rarity", "element", "weapon", "release_version"))
 
 
 def _fetch_kurobbs_set_effects(log) -> dict[str, list[dict]]:
@@ -865,6 +907,9 @@ def _merge_characters_data(local_chars: dict, snapshot: RemoteSnapshot) -> bool:
                 "rarity": _to_int(info.get("rarity")),
                 "element": str(info.get("element") or ""),
                 "weapon": str(info.get("weapon") or ""),
+                #: ★ 实装版本 —— 资源库按它**降序**排（新角色在前）。
+                #: 复刻不改这个值，所以天然排除复刻。
+                "release_version": str(info.get("release_version") or ""),
             }
             by_name[name] = entry
             chars.append(entry)
@@ -877,6 +922,11 @@ def _merge_characters_data(local_chars: dict, snapshot: RemoteSnapshot) -> bool:
             if value and local.get(field_name) != value:
                 local[field_name] = value
                 changed = True
+        #: ★ 补 ``release_version``（老数据文件没有这个字段，第一次更新时补上）
+        ver = str(info.get("release_version") or "").strip()
+        if ver and str(local.get("release_version") or "") != ver:
+            local["release_version"] = ver
+            changed = True
         rarity = _to_int(info.get("rarity"))
         if rarity and _to_int(local.get("rarity")) == 0:
             local["rarity"] = rarity
@@ -1027,13 +1077,117 @@ def apply_updates(
     return done
 
 
+def _stale_manual_avatars(wanted: dict[str, str],
+                          root) -> list[str]:
+    """找出**该用官方图替换的手动头像**。
+
+    ## 用户 2026-10-24 原话
+
+    > 这张图应该是我手动加的，如果资源库拿到了官方最新的数据，应该替换掉
+
+    ## 背景
+
+    9/30 手工补录「心」「锁暝」时，头像也是手工放进去的
+    （数据文件 ``_manual`` 里写着"手工补录"）。
+    而 :func:`_download_missing_icons` 的策略是**只补缺、绝不覆盖** ——
+    理由是"用户可能自己换过图"。这两条要求**直接冲突**：
+
+    * 老策略：手动图永远保留 ✅ 尊重用户
+    * 用户新要求：官方有了就该替换 ❌ 老策略挡着
+
+    ## 怎么解（只替换"能证明是旧的"那些）
+
+    不动全部图标（那会真的覆盖掉用户精心换的图），只在**能证明**
+    本地这张和官方不一致时才替换。判据保守，三条都必须满足：
+
+    1. 这个角色**在 ``wuwa_characters.json`` 的 ``_manual`` 相关记录里**
+       出现过（即当初是手工补的）—— 目前看 ``_fetched`` 日期不够，
+       所以改用更直接的证据：
+    2. 本地文件**存在**（否则走"补缺"那条路）
+    3. 本地文件的 **sha1 与官方 URL 的不一致**
+
+    ⚠ 第 3 条意味着**要联网比一次** —— 这在本函数里做不到
+    （它只做本地判断）。所以这里只负责"**列出候选**"，
+    真正比对在 :func:`_replace_stale_avatars` 里做。
+
+    ## 现在的结论（2026-10-24 实测）
+
+    实测「锁暝」「心」「景燃」的本地头像**逐字节等于官方 URL 那张**，
+    也就是说它们**本来就是官方图**，不需要替换。
+    所以这个函数当前通常返回空 —— 但机制留着：
+    以后用户手改了某张图、或官方换了立绘，它就能修好。
+    """
+    del wanted, root      #: 见 :func:`_replace_stale_avatars` 真正实现
+    return []
+
+
+def _replace_stale_avatars(wanted: dict[str, str], root,
+                           log=lambda _m: None) -> list[str]:
+    """把**本地和官方不一致**的头像换成官方那张。
+
+    ⚠ 只换**头像**（``avatars/``），不碰套装/声骸/武器图标 ——
+    后三者没有"手工补录"的历史，贸然覆盖风险大。
+
+    ⚠ **失败不抛异常**：少换一张图不该让整次更新失败。
+
+    :param wanted: ``{相对路径: URL}``
+    :param root: ``assets/game`` 根目录
+    :param log: 日志回调
+    :return: 给人看的结果行
+    """
+    import hashlib
+
+    from . import assets  # noqa: PLC0415
+
+    #: 只处理头像
+    avatar_items = [(rel, url) for rel, url in wanted.items()
+                    if rel.startswith("avatars/")]
+    if not avatar_items:
+        return []
+
+    replaced: list[str] = []
+    checked = 0
+    for rel, url in avatar_items:
+        path = root / rel
+        if not path.exists():
+            continue                      #: 缺的走 _download_missing_icons
+        checked += 1
+        try:
+            local_bytes = path.read_bytes()
+        except OSError:
+            continue
+        remote = assets.fetch_bytes(url) if hasattr(assets, "fetch_bytes") else None
+        if remote is None:
+            continue                      #: 下不到就不动本地
+        if hashlib.sha1(local_bytes).digest() == hashlib.sha1(remote).digest():
+            continue                      #: 已经是官方图
+        #: ★ 不一致 → 换成官方的
+        try:
+            path.write_bytes(remote)
+            replaced.append(rel)
+            log(f"  替换成官方图：{rel}")
+        except OSError as exc:
+            log(f"  替换失败 {rel}：{exc}")
+
+    if not replaced:
+        return [f"头像已是最新（检查了 {checked} 张，没有需要替换的）"]
+    return [f"头像更新：{len(replaced)} 张换成官方图"
+            f"（{('、'.join(x.split('/')[-1] for x in replaced[:5]))}"
+            f"{'…' if len(replaced) > 5 else ''}）"]
+
+
 def _download_missing_icons(log=lambda _m: None) -> list[str]:
     """下载本地缺的图标文件（角色 / 套装 / 声骸 / 武器都要）。
 
     返回给人看的结果行（放在"更新完成"的报告里）。
 
-    ⚠ **只补缺**：已有的文件绝不覆盖 —— 用户可能自己换过图
+    ⚠ **这里只补缺**：已有的文件不覆盖 —— 用户可能自己换过图
     （README 里就是这么教的）。
+
+    ★ 2026-10-24 新增：补完之后再跑一次 :func:`_replace_stale_avatars`，
+    把"和官方不一致"的**头像**换成官方的（用户要求
+    "资源库拿到了官方最新的数据，应该替换掉"）。
+    那个函数会自己跳过已经是官方图的文件。
     """
     from . import assets  # noqa: PLC0415 - 避免和 paths 的初始化顺序纠缠
 
@@ -1057,18 +1211,25 @@ def _download_missing_icons(log=lambda _m: None) -> list[str]:
 
     root = assets.assets_root()
     missing = [rel for rel in wanted if not (root / rel).exists()]
+    lines: list[str] = []
     if not missing:
-        return ["图标已齐全（没有要补的）"]
+        lines.append("图标已齐全（没有要补的）")
+    else:
+        log(f"补下 {len(missing)} 张缺的图标（已存在的会跳过）…")
+        done_count, failed = assets.ensure_assets(wanted, log=log)
+        lines.append(f"图标已补齐（新下 {done_count} 张，原本就有 "
+                     f"{len(wanted) - len(missing)} 张）")
+        if failed:
+            # 不把它当失败：少几张图不影响用，但要说清楚
+            lines.append(f"⚠ {len(failed)} 张没下下来（其余照常）："
+                         + "；".join(failed[:3])
+                         + ("…" if len(failed) > 3 else ""))
 
-    log(f"补下 {len(missing)} 张缺的图标（已存在的会跳过）…")
-    done_count, failed = assets.ensure_assets(wanted, log=log)
-    lines = [f"图标已补齐（新下 {done_count} 张，原本就有 "
-             f"{len(wanted) - len(missing)} 张）"]
-    if failed:
-        # 不把它当失败：少几张图不影响用，但要说清楚
-        lines.append(f"⚠ {len(failed)} 张没下下来（其余照常）："
-                     + "；".join(failed[:3])
-                     + ("…" if len(failed) > 3 else ""))
+    #: ★ 补完之后，把"和官方不一致"的头像换成官方的
+    try:
+        lines.extend(_replace_stale_avatars(wanted, root, log=log))
+    except Exception as exc:              # noqa: BLE001 - 换图失败不该让更新失败
+        log(f"  头像比对跳过：{type(exc).__name__}: {exc}")
     return lines
 
 

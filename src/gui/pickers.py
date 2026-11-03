@@ -32,65 +32,14 @@ from qfluentwidgets import (
 )
 
 from ..core.game_data import EchoInfo, icon_path
-
-try:  # 拼音搜索是可选增强：没装 pypinyin 就退化成只有中文子串匹配
-    from pypinyin import Style as _PinyinStyle
-    from pypinyin import lazy_pinyin as _lazy_pinyin
-except ImportError:  # pragma: no cover
-    _lazy_pinyin = None
-    _PinyinStyle = None
-
-
-def pinyin_keys(text: str) -> tuple[str, str]:
-    """算出搜索用的拼音索引 → ``(全拼, 首字母)``，都小写、只留字母数字。
-
-    ``"穗穗"`` → ``("suisui", "ss")``；
-    ``"漂泊者·衍射"`` → ``("piaobozheyanshe", "pbzys")`` —— 中间的 ``·`` 被滤掉，
-    所以敲 ``pbz`` 也能搜到。
-
-    没装 pypinyin 时返回空串：拼音搜索失效，中文子串搜索照常。
-    """
-    if _lazy_pinyin is None:
-        return "", ""
-
-    def keep_alnum(value: str) -> str:
-        return "".join(ch for ch in value if ch.isalnum())
-
-    full = "".join(_lazy_pinyin(text)).lower()
-    initial = "".join(_lazy_pinyin(text, style=_PinyinStyle.FIRST_LETTER)).lower()
-    return keep_alnum(full), keep_alnum(initial)
-
-
-def matches_keyword(keys: tuple[str, str], text: str, keyword: str) -> bool:
-    """``text`` 是否命中 ``keyword`` —— **全项目共用的搜索匹配规则**。
-
-    * 空关键词（含**纯空白**）= 全命中；
-    * 中文走**子串**；
-    * **纯字母** additionally 走拼音（全拼或首字母都行）。
-
-    只在纯字母输入时试拼音：打中文时子串匹配已经够用，而且中文 key 跟
-    拼音串不可能互相包含 —— 加进去只会白算。
-
-    ⚠ 抽成模块级函数是为了**别处也能用同一套规则**（2026-09-30：
-    配置页要"和下拉列表搜索一样的"搜索框）。逻辑只有这一份，
-    改规则时下拉框和搜索框一起变，不会两边不一致。
-
-    ⚠ **自己 ``strip()``**：调用方忘了去空格时，"   " 会被当成关键词，
-    结果一条都搜不到（看起来像"搜索坏了"）。下拉框那边是在
-    ``_fill_items`` 里先 strip 的，这里再兜一次，两边都不会踩。
-
-    ``keys`` 是 :func:`pinyin_keys` 的返回值 ``(全拼, 首字母)``。
-    """
-    keyword = (keyword or "").strip()
-    if not keyword:
-        return True
-    if keyword in text:
-        return True
-    if not (keyword.isascii() and keyword.isalpha()):
-        return False
-    lowered = keyword.lower()
-    full, initial = keys
-    return lowered in full or lowered in initial
+#: ★★ 2026-11-02：搜索匹配逻辑**搬到 core 了**（``core/text_match.py``）。
+#:
+#: 原因：Web 桥接层（``core/web_bridge.py``）也要用拼音索引，而
+#: **core 不该 import gui**（依赖方向反了）。
+#:
+#: 这里 re-export —— 老调用方（``config_interface.py`` /
+#: ``task_editor_dialog.py`` / 本模块内部）**一行都不用改**。
+from ..core.text_match import matches_keyword, pinyin_keys  # noqa: F401
 
 
 def load_icon(relative: str) -> QIcon:

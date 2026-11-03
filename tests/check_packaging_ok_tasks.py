@@ -1,8 +1,8 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """★ 模拟打包产物：把 ok_tasks 放进一个临时目录，验证 FeatureSet 真的能合并它。
 
 这才是「修好了没有」的**决定性验证** —— 不是在源码树里查文件在不在，
-而是让 **ok-script 自己**去 merge 一遍，看 char_xin 有没有进特征表。
+而是让 **ok-script 自己**去 merge 一遍，看 echo_stack_icon 有没有进特征表。
 """
 import json
 import os
@@ -43,12 +43,12 @@ for name in ("assets", "i18n", "config.py"):
 
 
 def feature_dict_keys(include_ok_tasks: bool) -> tuple[set, str]:
-    """在 ``stage`` 目录下让 ok-script 真读一遍 ``char_xin``。
+    """在 ``stage`` 目录下让 ok-script 真读一遍 ``echo_stack_icon``。
 
     :return: ``(特征表键集合, 复现出来的异常文本)``
 
     ⚠ 特征表是**按需加载**的（``ensure_feature`` 只认一个名字），
-    所以必须**点名** ``char_xin`` 去要 —— 直接建完 FeatureSet 就查
+    所以必须**点名** ``echo_stack_icon`` 去要 —— 直接建完 FeatureSet 就查
     ``feature_dict`` 是空的（我第一版就是这样，两边都 0 个，得不出结论）。
 
     ⚠⚠ 缺模板时**抛异常的不是** ``ensure_feature``：``read_from_json``
@@ -72,13 +72,13 @@ def feature_dict_keys(include_ok_tasks: bool) -> tuple[set, str]:
         importlib.reload(FS)
         fs = FS.FeatureSet(False, str(stage / "assets" / "coco_annotations.json"),
                            0.002, 0.002, 0.8)
-        fs.ensure_feature("char_xin")
+        fs.ensure_feature("echo_stack_icon")
 
         #: ★ 第二步：按 ok-ww 的真实调法走一遍（认人时就是这么查的）
         err = ""
-        if "char_xin" not in fs.feature_dict:
+        if "echo_stack_icon" not in fs.feature_dict:
             try:
-                fs.find_one_feature(_blank_frame(), "char_xin")
+                fs.find_one_feature(_blank_frame(), "echo_stack_icon")
             except ValueError as exc:
                 err = str(exc)
         return set(fs.feature_dict.keys()), err
@@ -93,30 +93,30 @@ def _blank_frame():
     return np.zeros((1080, 1920, 3), dtype=np.uint8)
 
 
-print("=== 让 ok-script 自己 merge 一遍（点名要 char_xin）===")
+print("=== 让 ok-script 自己 merge 一遍（点名要 echo_stack_icon）===")
 without, err_without = feature_dict_keys(include_ok_tasks=False)
-print("  不带 ok_tasks : 拿到 %d 个特征，含 char_xin = %s"
-      % (len(without), "char_xin" in without))
+print("  不带 ok_tasks : 拿到 %d 个特征，含 echo_stack_icon = %s"
+      % (len(without), "echo_stack_icon" in without))
 if err_without:
     print("                  ↳ 复现出用户日志里那个错：")
     print("                    ValueError: %s" % err_without[:80])
 
 with_ot, err_with = feature_dict_keys(include_ok_tasks=True)
-print("  带   ok_tasks : 拿到 %d 个特征，含 char_xin = %s"
-      % (len(with_ot), "char_xin" in with_ot))
+print("  带   ok_tasks : 拿到 %d 个特征，含 echo_stack_icon = %s"
+      % (len(with_ot), "echo_stack_icon" in with_ot))
 if err_with:
     print("                  ↳ 意外报错: %s" % err_with[:80])
 
 print()
 #: 三件事都要成立才算修好：
-#:   ① 缺 ok_tasks 时 char_xin 不在表里
+#:   ① 缺 ok_tasks 时 echo_stack_icon 不在表里
 #:   ② 缺的时候**真的会抛**那个 ValueError（症状对得上）
-#:   ③ 带上之后 char_xin 进表、且不再抛
-ok = ("char_xin" not in without
-      and "char_xin not found in featureDict" in err_without
-      and "char_xin" in with_ot
+#:   ③ 带上之后 echo_stack_icon 进表、且不再抛
+ok = ("echo_stack_icon" not in without
+      and "echo_stack_icon not found in featureDict" in err_without
+      and "echo_stack_icon" in with_ot
       and not err_with)
-print("★ 结论:", "修复有效（打包带上 ok_tasks → char_xin 进表、不再抛错）"
+print("★ 结论:", "修复有效（打包带上 ok_tasks → echo_stack_icon 进表、不再抛错）"
       if ok else "⚠ 结论不符，需复查")
 shutil.rmtree(tmp, ignore_errors=True)
 sys.exit(0 if ok else 1)

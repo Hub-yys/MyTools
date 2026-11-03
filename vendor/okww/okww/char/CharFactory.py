@@ -1,5 +1,6 @@
 from okww.Labels import Labels
 from okww.char.Aemeath import Aemeath
+from okww.char.Aalto import Aalto
 from okww.char.Augusta import Augusta
 from okww.char.Baizhi import Baizhi
 from okww.char.BaseChar import BaseChar, CharType, Elements, get_default_buff_time
@@ -20,14 +21,17 @@ from okww.char.Encore import Encore
 from okww.char.Galbrena import Galbrena
 from okww.char.Rover import Rover
 from okww.char.Hiyuki import Hiyuki
+from okww.char.Hsin import Hsin
 from okww.char.Iuno import Iuno
 from okww.char.Jianxin import Jianxin
 from okww.char.Jinhsi import Jinhsi
 from okww.char.JingRan import JingRan
 from okww.char.Jiyan import Jiyan
+from okww.char.Lingyang import Lingyang
 from okww.char.Linnai import Linnai
 from okww.char.Lucilla import Lucilla
 from okww.char.Lucy import Lucy
+from okww.char.Lumi import Lumi
 from okww.char.Luhesi import Luhesi
 from okww.char.Lupa import Lupa
 from okww.char.Mortefi import Mortefi
@@ -41,13 +45,13 @@ from okww.char.Roccia import Roccia
 from okww.char.Sanhua import Sanhua
 from okww.char.ShoreKeeper import ShoreKeeper
 from okww.char.Suisui import Suisui
+from okww.char.Suoming import Suoming
 from okww.char.Taoqi import Taoqi
 from okww.char.Verina import Verina
 from okww.char.Xiangliyao import Xiangliyao
 from okww.char.Xigelika import Xigelika
-# ★ MyTools 新增（2026-10-01）—— 上游没有这个角色，见 class 里 char_xin 的说明
-from okww.char.Xin import Xin
 from okww.char.Yinlin import Yinlin
+from okww.char.Yangyang import Yangyang
 from okww.char.YangYangSp import YangYangSp
 from okww.char.Youhu import Youhu
 from okww.char.Yuanwu import Yuanwu
@@ -56,6 +60,9 @@ from okww.char.Zhezhi import Zhezhi
 from okww.char.CustomCharLoader import load_team_char_class, normalize_team
 
 _char_dict_raw = {
+    Labels.char_aalto: {'cls': Aalto, 'char_type': CharType.SUB_DPS,
+                             'ring_index': Elements.WIND},
+    Labels.char_yangyang: {'cls': Yangyang, 'char_type': CharType.SUB_DPS, 'ring_index': Elements.WIND},
     Labels.yangyang_sp: {'cls': YangYangSp, 'char_type': CharType.MAIN_DPS,
                          'ring_index': Elements.HAVOC},
     Labels.char_yinlin: {'cls': Yinlin, 'char_type': CharType.SUB_DPS,
@@ -90,6 +97,8 @@ _char_dict_raw = {
                            'ring_index': Elements.ELECTRIC},
     Labels.char_jiyan: {'cls': Jiyan, 'char_type': CharType.MAIN_DPS,
                         'ring_index': Elements.WIND},
+    Labels.char_lingyang: {'cls': Lingyang, 'char_type': CharType.MAIN_DPS,
+                                'ring_index': Elements.ICE},
     Labels.char_mortefi: {'cls': Mortefi, 'char_type': CharType.SUB_DPS,
                           'ring_index': Elements.FIRE},
     Labels.char_zhezhi: {'cls': Zhezhi, 'char_type': CharType.SUB_DPS,
@@ -132,15 +141,13 @@ _char_dict_raw = {
     Labels.char_lucilla: {'cls': Lucilla, 'char_type': CharType.SUB_DPS, 'ring_index': Elements.ICE,
                           'target_box_short_combat_check': True},
     Labels.char_lucy: {'cls': Lucy, 'char_type': CharType.MAIN_DPS, 'ring_index': Elements.SPECTRO},
+    Labels.char_lumi: {'cls': Lumi, 'char_type': CharType.SUB_DPS, 'ring_index': Elements.ELECTRIC},
     Labels.char_rebecca: {'cls': Rebecca, 'char_type': CharType.SUB_DPS, 'ring_index': Elements.ELECTRIC},
     Labels.char_qingxiao: {'cls': Qingxiao, 'char_type': CharType.MAIN_DPS, 'ring_index': Elements.WIND},
     Labels.char_jingran: {'cls': JingRan, 'char_type': CharType.MAIN_DPS, 'ring_index': Elements.FIRE},
-    # ★ MyTools 新增（2026-10-01）：「心」—— 上游还没有这个角色。
-    #   识别模板在 ok_tasks/assets/（见 tools/make_xin_templates.py），
-    #   战斗逻辑在 okww/char/Xin.py（本仓自写，未在实机验证）。
-    #   属性：5★ 导电 音感仪 → ring_index 用 ELECTRIC。
-    Labels.char_xin: {'cls': Xin, 'char_type': CharType.MAIN_DPS,
-                      'ring_index': Elements.ELECTRIC},
+    Labels.char_hsin: {'cls': Hsin, 'char_type': CharType.MAIN_DPS, 'ring_index': Elements.ELECTRIC},
+    Labels.char_suoming: {'cls': Suoming, 'char_type': CharType.SUB_DPS, 'buff_time': 8,
+                         'ring_index': Elements.ELECTRIC},
 }
 
 char_dict = {}

@@ -87,6 +87,7 @@ class Labels(str, Enum):
     char_encore = 'char_encore'
     char_galbrena = 'char_galbrena'
     char_hiyuki = 'char_hiyuki'
+    char_hsin = 'char_hsin'
     char_iuno = 'char_iuno'
     char_jianxin = 'char_jianxin'
     char_jingran = 'char_jingran'
@@ -95,6 +96,7 @@ class Labels(str, Enum):
     char_jiyan = 'char_jiyan'
     char_linnai = 'char_linnai'
     char_linnai2 = 'char_linnai2'
+    char_lingyang = 'char_lingyang'
     char_lucilla = 'char_lucilla'
     char_lucy = 'char_lucy'
     char_luhesi = 'char_luhesi'
@@ -114,6 +116,7 @@ class Labels(str, Enum):
     char_sanhua2 = 'char_sanhua2'
     char_shorekeeper = 'char_shorekeeper'
     char_suisui = 'char_suisui'
+    char_suoming = 'char_suoming'
     char_taoqi = 'char_taoqi'
     char_verina = 'char_verina'
     char_xiangliyao = 'char_xiangliyao'
@@ -151,7 +154,9 @@ class Labels(str, Enum):
     denia_end_lib = 'denia_end_lib'
     denia_lib2 = 'denia_lib2'
     dialog_3_dots = 'dialog_3_dots'
+    douling_gen = 'douling_gen'
     douling_heavy = 'douling_heavy'
+    douling_zhen = 'douling_zhen'
     e = 'e'
     e_forte = 'e_forte'
     echo_dropped = 'echo_dropped'
@@ -207,6 +212,10 @@ class Labels(str, Enum):
     hiyuki_left = 'hiyuki_left'
     hiyuki_lib_forte = 'hiyuki_lib_forte'
     hiyuki_right = 'hiyuki_right'
+    hsin_h1 = 'hsin_h1'
+    hsin_h2 = 'hsin_h2'
+    hsin_lib1 = 'hsin_lib1'
+    hsin_lib2 = 'hsin_lib2'
     illusive_realm_exit = 'illusive_realm_exit'
     illusive_realm_menu = 'illusive_realm_menu'
     iuno_heavy = 'iuno_heavy'
@@ -267,6 +276,7 @@ class Labels(str, Enum):
     suisui_e1 = 'suisui_e1'
     suisui_forte2 = 'suisui_forte2'
     suisui_forte3 = 'suisui_forte3'
+    suoming_forte_e = 'suoming_forte_e'
     switch_account = 'switch_account'
     t = 't'
     target_box_long2 = 'target_box_long2'
@@ -282,12 +292,4 @@ class Labels(str, Enum):
     wheel_levitator = 'wheel_levitator'
     world_earth_icon = 'world_earth_icon'
     ww = 'ww'
-    # ★ MyTools 新增：「心」的识别模板（2026-10-01）
-    # 模板不是官方 assets，而是放在 ok_tasks/assets/（上游的扩展目录），
-    # 生成脚本：tools/make_xin_templates.py
-    char_xin = 'char_xin'            # 队伍栏头像（认人）
-    xin_red = 'xin_red'              # 红狐-紫条（应世心攒能中）
-    xin_red_idle = 'xin_red_idle'    # 红狐-白条（常态）
-    xin_white = 'xin_white'          # 白狐-金条（一段大已开）
-    xin_dominion = 'xin_dominion'    # 统御众机-金色柱状格
     yangyang_sp = 'yangyang_sp'

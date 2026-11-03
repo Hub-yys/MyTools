@@ -47,7 +47,7 @@ ok-ww 侧要**两处**都登记才会跑：
 
 宿主**无 GUI** → ``app.locale`` 是 ``en_US`` → ok-script 的 ``init_tasks()``
 **不注册**声明了 ``supported_languages = ["zh_CN"]`` 的任务 → 任务被静默跳过。
-这个坑在声骸调频 / 强化 / 查缺补漏那边都踩过。
+这个坑在声骸调频 / 强化那边都踩过。
 """
 
 from __future__ import annotations
@@ -174,6 +174,10 @@ def build_task_class():
     _ensure_okww_on_path()
     try:
         from ok import Box  # noqa: PLC0415
+        #: ★★ 必须**显式 import WWOneTimeTask** —— 它虽然被
+        #: ``NightmareNestTask`` 间接用到，但那个 import 在**它自己的模块**里，
+        #: **不会**进到本模块的名字空间。
+        from okww.task.WWOneTimeTask import WWOneTimeTask  # noqa: PLC0415
         from okww.task.NightmareNestTask import (  # noqa: PLC0415
             NestTarget,
             NightmareNestTask,
@@ -234,7 +238,25 @@ def build_task_class():
 
         # ------------------------------------------------------------ 主循环
         def run(self):
-            """★ **一个目标一个目标地刷**，顺序就是清单顺序。"""
+            """★ **一个目标一个目标地刷**，顺序就是清单顺序。
+
+            ## ★★ 整个 run 包在 try/except 里（2026-10-14 补）
+
+            用户报「点运行没反应」时暴露的**第二个问题**：
+            ``run()`` 前半段（重置鼠标、等主界面）抛异常时，
+            异常被 ok-script 吞在自己的 ``execute()`` 里，
+            而 ``info`` 里**什么都没写** → 界面一直显示"运行中"，
+            用户什么提示都看不到。
+
+            所以这里兜一层：任何异常都写进 ``失败原因``，
+            宿主的 :meth:`~...okww_boot.OkwwHost.poll_done` 会把它
+            变成一条**用户看得到的失败通知**。
+
+            ⚠ 只兜 ``run`` 的**前半段**（公共动作 + 初始化）——
+            循环里每一步的失败由 :meth:`_sweep_one` 自己兜
+            （那种是"这一个目标刷失败了，继续下一个"，
+            不该把整趟任务判死）。
+            """
             self._capture_mode = False
             self._capture_success = False
             self._unreachable_nests.clear()
@@ -247,8 +269,32 @@ def build_task_class():
                 return
             self.plan = plan
 
-            WWOneTimeTask.run(self)
-            self.ensure_main(time_out=30)
+            #: ★★ 只调 ``WWOneTimeTask.run(self)`` —— 做"开跑前的公共动作"
+            #:    （重置鼠标、必要时激活窗口），**不是** ``super().run()``。
+            #:
+            #: ⚠⚠ **千万别写成 ``super().run()``**：那会调到
+            #:    ``NightmareNestTask.run`` —— 它的逻辑是
+            #:    ``while nest := self.get_nest_to_go(): self.combat_nest(nest)``
+            #:    （**把所有的聚落全刷一遍**）。本子类存在的意义正是
+            #:    **换掉**那套"全刷"逻辑，调它等于本工具白做。
+            #:
+            #: ⚠⚠ **这里踩过一个真实的坑**（用户 2026-10-14 报「点运行没反应」）：
+            #:    原来写的 ``WWOneTimeTask.run(self)`` 是对的，但
+            #:    ``WWOneTimeTask`` 只在 ``okww.task.NightmareNestTask``
+            #:    里被 import，**没有**进到本模块的名字空间 → 一执行就
+            #:    ``NameError: name 'WWOneTimeTask' is not defined``。
+            #:    修法是**在 ``build_task_class`` 里显式 import 它**（已加），
+            #:    并由 ``tests/test_nest_sweep_task.py`` 的
+            #:    ``test_no_undefined_names_used_in_run`` 静态钉住。
+            try:
+                WWOneTimeTask.run(self)
+                self.ensure_main(time_out=30)
+            except Exception as exc:  # noqa: BLE001
+                msg = f"{type(exc).__name__}: {exc}"
+                self.log_error(f"扫荡开始前失败：{msg}", notify=True)
+                #: 让宿主/界面能看出"这趟没跑起来"（见 poll_done 的说明）
+                self.info_set("失败原因", f"扫荡开始前失败：{msg}")
+                return
 
             self.info_set("扫荡目标总数", len(plan))
             self.info_set("扫荡完成数", 0)

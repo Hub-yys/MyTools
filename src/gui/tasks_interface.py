@@ -41,6 +41,7 @@ from ..core.run_report import (
 from ..core.task_start import TaskStartError, check_start
 from ..core.tasks import STEP_START, TaskFlow, TaskStore
 from .config_names import live_config_name, live_flow_avatar, live_flow_summary
+from .new_flow_dialog import NewFlowDialog
 from .task_editor_dialog import TaskEditorDialog
 
 PAGE_MARGIN = (36, 32, 36, 28)
@@ -122,7 +123,11 @@ class FlowRunThread(QThread):
                     {"configs": [live_config_name(c) for c in binding["configs"]],
                      "config_keys": [c.key for c in binding["configs"]],
                      # 工具靠它判断"挂的是不是我这类配置"（见 core 里的 KIND）
-                     "config_kinds": [c.config_kind for c in binding["configs"]]},
+                     "config_kinds": [c.config_kind for c in binding["configs"]],
+                     #: ★ 2026-10-29 流程名 —— 声骸强化工具要从中读
+                     #: 「套装结构」（``（小毕业 43311）`` 那个 43311），
+                     #: 据此判断某档凑够种类后跳过同类声骸。
+                     "flow_name": str(getattr(self._flow, "name", "") or "")},
                     log=lambda msg: self._emit(f"  {msg}"),
                     should_stop=lambda: self._stop,
                 )
@@ -134,7 +139,17 @@ class FlowRunThread(QThread):
                 result = runner.run()
                 summary = getattr(result, "summary", lambda: "完成")()
                 summaries.append(f"{step.name}：{summary}")
-                self._report_step(step.name, summary=summary)
+                #: ★ 2026-10-30 用户：「任务里也是一样」（要展示强化好的声骸图片）
+                #:
+                #: ``RunnerSummary`` 现在带了 ``qualifying``（这一步符合条件的
+                #: 声骸清单），任务页「本轮报告」据此画卡片 ——
+                #: 和工具页「结果报告」用同一套卡片控件。
+                #:
+                #: ⚠ 用 ``getattr`` 兜底：别的工具（4C 战斗 / 批量调频）的
+                #: summary 没有这个字段，不能因为取不到就炸。
+                qualifying = getattr(result, "qualifying", None) or []
+                self._report_step(step.name, summary=summary,
+                                  qualifying=qualifying)
         except TaskStartError as exc:
             # 「开始」步的前置检查没过。这条消息是**写给用户看的**，
             # 不加异常类名前缀，界面上直接弹出来。
@@ -149,7 +164,16 @@ class FlowRunThread(QThread):
             self.failed.emit(text)
             return
         if self._stop:
-            note = "已停止" + ("；之前完成：" + "；".join(summaries) if summaries else "")
+            #: ⚠ 2026-10-29 修：这里原来把**完整 summary 拼进来**，导致
+            #: 报告里出现 `…（出现符合条件的声骸（第 2 个）：…））` 这种
+            #: 三层括号糊成一团。
+            #:
+            #: summary 里已经有完整统计（判定/符合/弃置/弃置原因/note），
+            #: 这里只留一句**简短**的"之前完成了哪几步"，明细去日志看。
+            done = "、".join(
+                #: 只取每步的**名字**（"绯雪-声骸强化：" 前面那截）
+                s.split("：", 1)[0] for s in summaries) if summaries else ""
+            note = "已停止" + (f"；之前完成的步骤：{done}" if done else "")
             self._finish(False, note)
             self.failed.emit(note)
             return
@@ -159,15 +183,23 @@ class FlowRunThread(QThread):
         self.succeeded.emit("；".join(summaries) if summaries else "没有可运行的步骤")
 
     def _report_step(self, name: str, summary: str = "",
-                     ok: bool = True, note: str = "") -> None:
+                     ok: bool = True, note: str = "",
+                     qualifying: list | None = None) -> None:
         """把一个工具步骤的结果记进本轮报告。
 
         ★ 锁定 / 弃置的数字从工具 ``.summary()`` 那行文本里读回来
         （见 :func:`~src.core.run_report.flow_result_from_summary`）——
         ``create_task_runner`` 的契约只给得到文本，这是唯一的取数路径。
+
+        :param qualifying: ★ 2026-10-30 这一步**符合条件的声骸清单**
+            （``RunnerSummary.qualifying``）。任务页「本轮报告」据此画图。
+            别的工具没有这个字段，传空列表即可。
         """
-        self.report.items.append(
-            flow_result_from_summary(name, summary, ok=ok, note=note))
+        item = flow_result_from_summary(name, summary, ok=ok, note=note)
+        if qualifying:
+            item.qualifying = [dict(it) for it in qualifying
+                               if isinstance(it, dict)]
+        self.report.items.append(item)
 
     def _emit(self, text: str) -> None:
         """流程日志：**同时**发到界面和日志文件。
@@ -303,6 +335,17 @@ class TaskRowCard(QWidget):
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self._stop)
         row.addWidget(self.stop_button)
+
+        #: ★ 2026-10-30 「跳过」按钮**已删除**（用户 2026-10-30：
+        #: > ok，真的实现了跳过，现在删除跳过按键）。
+        #:
+        #: 它本来就是个**测试按钮** —— 用来验证"跳过当前声骸"这条通路
+        #: 通不通。验证通过后就不需要了：真正的跳过是**自动**的
+        #: （见 `okww_task._skip_reason` 的三条规则）。
+        #:
+        #: 宿主侧的 `OkwwHost.request_skip_current` 和任务侧的
+        #: `_consume_skip_request` 也一并删除了，
+        #: 别指望它们还在（以后想加回来，看 git 历史）。
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -528,6 +571,24 @@ class TasksInterface(ScrollArea):
         self.round_body = BodyLabel("", self.round_card)
         self.round_body.setWordWrap(True)
         round_box.addWidget(self.round_body)
+
+        #: ★★ 2026-10-30 用户：
+        #:
+        #: > 任务里也是一样（要展示强化好的声骸图片）
+        #:
+        #: 把这一轮**强化好的声骸**画成卡片（图 + 词条），
+        #: 和工具页「结果报告」用同一套控件（`QualifyingEchoCard`）。
+        #:
+        #: 没有符合条件的声骸时整块隐藏 —— 不留一块空壳。
+        self.round_echo_area = QWidget(self.round_card)
+        self.round_echo_box = QVBoxLayout(self.round_echo_area)
+        self.round_echo_box.setContentsMargins(0, 6, 0, 0)
+        self.round_echo_box.setSpacing(8)
+        self.round_echo_area.setVisible(False)
+        round_box.addWidget(self.round_echo_area)
+        #: 上次画的是哪一批（内容没变就别重建 —— 图片解码很贵，还会闪）
+        self._round_echo_key: tuple = ()
+
         box.addWidget(self.round_card)
 
         # ---- 累计统计 ----
@@ -563,6 +624,7 @@ class TasksInterface(ScrollArea):
         report = self._last_report
         if report is None or report.is_empty():
             self.round_body.setText("还没有跑过。点某条流程的「运行」后，这里显示本轮结果。")
+            self._refresh_round_echoes([])
         else:
             head = f"{report.flow_name or '（未命名）'}：{report.summary()}"
             details = report.lines()
@@ -570,6 +632,8 @@ class TasksInterface(ScrollArea):
             if not report.ok and report.note:
                 text += f"\n（{report.note}）"
             self.round_body.setText(text)
+            #: ★ 2026-10-30 把这一轮**强化好的声骸**画成卡片
+            self._refresh_round_echoes(self._collect_qualifying(report))
 
         # ---- 累计（每次从盘上读，别缓存 —— 别的入口也可能改它）----
         stats = self._get_report_store().load()
@@ -580,6 +644,65 @@ class TasksInterface(ScrollArea):
             if stats.updated_at:
                 text += f" · 最后一次 {stats.updated_at}"
             self.total_body.setText(text)
+
+    @staticmethod
+    def _collect_qualifying(report: RoundReport) -> list[dict]:
+        """把本轮报告里**所有步骤**的声骸清单合并成一个列表。
+
+        用户 2026-10-30：「任务里也是一样」—— 要像工具页那样展示声骸图。
+        一条流程可能有多个工具步骤，把它们的声骸合起来展示
+        （重复的 ``index`` 由卡片自己标注，不去重 —— 那是不同声骸）。
+        """
+        items: list[dict] = []
+        for step in report.items:
+            for it in (getattr(step, "qualifying", None) or []):
+                if isinstance(it, dict):
+                    items.append(it)
+        return items
+
+    def _refresh_round_echoes(self, qualifying: list[dict]) -> None:
+        """把本轮的声骸画成卡片（带图）。内容没变就跳过重建。"""
+        items = [it for it in (qualifying or []) if isinstance(it, dict)]
+        key = tuple((it.get("index"), it.get("image"), bool(it.get("perfect")),
+                     tuple(it.get("stats") or [])) for it in items)
+        if key == self._round_echo_key:
+            return
+        self._round_echo_key = key
+
+        while self.round_echo_box.count():
+            child = self.round_echo_box.takeAt(0)
+            widget = child.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        if not items:
+            self.round_echo_area.setVisible(False)
+            return
+
+        from qfluentwidgets import StrongBodyLabel
+
+        self.round_echo_box.addWidget(StrongBodyLabel(
+            f"强化好的声骸（{len(items)} 个）", self.round_echo_area))
+        #: 横向排（和工具页「结果报告」一致）—— 省高度，一屏能看全
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        for it in items:
+            try:
+                from ..tools.game.echo_enhance.tool import QualifyingEchoCard
+            except Exception:  # noqa: BLE001 - 取不到卡片控件就只显示文字
+                break
+            row.addWidget(QualifyingEchoCard(
+                it, index=int(it.get("index") or 0),
+                is_perfect=bool(it.get("perfect")),
+                parent=self.round_echo_area,
+                image_width=150))
+        if row.count():
+            row.addStretch(1)
+            self.round_echo_box.addLayout(row)
+            self.round_echo_area.setVisible(True)
+        else:
+            self.round_echo_area.setVisible(False)
 
     def note_report(self, report: RoundReport) -> None:
         """一轮跑完：记下本轮、累加进持久化的总数、刷新显示。
@@ -646,11 +769,37 @@ class TasksInterface(ScrollArea):
 
     # ------------------------------------------------------------ 增删改
     def _add_flow(self) -> None:
-        dialog = TaskEditorDialog(self.window(), store=self._get_store())
-        if dialog.exec():
-            flow = dialog.result_flow()
-            self._get_store().add(flow)
-            self.reload()
+        """新增任务：**选类型 + 选角色，自动生成整条流程**。
+
+        ## 用户 2026-10-29
+
+        > 改任务，不再自己手动配置，新增任务时增加任务类型，
+        > 目前只有一种类型，声骸强化，保存后自动生成任务
+
+        ## 改之前
+
+        直接打开完整编排编辑器（``TaskEditorDialog``），用户得自己
+        把「开始 / 筛选配置 / 强化配置 / 工具 / 结束」一个个拖进去排好。
+        对只有一种固定套路的情况太繁琐。
+
+        ## 现在
+
+        ``NewFlowDialog``：选任务类型（目前只有「声骸强化」）+ 选角色，
+        保存后自动生成 5 步（见 ``new_flow_dialog.build_echo_enhance_flow``）。
+
+        ⚠ **「修改」按钮仍然打开完整编辑器** —— 用户可能想调整步骤顺序、
+        加别的工具。新建走简化路径，修改走完整路径。
+        """
+        dialog = NewFlowDialog(self.window())
+        if not dialog.exec():
+            return
+        flow = dialog.result_flow()
+        if flow is None:
+            #: 配置不全（validate 已经拦过，这里兜底）—— 不生成半截流程
+            logger.warning("新增任务：生成流程失败（配置不全）")
+            return
+        self._get_store().add(flow)
+        self.reload()
 
     def edit_flow(self, flow: TaskFlow) -> None:
         dialog = TaskEditorDialog(self.window(), flow=flow, store=self._get_store())

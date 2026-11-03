@@ -44,86 +44,142 @@ from okww.task.FarmEchoTask import FarmEchoTask  # noqa: E402
 
 from . import report, rotation
 
-#: 与 ok-ww ``EnhanceEchoTask`` 判锁/弃置状态用的是同一批特征名
-PICKUP_FEATURES = ("echo_locked", "echo_not_locked", "echo_dropped", "echo_not_dropped")
+#: 战斗方式存在 ``tool_settings`` 里的键
+COMBAT_STYLE_KEY = "auto_combat_style"
+
+#: ★★★ 拾取提示框上的「已锁定」角标 —— 我们自己做的特征（2026-10-28）。
+#:
+#: ## 为什么不能用 ok-ww 自带的 echo_locked
+#:
+#: ``echo_locked`` / ``echo_not_locked`` / ``echo_dropped`` / ``echo_not_dropped``
+#: 是 **声骸强化界面**的图标（ok-ww 只在 ``EnhanceEchoTask`` 里用它们，
+#: bbox 在屏幕上方的 UI 面板内，横向长条样式 25x28）。
+#:
+#: 而拾取声骸时左下/左侧弹出的提示框里的锁图标是
+#: **绿色圆环 + 白色锁形图案**，28x30，实测用 echo_locked 匹配分数 = 0。
+#:
+#: 所以从用户录屏里裁出这个图标，做成独立特征 ``pickup_locked``
+#: （已注册进 coco，见 assets/images/pickup_locked_full.png）。
+#:
+#: 实测：提示框出现的 2.8 秒内 score 0.906~1.000 稳定命中，
+#: 提示框消失后 score 0.000，**零误报**。
+PICKUP_LOCKED_FEATURE = "pickup_locked"
+
+
+def read_combat_style() -> str:
+    """读用户选的战斗方式；读不到 / 坏值 → ``smart``。
+
+    ⚠ **绝不抛异常** —— 在任务 ``__init__`` 里调，抛了 4C 就起不来。
+    """
+    try:
+        from ....core import tool_settings  # noqa: PLC0415
+
+        raw = (tool_settings.load(COMBAT_STYLE_KEY) or {}).get("style")
+    except Exception:  # noqa: BLE001 - 设置读不出来按默认
+        return rotation.DEFAULT_STYLE
+    return rotation.normalize_style(raw)
 
 
 class MyToolsFarmEchoTask(FarmEchoTask):
-    """ok-ww 的 4C 刷声骸 + 「拾取到的声骸里有多少锁定/弃置」的计数。
+    """ok-ww 的 4C 刷声骸 + 拾取角标计数 + **可选**的战斗方式。
 
-    另外还**接管了切人**：用户要的是固定循环轴（见
-    :mod:`src.tools.game.auto_combat.rotation`），而 ok-ww 默认是
-    通用增益调度器（按 buff 剩余 / 角色定位临时挑人）—— 表现就是"乱切人"。
+    ## 战斗方式（用户 2026-10-25 要求加回来）
+
+    ==========  ==========================================================
+    smart        **智能切换** —— ok-ww 原生调度。**默认**，也是唯一推荐。
+    rotation     **轮切** —— 固定轴 3→2→1（:mod:`~.rotation` 实现）。
+    combo        **合轴** —— 待定，当前等同 smart。
+    ==========  ==========================================================
+
+    ⚠ **默认必须是 smart**：用户实测固定轴不如 ok-ww。
+    ⚠ smart / combo 下 ``_choose_switch_target`` **直接走 super()** ——
+      等价于这个方法不存在，完全等价于 ok-ww 原版。
     """
 
-    #: 判定区域（相对屏幕坐标）：**左下象限**。用户实测：角标绝对出现在左下区域。
-    PICKUP_BOX = (0.0, 0.5, 0.5, 1.0)
-    #: 匹配阈值 —— 跟 EnhanceEchoTask 保持一致
+    #: ★★★ 拾取提示框上「锁定角标」的搜索区域（相对屏幕坐标）。
+    #:
+    #: ## 2026-10-28 用用户录屏实测定位
+    #:
+    #: 锁图标（绿圆环 + 白锁形）在整帧的 **(119, 578)**，尺寸 28x30。
+    #: 换算式::
+    #:
+    #:     x: 119/1920 = 0.062    y: 578/1080 = 0.535
+    #:
+    #: 提示框出现时有滑入动画（x 从 94 → 119，漂移 25px），
+    #: 所以左右各留余量。实测搜索区域::
+    #:
+    #:     像素: x 57~181   y 545~642
+    #:     相对: (0.030, 0.505, 0.095, 0.595)
+    #:
+    #: 这正好是用户说的「左边靠中间的位置」。
+    PICKUP_BOX = (0.030, 0.505, 0.095, 0.595)
+    #: 匹配阈值 —— pickup_locked 实测 0.906~1.000，0.7 足够稳且零误报
     PICKUP_THRESHOLD = 0.7
-    #: 拾取后最多找多久（秒）。通知可能晚一瞬才画出来，所以不是读一帧就完事；
-    #: 但也不能等太久 —— 刷声骸是循环任务，每轮多等 1 秒就是白掉的效率。
-    #: 找到"明确"角标（锁定/弃置）会立刻返回，只有"都没"这种才走满这个窗口。
-    PICKUP_WAIT = 0.8
+    #: ★★ 拾取后最多找多久（秒）。
+    #:
+    #: ## 实测数据（2026-10-28 录屏）
+    #:
+    #: 提示框持续 **2.8 秒**（399.6s → 402.4s）。
+    #: 所以 0.2 秒窗口**太短，会漏掉** —— 拾取瞬间提示框还没画出来。
+    #: 现在给 1.5 秒：足够覆盖提示框出现，又不会拖太久。
+    #:
+    #: ## ⚠ 战斗期间不会调这个
+    #:
+    #: :meth:`incr_drop` 只在「真的捡到声骸」时读（见那个方法的注释），
+    #: 战斗中每轮的战斗检查路径会被 ``_pickup_in_combat_check`` 挡掉，
+    #: 所以这里等 1.5 秒**不影响战斗**。
+    PICKUP_WAIT = 1.5
     #: 每次重试之间的间隔
     PICKUP_POLL = 0.15
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        #: 固定轴状态机（每个任务实例一份）
+        #: 战斗方式 —— 任务实例创建时读一次（运行中改下拉框不生效，UI 会锁住）
+        self.combat_style = read_combat_style()
+        #: 只有轮切用得到
         self.rotation_state = rotation.RotationState()
 
-    # ------------------------------------------------------------------ 固定轴
+    # ------------------------------------------------------------------ 战斗方式
     def _choose_switch_target(self, current_char, has_intro,
                               target_low_con=False):
-        """★ 按固定轴挑下一个上场的人 —— 覆盖 ok-ww 的通用增益调度。
+        """按用户选的战斗方式决定要不要接管切人。
 
-        ## 为什么只覆盖这一个方法
+        ## 只有 ``rotation``（轮切）会接管
 
-        ok-ww 挑人在 ``_choose_switch_target`` 里。我们**只换这一个决策点**，
-        其余（协奏值读取、入场判定、切人动作、漂移容错）全部沿用原实现 ——
-        那些是踩过坑的，重写风险大。
-
-        ## 什么时候**不**接管（交回 ok-ww）
-
-        * 队伍不完整（不足 3 人）：轴没有意义；
-        * 轴里找不到在场的人：说明位置对不上号，硬切更危险。
-
-        这两种情况返回 ``super()`` 的结果，行为和原来一致。
-
-        ## 关于返回 ``current_char``
-
-        ``switch_next_char`` 里 ``switch_to == current_char`` 会被判成
-        "can't find next char"，然后**提前返回 = 不换人** ——
-        行为是对的，只是会打条 warning 日志。
-        所以这里返回 ``current_char`` 表示"这一棒还没到换人时机"，
-        是**刻意为之**（用户要求：协奏没满就别换）。
+        ``smart`` / ``combo`` **直接调 ``super()``** —— 完全是 ok-ww
+        原版行为。默认状态下这个方法等价于"不存在"，不会改变任何战斗逻辑。
         """
+        if self.combat_style != rotation.STYLE_ROTATION:
+            #: 智能切换 / 合轴 → 不干预，交回 ok-ww
+            return super()._choose_switch_target(current_char, has_intro,
+                                                 target_low_con)
+
         chars = [c for c in getattr(self, "chars", []) or [] if c is not None]
         if len(chars) != len(rotation.ROTATION):
+            #: 队伍不完整 → 轴没意义，交回 ok-ww
             return super()._choose_switch_target(current_char, has_intro,
                                                  target_low_con)
 
         state = self.rotation_state
         here = rotation.slot_of(current_char)
         if here is not None:
-            # 轴跟着**实际**在场的人走（漂移容错：ok-ww 或玩家可能已经换过人了）
+            #: 轴跟着**实际**在场的人走（漂移容错）
             state.resync(here)
 
         should_go, why = state.should_hand_off(
             con_full=self._con_is_full(current_char), slot=here)
         if not should_go:
-            # 还没到换人时机 → 不换（ok-ww 会打条 warning，属正常）
+            #: 还没到换人时机 → 不换（返回同一个，ok-ww 会打条 debug）
             return current_char
-        self.log_info(f"固定轴：{why} → 换下一棒")
 
-        # 推进到下一棒，并找出对应的角色
         want = state.advance()
         target = self._char_at_slot(want)
         if target is None or target is current_char:
-            # 找不到目标（位置对不上）—— 退回 ok-ww 的原逻辑，别硬切
-            self.log_debug(f"固定轴：{want} 号位没有可用角色，交回 ok-ww 调度")
+            #: 找不到目标 —— 别硬切，交回 ok-ww
+            self.log_debug(f"轮切：{want} 号位没有可用角色，交回 ok-ww 调度")
             return super()._choose_switch_target(current_char, has_intro,
                                                  target_low_con)
+        self.log_info(f"轮切：{why} → 换到 {want} 号位")
         return target
 
     def _char_at_slot(self, slot: int):
@@ -146,33 +202,89 @@ class MyToolsFarmEchoTask(FarmEchoTask):
 
     # ------------------------------------------------------------------ 钩子
     def incr_drop(self, dropped):
+        """★★★ 拾取计数钩子 —— 只统计「锁定 / 弃置」，且**不能在战斗中阻塞**。
+
+        ## 两个互相冲突的需求
+
+        1. **战斗期间不能阻塞**（2026-10-26 教训：角色被打死）
+           ``FarmEchoTask.on_combat_check`` 里每轮战斗都会调 ``incr_drop``。
+           在那里读角标 = 每轮多花 0.2 秒模板匹配 → 角色站桩 → 死。
+
+        2. **锁定声骸必须能计数**（用户 2026-10-27）
+           4C 刷本全程在副本里（日志确认 ``in_realm: True``），
+           之前用 ``_in_realm`` 一刀切跳过 → 统计永远是 0。
+
+        ## 怎么区分（关键）
+
+        ``incr_drop`` 有三个调用点，性质完全不同：
+
+        ==========================  =============================  ==========
+        调用点                       场景                           要不要读
+        ==========================  =============================  ==========
+        FarmEchoTask L88            ``on_combat_check`` 战斗中每轮     **不读**
+        FarmEchoTask L209           打完怪 ``walk_find_echo`` 后捡    **要读**
+        FarmEchoTask L440           Fenrico Boss 循环间隙             **要读**
+        ==========================  =============================  ==========
+
+        第 1 条由 ``FarmEchoTask`` 设置 ``_pickup_in_combat_check`` 标志来标记
+        （见那边的注释）。第 2、3 条不设标志 —— 那时角色正在低头捡东西，
+        本来就不输出，读 0.2 秒完全没影响。
+
+        ## 顺带
+
+        ``pick_f(handle_claim=True)`` 返回的 ``dropped`` 在战斗中几乎总是 False，
+        所以就算不跳过，实际也很少进到读角标那一步 —— 但保险起见还是要挡。
+        """
         super().incr_drop(dropped)
-        if dropped:
-            report.tally_pickup(self.read_pickup_state())
+        if not dropped:
+            return
+        #: ⚠ 只有「战斗中每轮的拾取检查」这条路径要跳过（读角标会阻塞）
+        if getattr(self, "_pickup_in_combat_check", False):
+            return
+        #: 真正捡到声骸的时刻 —— 安全，正常读角标做统计
+        report.tally_pickup(self.read_pickup_state())
 
     # ------------------------------------------------------------------ 读角标
     def read_pickup_state(self) -> str:
-        """读左下角，返回 :data:`report.LOCKED` / ``DROPPED`` / ``NONE``。
+        """读拾取提示框上的锁定角标，返回 :data:`report.LOCKED` / ``NONE``。
 
-        在 :data:`PICKUP_WAIT` 秒内反复找：**先出现的角标说了算**。
-        一直没找到按"都没"算（用户描述的第三种状态）—— 若区域不对，表现就是
-        「锁定 0 / 弃置 0 / 都没 = 全部」，这在报告里能一眼看出来，不会被静默吞掉。
+        ## 2026-10-28 实测修正
+
+        之前用 ok-ww 的 ``echo_locked`` 等 4 个特征，**永远匹配不到** ——
+        那些是声骸强化界面的图标，不是拾取提示上的。
+
+        现在改用自制的 ``pickup_locked`` 特征（从用户录屏裁的模板）::
+
+            特征: pickup_locked   绿圆环 + 白锁形图案   28x30
+            位置: 整帧 (119, 578)  ← 用户说的「左边靠中间」
+            实测: 提示框在的 2.8 秒 score 0.906~1.000
+                  提示框不在时 score 0.000（零误报）
+
+        ## 关于「弃置」
+
+        拾取提示框上**只有锁定角标**，没有弃置角标 —— 游戏的自动弃置是在
+        背包里判定的，拾取瞬间不显示。所以这里只能统计「锁定」，
+        ``DROPPED`` 暂不产出（报告里会一直显示 0，这是如实的）。
+
+        ## 在 :data:`PICKUP_WAIT` 秒内反复找
+
+        提示框有滑入动画 + 可能比拾取动作晚一点画出来，
+        所以给 1.5 秒窗口轮询（实测提示框持续 2.8 秒，足够覆盖）。
         """
-        found: list[str] = []
         deadline = time.time() + self.PICKUP_WAIT
         try:
             while time.time() < deadline:
                 box = self.box_of_screen(*self.PICKUP_BOX)
                 hit = self.find_best_match_in_box(
-                    box, list(PICKUP_FEATURES), threshold=self.PICKUP_THRESHOLD)
+                    box, [PICKUP_LOCKED_FEATURE],
+                    threshold=self.PICKUP_THRESHOLD)
                 if hit is not None:
-                    found.append(str(getattr(hit, "name", "")))
-                    state = report.classify_badges(found)
-                    if state != report.NONE:
-                        return state
-                    # 只找到 not_* 之类还不算定论，继续等更明确的角标出现
+                    self.log_debug(
+                        f"拾取角标命中：{getattr(hit, 'name', '?')} "
+                        f"score={getattr(hit, 'confidence', 0):.3f}")
+                    return report.LOCKED
                 self.sleep(self.PICKUP_POLL)
         except Exception as e:  # noqa: BLE001 - 读不到角标绝不能把刷声骸打断
             self.log_debug("读取拾取角标失败：%s: %s" % (type(e).__name__, e))
             return report.NONE
-        return report.classify_badges(found)
+        return report.NONE

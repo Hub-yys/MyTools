@@ -270,13 +270,38 @@ def main() -> int:
         check("H5", col_count >= 3,
               f"当前 {col_count} 列（1440 宽时至少 3 列）")
 
-        # ── 统计条 ──
+        # ── 统计条 / 页头装饰 ──
+        #:
+        #: ★ 2026-11-03 断言**反转**：用户圈图要求「标记处都干掉」——
+        #: 主页的统计芯片条、副标题、右上角「换壁纸 / 任务中心」按钮
+        #: 全部删除（旧界面 ``HomeInterface`` 只有 标题 + 副标题 + 网格，
+        #: 这些东西本来就是我加的）。
+        #:
+        #: 所以现在验证的是「**这些装饰不存在**」—— 防止以后又被人加回来。
         chips = js("document.querySelectorAll('.home-stats .stat-chip').length")
         try:
             chips = int(float(chips))
         except (TypeError, ValueError):
             chips = -1
-        check("H6", chips >= 2, f"主页统计条 {chips} 个（期望 >=2）")
+        check("H6", chips == 0,
+              f"主页统计条 {chips} 个（期望 0 —— 用户要求删掉）")
+
+        subtitle = js("document.querySelectorAll('#page-home .page-subtitle').length")
+        try:
+            subtitle = int(float(subtitle))
+        except (TypeError, ValueError):
+            subtitle = -1
+        check("H6b", subtitle == 0,
+              f"主页副标题 {subtitle} 个（期望 0 —— 用户圈图删掉）")
+
+        actions = js(
+            "document.querySelectorAll('#page-home .page-head-actions .btn').length")
+        try:
+            actions = int(float(actions))
+        except (TypeError, ValueError):
+            actions = -1
+        check("H6c", actions == 0,
+              f"主页右上角按钮 {actions} 个（期望 0 —— 换壁纸/任务中心已删）")
 
         # ── 点卡片 → 切到工具页 ──
         clicked = js(

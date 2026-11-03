@@ -3,7 +3,7 @@
 > **给下一个会话的人看。** 这份文档记录：做了什么、当前状态、已知问题、
 > 踩过的坑、以及下一步该干什么。
 >
-> 最后更新：2026-11-02 23:45
+> 最后更新：2026-11-03 02:10
 
 ---
 
@@ -105,67 +105,252 @@ dev/                          验证脚本（不参与运行）
 | `pages_verify.py` | 53 | 主页 / 任务 / 配置 / 资源库 / 皮肤 |
 | `tool_panels_verify.py` | 67 | 7 个工具面板 |
 | `js_sanity.py` | 15 | 静态检查（符号 / 静默失败 / 调用签名） |
+| `web_shell_drag_resize_verify.py` | **10** | **★ 真鼠标**验证拖拽 / 缩放 / 放大后缩小 |
+| `web_shell_maxicon_verify.py` | **9** | **★ 真鼠标**验证 □ 按钮图标随窗口状态切换 |
 | `run_guarded.py` | — | **外部恢复包装器**（见下） |
 | `backup_guard.py` | — | 进程内备份恢复 |
 | `web_shell_p4_batch1~3.py` | 27+35+21 | 工具数据接口 |
 | `web_shell_p5~p13.py` | 41+23+34+34+30+25+36+9+37 | 各阶段增量 |
 | 其他 | — | 托盘 / 冷启动 / 数据审计 等 |
 
-**共 30+ 个套件，680 项断言。**
+**共 30+ 个套件，690 项断言。**
 
 ---
 
 ## 四、🔴 已知问题（按严重程度）
 
-### 1. 拖拽可能仍然无效（**最高优先级，未验证**）
+### 1. ✅ 拖拽 / 缩放 / 放大后不能缩小 —— **已修复（2026-11-03）**
 
-用户两轮反馈「不能拖拽」。查了 5 轮，找到并修复了两个根因：
+用户三轮反馈：
 
-**① `nativeEventFilter` 里两个 Python 错误**（被 `except` 静默吞掉）
+> 程序启动后，窗口不能拖拽，放大窗口后，还不能缩小
+
+**这次是真的修好了**，而且是**用真鼠标输入（SendInput）验证过的**，
+不是靠「代码看起来对」。日志/证据见下。
+
+跑验证：
+
+```powershell
+.venv\Scripts\python.exe src\gui\web\dev\web_shell_drag_resize_verify.py
+# 结果：10/10 通过
+```
+
+#### 根因 ①：``nativeEventFilter`` 拿不到消息地址 → 过滤器等于不存在
+
+PySide6 **6.11.2** 里 ``message`` 是 ``PySide6.QtCore.VoidPtr``，
+不是 sip.voidptr，也不是 int。原来的写法：
+
 ```python
-message.__int__()   → 'c_void_p' object has no attribute '__int__'
-msg.hwnd            → 'MSG' object has no attribute 'hwnd'（应为 hWnd）
+addr = ctypes.cast(message, ctypes.c_void_p).value   # ← 抛异常
 ```
-→ 过滤器每次抛异常、永远返回 `(False, 0)` → 标题栏的 `WM_NCHITTEST` 落到 `0x0000`
-→ Windows 丢弃鼠标事件 → 页面收不到 mousedown。
-**已修**：现在返回 `(True, 1)` = `HTCLIENT`。
 
-**② `FramelessWindowHint` 清掉了 `WS_THICKFRAME`**
+实测抛 ``ArgumentError: argument 1: TypeError: wrong type``，
+被外层 ``except`` 静默吞掉 → **每条消息都返回 (False, 0)**。
+
+**证据**（探针在真鼠标划一圈时统计）：
+
 ```
-GWL_STYLE = 0x-69F50000    WS_THICKFRAME = False
+nativeEventFilter 被调用 36 次
+其中成功解析出 message 的次数 = 0
+每次都是 ArgumentError: wrong type
 ```
-窗口管理器认为「没标题栏也不能缩放」→ 拒绝拖动。
-**已修**：`show()` 后补回 `WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX`
-+ `SetWindowPos(SWP_FRAMECHANGED)`。
 
-**⚠ 但「真实鼠标拖拽」在自动化测试里仍然显示「没动」。**
-原因：`mouse_event` / `SendInput` 在无头环境模拟不出「按住拖动」的完整交互。
+**修法**：``addr = int(message)``（``VoidPtr`` 实现了 ``__int__``，36/36 成功）。
 
-**下一步**：让用户在真实环境试。如果还不行，可能原因：
-- 页面 `mousedown` → `Bridge.call('startWindowDrag')` 这条链路没走通
-- 或者系统级拖动被别的因素拦住
+> 上一版注释里写的「``int(message)`` 会 ValueError」是**错的** ——
+> 那是 PySide6 早期版本的行为，6.11 上 ``int()`` 才是唯一可用的写法。
 
-**调试方法**（已验证有效）：在页面里埋点
-```javascript
-window.__d = {md: 0, drag: 0};
-document.getElementById('titlebar').addEventListener('mousedown',
-    () => window.__d.md++, true);
-const oc = Bridge.call;
-Bridge.call = function (m) { if (m === 'startWindowDrag') window.__d.drag++; return oc.apply(Bridge, arguments); };
+#### 根因 ②：拖动消息号写成 ``0x00A2``（= **UP**）
+
+```python
+SendMessageW(hwnd, 0x00A2, ...)   # ← WM_NCLBUTTONUP，"松开"
 ```
-然后用 `PostMessage(hwnd, WM_LBUTTONDOWN, ...)` 触发（**注意不能用 SendMessage，
-那个绕过消息队列，过滤器拦不到**）。正常应该看到 `md: 1, drag: 1`。
 
-### 2. 窗口放大后不能缩小回来（**未验证**）
+拖动要用 **``0x00A1`` = WM_NCLBUTTONDOWN**。发"松开"却没有"按下"配对，
+窗口管理器直接忽略。
 
-用户反馈。实测 `showMaximized()` → `showNormal()` 是正常的。
+实测（真 SendInput，DPR=1.25）：
 
-**需要确认**：是点 □ 最大化后还原不了，还是**拖边缘拉大**后拖不回来？
-- 前者：`_on_window_action('restore')` 正常，问题在别处
-- 后者：可能是 `WM_NCHITTEST` 的边缘判定 + `WS_THICKFRAME` 的交互
+```
+发 0x00A2（旧）→ 窗口 (1250,875) 位置尺寸 完全没变
+发 0x00A1（新）→ 窗口 (300,200) 拖到 (444,260) ✅
+```
+
+同时还修了两个同源问题：
+
+* ``lParam`` 必须传**真实光标坐标**（旧代码传 0 → 从屏幕左上角起算 → 拖动瞬间乱跳）
+* ``SendMessageW`` 必须声明 ``argtypes``，否则 64 位下 ``hwnd`` 被截断成
+  32 位，消息发给了随机句柄（**不报错**，窗口就是不动）
+
+#### 根因 ③：命中测试把**物理像素**和**逻辑像素**混着比
+
+``WM_NCHITTEST`` 的 ``lParam`` 是**物理**像素；
+``QWidget.frameGeometry()`` 返回**逻辑**像素。125% 缩放下差 1.25 倍：
+
+```
+frameGeometry  = (150,140)-(1149,839)   逻辑，1000x700
+GetWindowRect  = (188,175)-(1438,1050)  物理，1250x875
+```
+
+→ 改用 ``GetWindowRect``（物理），标题栏高度判定也要 × DPR。
+不修的话表现是「**有时候能拉、有时候拉不动**」。
+
+#### 根因 ④：``#btn-max`` 发的是 ``maximize`` 不是 ``toggleMaximize``
+
+``app.js`` 里 ``hook('btn-max', 'maximize')`` —— Python 侧 ``maximize`` 是
+**单向**的 ``showMaximized()``，窗口已经最大化再调还是最大化。
+
+```
+第 1 次点 □ → isMaximized = True   ✅
+第 2 次点 □ → isMaximized = True   ❌ 永远回不去
+换成 toggleMaximize → False        ✅
+```
+
+**这就是用户说的「放大窗口后，还不能缩小」。**
+已改成 ``toggleMaximize``（和双击标题栏的行为统一了）。
+
+#### 修复后实测（真实鼠标注入）
+
+```
+V1  标题栏拖动              (1250,875,150,120) → (1250,875,282,174)  ✅
+V2  最大化后拖标题栏能还原    isMaximized=False                       ✅
+V3  拉右边界放大             宽 1250 → 1375                          ✅
+V4  拉右边界缩小             宽 1375 → 1250   ← 用户报的核心         ✅
+V5  拉下边界放大             高 875 → 1020                           ✅
+V6  拉右下角                 1200x800 → 1260x860                     ✅
+V7  内容区点击仍到页面        页面 mousedown = 1                      ✅
+V8  最大化时边缘 = HTCLIENT   [右/下/左上/右下] 全部 0x1              ✅
+V9  □ 第一次点击 → 最大化     isMaximized=True                       ✅
+V10 □ 第二次点击 → 还原       isMaximized=False  ← 用户报的核心      ✅
+```
+
+#### ⚠ 验证这类问题**必须用真鼠标**
+
+``PostMessage`` / ``SendMessage`` **绕过输入队列**，验证不出这些问题
+（返回 0x0000 时页面照样收得到消息，看起来"正常"）。要注入真事件：
+
+```python
+# SendInput + SetCursorPos + 中间插 sleep，模拟"按住拖动"
+user32.SetCursorPos(x, y); time.sleep(0.25)
+_send(0x0002)              # LEFTDOWN
+for ...: SetCursorPos(...); time.sleep(0.08)
+_send(0x0004)              # LEFTUP
+```
+
+完整实现见 ``src/gui/web/dev/web_shell_drag_resize_verify.py``。
+
+#### 根因 ⑤：□ 按钮图标不随最大化状态切换（同日修复）
+
+用户圈图：「放大后，这个缩小框不对把，应该右图那样」——
+
+窗口最大化后，□ 还是**单框**（``E922`` ChromeMaximize），
+但这时候点它是「还原」，应该显示**两个叠起来的方框**
+（``E923`` ChromeRestore）。
+
+**修法**：
+
+| 位置 | 改了什么 |
+|---|---|
+| `web_bridge.py` | 新增 `windowStateChanged` 信号 + `pushWindowState()` + `getWindowState()` 槽 |
+| `web_shell.py` | `eventFilter` 拦 `QEvent.WindowStateChange` → `_push_window_state()`（去重后推） |
+| `app.js` | 新增 `setMaxButtonIcon()` / `bindMaxButtonIcon()`，处理 `windowStateChanged` |
+| `index.html` | 初始图标加 `data-state` 标记 |
+
+**为什么必须由 Python 推**：页面判不出来 —— 用户可能双击标题栏、
+Aero Snap、Win+↑、任务栏菜单，全都不经过 JS。只有 Qt 的
+``WindowStateChange`` 能全覆盖。
+
+**为什么还要 ``getWindowState()``**：``show()`` 里推的那次页面可能还没连上
+Bridge（QWebChannel 握手在 ``onload`` 之后），会丢 —— 页面加载完主动问一次。
+
+⚠ **光换图标不够** —— 点它必须真的还原，所以 ``btn-max`` 发的是
+``toggleMaximize``（根因 ④），否则图标换了但点了没反应，比原来更困惑。
+
+实测（真鼠标点页面里的按钮）：
+
+```
+W1  初始图标 = E922（最大化）      ✅
+W2  点 □ 最大化 → E923（还原）     ✅
+W3  tooltip / aria-label = 还原    ✅
+W4  再点 □ 还原 → E922             ✅
+W5  双击标题栏 → 图标也变 E923     ✅
+W6  getWindowState() → maximized   ✅
+W7  字形渲染宽度 11px（不是豆腐块） ✅
+```
+
+跑验证：
+
+```powershell
+.venv\Scripts\python.exe src\gui\web\dev\web_shell_maxicon_verify.py
+# 结果：9/9 通过
+```
+
+### 2. ✅ UI 细节第二批（2026-11-03）—— 6 张圈图，已全部修完
+
+用户一次性圈了 6 张截图。逐条对应：
+
+| # | 用户原话 | 改了什么 |
+|---|---|---|
+| 1 | 「标记处都干掉」 | 主页删掉 标题栏页面名 / 副标题 / 统计芯片条 / 右上角「换壁纸」「任务中心」按钮 |
+| 2 | 「按钮太大了，比文字长度大一点就行」 | 运行·停止按钮从 `flex:1 1 0`（撑满）改成内容宽度 + `padding: 0 28px`，`min-width:88px` |
+| 3 | 「这个下拉列表矩形怎么是个直角的，要圆角的」 | `select.input` 用 `appearance: base-select` + `::picker(select)` 圆角弹层 |
+| 4 | 「这个卡片怎么没了，而且这个启用要对齐」 | 双爆下限行补玻璃卡底；开关 `margin-left:auto` 右对齐 |
+| 5 | 「这里也是」 | 有效词条行同样补玻璃卡底 |
+| 6 | 「另外文字说明也去掉，再检查其他地方有没有类似情况」 | 删掉 调频数量说明段 / 强化页整段 intro / 「未启用…」提示；全站扫了一遍 |
+
+#### 关键踩坑记录
+
+**① `appearance: base-select` 才是下拉圆角的唯一解法**
+
+原生 `<select>` 的弹层由**操作系统**画（Windows 上是 Win32 菜单），
+CSS 完全够不到 —— `option { border-radius }` 算得出值但**画的时候被忽略**。
+
+Chromium 135+ 的 `appearance: base-select` 把 select 降级成页面内元素，
+弹层变成 `::picker(select)` 伪元素，圆角/阴影/hover 才能生效。
+本机 QtWebEngine 6.11.2 = **Chromium 140**，实测支持。
+
+⚠ 三个必须一起处理的副作用（实测踩到）：
+
+```
+① 双箭头 —— base-select 自带 ::picker-icon，和我们 background-image 画的重复
+② 多一个 ✓ —— 选中项前面有 ::checkmark，旧界面观感里没有
+③ option 变 display:flex —— padding 才生效，不写会贴边
+```
+
+**② `setStateLabel` 用 `.hidden` 类，不是 `hidden` 属性**
+
+HTML 的 `hidden` 属性只是 `display:none` 的**弱默认值**，
+页面里任何 `.cfg-muted { display: flex }` 都能盖掉它。
+实测：给 `.cfg-muted` 设 `el.hidden = true` 之后**照样显示**。
+本项目统一用 `.hidden` 类（`base.css` 里是 `display:none !important`）。
+
+**③ 「说明文字」和「状态反馈」必须分开对待**
+
+用户要求删说明文字，但状态行里混着两种东西：
+
+```
+静态说明（删）    「引擎：就绪 · 点「启动」开始 4C 刷声骸」
+动态反馈（留）    「引擎：启动失败 —— …」「引擎：正在启动…」
+```
+
+判据：**状态会自己变回去的 = 反馈（留）；一直挂着不动的 = 说明（删）**。
+
+⚠ 一开始把「正在启动…」也删了 —— 结果是**引擎冷启动 20 秒里点完毫无反应**，
+用户会以为按钮坏了反复点。已改回保留。
+
+**④ 反馈要写在第一个 `await` 之前**
+
+`sweepAction` 原来先 `await sweepSaveSelection()` 再写状态行。
+QWebChannel 调用是排队异步的，前一个面板还在等 `runOkwwTask` 时这里会卡住
+→ 点完几秒毫无反应（`tool_panels_verify` 的 nest_sweep.P5 因此一直假失败）。
+
+**⑤ `pendingUntil` 有效期取 120 秒（不是 30）**
+
+引擎冷启动期间 `getOkwwState()` 还报 `state:"idle"`，轮询会把
+「正在启动…」擦掉。加了 `pendingUntil` 截止时间，值对齐 ok-ww 自己的
+`start_timeout: 120`。30 秒实测不够。
 
 ### 3. 「角色战斗配置」编辑表单未做
-
 配置页「新增」→ 选「角色战斗配置」会显示「下一轮做」的提示（不静默失败）。
 
 **影响面小**：用户 0 条战斗配置。要建得用旧界面。
@@ -368,23 +553,72 @@ print('%d/%d' % (n - bad, n))
 
 ## 九、下一步建议
 
-### 最优先
+### ✅ 已完成（2026-11-03）
 
-**让用户验证拖拽是否修好了。** 这是唯一未验证的关键功能。
+**① 拖拽 / 缩放 / 放大后不能缩小 —— 已修复并验证（10/10）。**
+**② □ 按钮图标不随最大化切换 —— 已修复并验证（9/9）。**
+**③ UI 细节第二批（6 张圈图） —— 已全部修完。**
 
-如果还没修好，按第四节的调试方法埋点查。
+详见第四节第 1、2 条。
+
+改动文件：
+
+| 文件 | 改了什么 |
+|---|---|
+| `src/gui/web_shell.py` | `int(message)` 解析、`0x00A1` 拖动、`GetWindowRect` 物理坐标、标题栏判定 ×DPR、`WindowStateChange` → 推窗口状态 |
+| `src/core/web_bridge.py` | 新增 `windowStateChanged` 信号 / `pushWindowState()` / `getWindowState()` |
+| `src/gui/web/js/app.js` | `btn-max` 的 `maximize` → `toggleMaximize`；`setMaxButtonIcon()` 换图标 |
+| `src/gui/web/index.html` | □ 按钮加 `data-state`；去掉标题栏页面名 |
+| `src/gui/web/js/pages/home.js` | 删副标题 / 统计芯片条 / 换壁纸 / 任务中心 |
+| `src/gui/web/js/pages/_panels.js` | 新增 `setStateLabel()`（用 `.hidden` 类） |
+| `src/gui/web/js/pages/tool-panels.js` | 按钮尺寸、下拉圆角配套、6 张卡的玻璃底、删说明文字、`pendingUntil` 冷启动反馈 |
+| `src/gui/web/css/pages/pages.css` | `.cfg-btn` 不自撑满、`select.input` base-select 圆角、`.enh-crit-card` |
+| `src/gui/web/dev/web_shell_drag_resize_verify.py` | **新增**：真鼠标验证套件（10 项） |
+| `src/gui/web/dev/web_shell_maxicon_verify.py` | **新增**：□ 图标验证套件（9 项） |
+
+### 验证结果（2026-11-03 02:10 终跑）
+
+```
+web_shell_drag_resize_verify.py   10/10   ✅
+web_shell_maxicon_verify.py        9/9    ✅
+tool_panels_verify.py             67/67   ✅
+pages_verify.py                   55/55   ✅
+web_shell_verify.py               13/13   ✅
+web_shell_p10.py                  全部通过 ✅
+js_sanity.py                      15/15   ✅
+全量编译                          150/150 ✅
+```
+
+⚠ 三个测试脚本本身也改了（它们原来断言的是**被删掉的 UI**）：
+`pages_verify` 的 H6 从「统计条 >= 2 个」反转成「必须是 0 个」；
+`tool_panels_verify` 的 P5 增加「反应历史」采样（引擎冷启动会阻塞主线程，
+单点快照读不到反馈）。
 
 ### 其次
 
-1. 「窗口放大后不能缩小回来」—— 先确认具体现象
-2. 「角色战斗配置」编辑表单（可选，影响面小）
-3. `grabGachaLink()`（可选）
+1. 「角色战斗配置」编辑表单（可选，影响面小）
+2. `grabGachaLink()`（可选）
 
 ### 长期
 
 - `docs/Web界面-架构与验证.md` 有完整的 20+ 条踩坑记录
 - `docs/webshell-manual-verify.md` 是真机验证清单
 - 前端代码里有大量 `#: ★ 2026-11-02 ...` 注释，记录了每个决定的来由
+
+### ⚠ 排查这类「Windows 原生交互」问题的经验
+
+1. **别信「代码看起来对」** —— 要用真 ``SendInput`` 验证
+2. **别信 ``SendMessage``/``PostMessage`` 的测试结果** —— 它们绕过输入队列，
+   和真实鼠标走的不是同一条路（本次 3 个 bug 全靠真输入才暴露）
+3. **``except: return 默认值`` 是排查地狱** —— 至少要打一条 ``logger.debug``
+4. **64 位下所有 Win32 调用都要声明 ``argtypes``**，否则句柄被截断成 32 位，
+   **不报错**，就是静默不生效
+5. **物理像素 vs 逻辑像素** —— ``WM_*`` 的 ``lParam`` 是物理，
+   Qt 的 ``geometry()`` 是逻辑，混用只在缩放不是 100% 时出问题
+   （用户机器正好 125%，所以必现）
+6. **无边框窗口的 UI 状态要由 Python 推给页面** ——
+   双击标题栏 / Aero Snap / Win+↑ 都不经过 JS，页面自己判不出来。
+   监听 ``QEvent.WindowStateChange``，别指望 ``outerHeight`` 之类的哈希。
 
 ---
 

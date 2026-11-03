@@ -83,6 +83,39 @@ def download_icon(url: str, relative: str, *, timeout: int = 45) -> int:
     return len(blob)
 
 
+def fetch_bytes(url: str, *, timeout: int = 45) -> bytes | None:
+    """把 ``url`` 的内容读进内存（**不落盘**）。
+
+    ## 为什么需要它
+
+    :func:`download_icon` 只管"下下来覆盖本地"，但
+    「换上官方头像」那个功能需要**先比对**再决定要不要写 ——
+    比对就得拿到字节，所以单独抽一个只读的函数。
+
+    :return: 字节；失败 / 不是 PNG / 太大 → ``None``（**不抛异常**，
+             调用方拿到 None 就保持本地不动）
+    """
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0", "Referer": KUROBBS_REFERER})
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(request, timeout=timeout,
+                                    context=context) as response:
+            blob = response.read(MAX_BYTES + 1)
+    except Exception as exc:  # noqa: BLE001 - 网络问题就是"拿不到"
+        logger.debug("下载失败 %s：%s", url, exc)
+        return None
+    if len(blob) > MAX_BYTES:
+        logger.debug("文件太大，跳过：%s", url)
+        return None
+    if not blob.startswith(_PNG_MAGIC):
+        logger.debug("不是 PNG，跳过：%s", url)
+        return None
+    return blob
+
+
 def ensure_assets(wanted: dict[str, str], *, log=lambda _m: None,
                   should_stop=lambda: False) -> tuple[int, list[str]]:
     """按 ``{项目内相对路径: 图片 URL}`` 把**缺的**图补下来。

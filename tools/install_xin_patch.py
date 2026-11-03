@@ -38,41 +38,43 @@ LABELS = VENDOR / "okww" / "Labels.py"
 FACTORY = VENDOR / "okww" / "char" / "CharFactory.py"
 SHOREKEEPER = VENDOR / "okww" / "char" / "ShoreKeeper.py"
 
-#: ★ 守岸人「能量条满了就放重击」——**修 ok-ww 上游的一个 bug**。
+#: ★★ 2026-10-25：**守岸人的"重击修复"已被撤销** —— 它根本不是 bug。
 #:
-#: ## 上游的写法（有 bug）
+#: ## 我之前改错了什么
+#:
+#: 我以为上游这句是死代码::
 #:
 #:     if not self.click_resonance():
 #:         self.heavy_click_forte(self.is_mouse_forte_full)
 #:
-#: ``click_resonance()`` 返回的是**元组** ``(clicked, duration, has_animation)``
-#: —— 元组**永远是真值**，所以 ``not 元组`` **永远是 False**，
-#: 那句重击是**死代码**。用户实测："ok-ww 的守岸人不释放重击"。
+#: 理由：``click_resonance()`` 返回**元组**（永远真值），
+#: 所以 ``not 元组`` 恒 False，重击永远不执行。
 #:
-#: 对照 ok-ww 自己的 **Changli**（同样是"攒满→重击"型），写的是
-#: ``self.heavy_click_forte(check_fun=self.is_mouse_forte_full)`` ——
-#: **无条件调用**（函数内部自己判断能量满没满）。这才是正确用法。
+#: 于是我改成无条件调用 ``heavy_click_forte(check_fun=is_mouse_forte_full)``。
 #:
-#: ## 怎么修的
+#: ## 为什么那是错的（用户实机报的）
 #:
-#: 摘掉那个 ``if not ...`` 包装，改成无条件调用 —— 和 Changli 一致。
-#: ``heavy_click_forte`` 内部会先查 ``check_fun()``（能量满没满），
-#: 没满就什么都不做，所以无条件调用是安全的。
-SK_NEEDLE = (
-    "        if not self.click_resonance():\n"
-    "            self.heavy_click_forte(self.is_mouse_forte_full)\n"
-)
-SK_BLOCK = (
-    "        # ★ MyTools 修的 ok-ww bug（2026-10-01）：原来写成\n"
-    "        #   ``if not self.click_resonance(): heavy_click_forte(...)``，\n"
-    "        #   而 click_resonance() 返回的是**元组**（永远真值）——\n"
-    "        #   于是重击成了**死代码**，守岸人永远不放重击。\n"
-    "        #   改成无条件调用（heavy_click_forte 内部自己判断能量满没满），\n"
-    "        #   和 ok-ww 自己的 Changli 写法一致。\n"
-    "        self.click_resonance()\n"
-    "        self.heavy_click_forte(check_fun=self.is_mouse_forte_full)\n"
-)
-SK_ALREADY = "self.heavy_click_forte(check_fun=self.is_mouse_forte_full)"
+#: > 我感觉移过来的okww有问题，为什么打着打着我的角色就死了，
+#: > 用原版可从未发生过这种情况
+#:
+#: ``heavy_click_forte`` 内部::
+#:
+#:     if check_fun():
+#:         self.task.mouse_down()
+#:         success = self.task.wait_until(lambda: not check_fun(), time_out=2)
+#:         self.task.mouse_up()
+#:
+#: 满足条件时**长按鼠标最多 2 秒**。守岸人是**奶妈** —— 这 2 秒里
+#: 完全不能治疗，而且每次 ``do_perform`` 循环都可能走 → 队友得不到奶
+#: → **角色一个个死掉**。
+#:
+#: 上游那句"死代码"是**故意的刹车**：把守岸人锁在「E + 大 + 切人」的节奏上，
+#: 重击优先级远低于治疗。**不是 bug，别修。**
+#:
+#: 所以现在这个脚本**不再碰 ShoreKeeper.py**，只保留必要的部分。
+SK_NEEDLE = ""
+SK_BLOCK = ""
+SK_ALREADY = ""
 
 #: Labels 里要加的常量（插在 `yangyang_sp` 之前，那是文件最后一项）
 LABELS_ANCHOR = "    yangyang_sp = 'yangyang_sp'"
@@ -153,48 +155,25 @@ def _patch_replace(path: pathlib.Path, needle: str, block: str, *,
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
         description="把 MyTools 对 vendor/okww 的改动装回去"
-                    "（「心」的支持 + 守岸人重击 bug 修复）")
+                    "（目前**没有**需要重放的改动了）")
     parser.add_argument("--apply", action="store_true", help="真的写文件")
     args = parser.parse_args(argv[1:])
 
     print(f"vendor: {VENDOR}")
     print()
-    results = []
-    for path, needle, block, already, label in (
-        (LABELS, LABELS_ANCHOR, LABELS_BLOCK, "char_xin", "Labels 常量"),
-        (FACTORY, IMPORT_NEEDLE, IMPORT_BLOCK, IMPORT_ALREADY,
-         "CharFactory import"),
-        (FACTORY, REGISTER_NEEDLE, REGISTER_BLOCK, REGISTER_ANCHOR,
-         "CharFactory 注册"),
-    ):
-        ok, message = _patch(path, needle, block, already=already,
-                             label=label, apply=args.apply)
-        print("  ", message)
-        results.append(ok)
-
-    # 守岸人那处是**替换**（原来的写法有 bug）—— 单独处理
-    ok, message = _patch_replace(
-        SHOREKEEPER, SK_NEEDLE, SK_BLOCK, already=SK_ALREADY,
-        label="守岸人重击 bug 修复", apply=args.apply)
-    print("  ", message)
-    results.append(ok)
-
-    # 另外两处是"新文件"，不靠补丁
+    print("  ✓ vendor/okww 现在与上游一致 —— 不需要打任何补丁。")
     print()
-    for path, label in (
-        (VENDOR / "okww" / "char" / "Xin.py", "Xin.py 战斗逻辑"),
-        (VENDOR / "ok_tasks" / "assets" / "coco_annotations.json", "识别模板"),
-    ):
-        mark = "✓" if path.exists() else "✗"
-        print(f"   {mark} {label}: {path.relative_to(ROOT)}")
-        results.append(path.exists())
-
+    print("  ## 历史（两个补丁都已撤销）")
     print()
-    if all(results):
-        print("★ 全部就位。")
-        return 0
-    print("★ 有缺失 —— 上面标 · 的加 --apply 安装；标 ✗ 的要看是不是上游改结构了。")
-    return 1
+    print("  1. 「心」：上游 v3.7.9 已自带 char_hsin / Hsin，")
+    print("     自写的 Xin.py 已删除。")
+    print("  2. 守岸人「重击修复」：**那是改错的** —— 上游的 if-not 是故意的")
+    print("     刹车，改成无条件重击会让奶妈长按 2 秒不放治疗 → 角色死亡。")
+    print("     2026-10-25 用户实机报告后已完全还原上游写法。")
+    print()
+    print("  ⚠ 这个脚本留着是为了**以后**真有补丁要重放时有地方放。")
+    print("     别再往里加「修上游 bug」的改动 —— 先确认那真的是 bug。")
+    return 0
 
 
 if __name__ == "__main__":

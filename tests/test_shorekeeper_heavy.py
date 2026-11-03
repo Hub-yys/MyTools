@@ -1,157 +1,195 @@
-"""守岸人必须**会放重击**（修 ok-ww 上游的一个 bug）。
+# -*- coding: utf-8 -*-
+"""★★★ 守岸人（ShoreKeeper）**必须保持 ok-ww 原版写法** —— 不许"修"那句 if。
 
     python tests/test_shorekeeper_heavy.py
 
-## 上游的 bug
+## 用户 2026-10-25 的实机反馈
 
-ok-ww 原版 ``ShoreKeeper.do_perform`` 写的是::
+> 我感觉移过来的okww有问题，为什么打着打着我的角色就死了，
+> 用原版可从未发生过这种情况
+
+## 根因：我把上游的"故意刹车"当成了 bug
+
+上游 ``ShoreKeeper.do_perform`` 末尾::
 
     if not self.click_resonance():
         self.heavy_click_forte(self.is_mouse_forte_full)
+    self.switch_next_char()
 
-``click_resonance()`` 返回的是**元组** ``(clicked, duration, has_animation)``
-—— 元组**永远是真值**，所以 ``not 元组`` **永远是 False**，
-那句重击是**死代码**。用户实测："ok-ww 的守岸人不释放重击"。
+``click_resonance()`` 返回**元组** ``(clicked, duration, has_animation)``，
+元组永远真值 → ``not 元组`` 恒 False → 那句重击**永远不执行**。
 
-## 修法
-
-摘掉 ``if not ...`` 包装，改成无条件调用 ——
-和 ok-ww 自己的 **Changli**（同样是"攒满→重击"型）写法一致：
+看起来像死代码 bug，我 2026-10-01 把它改成了::
 
     self.click_resonance()
-    self.heavy_click_forte(check_fun=self.is_mouse_forte_full)
+    self.heavy_click_forte(check_fun=self.is_mouse_forte_full)   # 无条件
 
-``heavy_click_forte`` 内部会先调 ``check_fun()``（能量满没满），
-没满就什么都不做，所以无条件调用是安全的。
+## 为什么那是错的
 
-⚠ 这处改动在 **vendor/** 里 —— 上游更新会冲掉，
-靠 ``tools/install_xin_patch.py`` 重放（和「心」的支持同一套机制）。
+``heavy_click_forte`` 内部::
+
+    if check_fun():
+        self.task.mouse_down()
+        success = self.task.wait_until(lambda: not check_fun(), time_out=2)
+        self.task.mouse_up()
+
+满足条件时**长按鼠标最多 2 秒**。守岸人是**奶妈** ——
+这 2 秒里完全不能治疗，而且 ``do_perform`` 每轮都可能走这个分支
+→ 队友得不到奶 → **角色一个个死掉**。
+
+上游那句"死代码"其实是**故意的刹车**：把守岸人锁在
+「E + 大 + 切人」的节奏上，重击优先级远低于治疗。
+
+## 这个文件守什么
+
+1. ``if not self.click_resonance():`` 这层包装**必须在**
+2. ``heavy_click_forte`` 必须在那个 ``if`` 的**里面**
+3. 不许出现 ``heavy_click_forte(check_fun=...)`` 这种无条件写法
+4. 补丁脚本不许再把它装回去
 """
 
 from __future__ import annotations
 
 import ast
 import pathlib
-import subprocess
 import sys
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VENDOR = ROOT / "vendor" / "okww"
-SK = VENDOR / "okww" / "char" / "ShoreKeeper.py"
+SK = ROOT / "vendor" / "okww" / "okww" / "char" / "ShoreKeeper.py"
 
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-
-def _do_perform_node(text: str) -> ast.FunctionDef:
-    tree = ast.parse(text)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "do_perform":
-            return node
-    raise AssertionError("ShoreKeeper.py 里没有 do_perform")
+#: 本机 ok-ww 的同一份文件（有就逐语句对比，没有就只用断言）
+REF_SK = pathlib.Path(
+    r"D:\ok-ww\data\apps\ok-ww\working\src\char\ShoreKeeper.py")
 
 
-class TestHeavyAttackIsCalled(unittest.TestCase):
-    """★ 重击必须是**无条件调用**，不能被 if 包着。"""
-
-    def setUp(self):
-        self.text = SK.read_text(encoding="utf-8")
-        self.fn = _do_perform_node(self.text)
-
-    def test_heavy_click_forte_present(self):
-        calls = [
-            n for n in ast.walk(self.fn)
-            if isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Attribute)
-            and n.func.attr == "heavy_click_forte"
-        ]
-        self.assertTrue(calls, "do_perform 里根本没有 heavy_click_forte —— "
-                               "守岸人不会放重击")
-
-    def test_not_wrapped_in_if(self):
-        """★★ 这条就是那个 bug 的护栏。
-
-        上游原来写成 ``if not self.click_resonance(): heavy_click_forte(...)``
-        —— ``click_resonance()`` 返回元组（永远真值），
-        所以重击**永远执行不到**。
-        """
-        ifs = [n for n in ast.walk(self.fn) if isinstance(n, ast.If)]
-        for node in ifs:
-            for sub in ast.walk(node):
-                if (isinstance(sub, ast.Call)
-                        and isinstance(sub.func, ast.Attribute)
-                        and sub.func.attr == "heavy_click_forte"):
-                    line = self.text.splitlines()[sub.lineno - 1].strip()
-                    self.fail(
-                        f"heavy_click_forte 又被 if 包住了（L{sub.lineno}: "
-                        f"{line}）—— 那就是上游的 bug：click_resonance() "
-                        f"返回元组、永远真值，重击成了死代码")
-
-    def test_passes_check_fun(self):
-        """要传 ``check_fun`` —— 它内部靠这个判断能量满没满。"""
-        for node in ast.walk(self.fn):
-            if (isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "heavy_click_forte"):
-                kwargs = {k.arg for k in node.keywords}
-                self.assertIn(
-                    "check_fun", kwargs,
-                    "heavy_click_forte 没传 check_fun —— 它会用默认值，"
-                    "可能和守岸人的能量条检测不一致")
-
-    def test_resonance_still_called(self):
-        """E 不能因为修 bug 被删掉。"""
-        names = {
-            n.func.attr for n in ast.walk(self.fn)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-        }
-        for want in ("click_resonance", "click_liberation", "click_echo"):
-            with self.subTest(want=want):
-                self.assertIn(want, names, f"{want} 不见了")
+def _class() -> ast.ClassDef:
+    tree = ast.parse(SK.read_text(encoding="utf-8"))
+    return next(n for n in tree.body
+                if isinstance(n, ast.ClassDef) and n.name == "ShoreKeeper")
 
 
-class TestPatchScript(unittest.TestCase):
-    """★ 这处改动在 vendor 里 —— 上游更新会冲掉，补丁脚本要能重放。"""
+def _do_perform() -> ast.FunctionDef:
+    for m in _class().body:
+        if isinstance(m, ast.FunctionDef) and m.name == "do_perform":
+            return m
+    raise AssertionError("找不到 do_perform")
 
-    def test_patch_reports_all_installed(self):
-        result = subprocess.run(
-            [sys.executable, "tools/install_xin_patch.py"],
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", cwd=ROOT)
-        out = (result.stdout or "") + (result.stderr or "")
-        self.assertIn("全部就位", out, f"补丁脚本报有缺失：\n{out}")
 
-    def test_patch_mentions_shorekeeper(self):
-        result = subprocess.run(
-            [sys.executable, "tools/install_xin_patch.py"],
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", cwd=ROOT)
-        out = (result.stdout or "") + (result.stderr or "")
-        self.assertIn("守岸人", out,
-                      "补丁脚本没管守岸人 —— 上游更新后重击 bug 会回来")
+class TestDoPerformKeepsUpstreamGuard(unittest.TestCase):
+    """★★★ 核心：那句 ``if not self.click_resonance()`` 必须保留。"""
 
-    def test_patch_is_idempotent(self):
-        """跑两次不该把代码插重复。"""
-        before = SK.read_text(encoding="utf-8")
-        subprocess.run(
-            [sys.executable, "tools/install_xin_patch.py", "--apply"],
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", cwd=ROOT)
-        after = SK.read_text(encoding="utf-8")
-        self.assertEqual(before, after, "补丁跑第二次改了文件 —— 不幂等")
+    def test_if_not_guard_exists(self):
+        """★ 必须有 ``if not self.click_resonance():`` 这层包装。"""
+        node = _do_perform()
+        guards = [n for n in ast.walk(node)
+                  if isinstance(n, ast.If)
+                  and "click_resonance" in ast.unparse(n.test)
+                  and "not" in ast.unparse(n.test)]
+        self.assertTrue(
+            guards,
+            "守岸人的 do_perform 里**没有** ``if not self.click_resonance():`` "
+            "这层保护 —— 有人把它当成 bug 修掉了。\n"
+            "⚠ 那句不是死代码，是**故意的刹车**：守岸人是奶妈，"
+            "无条件重击会让她长按 2 秒不放治疗 → 队友死亡。\n"
+            "（2026-10-25 用户实机报过这个问题）")
 
-        # ⚠ 只数**真代码**里的调用 —— 注释里提到 heavy_click_forte 不算
-        #   （第一版数了整个文本，被注释里的说明骗了）
-        calls = [
-            n for n in ast.walk(_do_perform_node(after))
-            if isinstance(n, ast.Call)
-            and isinstance(n.func, ast.Attribute)
-            and n.func.attr == "heavy_click_forte"
-        ]
-        self.assertEqual(len(calls), 1,
-                         f"do_perform 里有 {len(calls)} 处 heavy_click_forte "
-                         f"调用（应该只有 1 处）")
+    def test_heavy_attack_inside_guard(self):
+        """★ ``heavy_click_forte`` 必须在那个 ``if`` 的**里面**。"""
+        node = _do_perform()
+        found_inside = False
+        for n in ast.walk(node):
+            if not (isinstance(n, ast.If)
+                    and "click_resonance" in ast.unparse(n.test)):
+                continue
+            for inner in ast.walk(n):
+                if (isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Attribute)
+                        and inner.func.attr == "heavy_click_forte"):
+                    found_inside = True
+        self.assertTrue(
+            found_inside,
+            "``heavy_click_forte`` 不在 ``if not click_resonance()`` 里面 —— "
+            "那就变成了无条件重击（会让奶妈不放治疗）")
+
+    def test_no_unconditional_check_fun_call(self):
+        """★★ 不许出现我改过的那种写法 ``heavy_click_forte(check_fun=...)``。"""
+        node = _do_perform()
+        for n in ast.walk(node):
+            if not (isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "heavy_click_forte"):
+                continue
+            kws = {k.arg for k in n.keywords}
+            self.assertNotIn(
+                "check_fun", kws,
+                "又用了 ``heavy_click_forte(check_fun=...)`` —— "
+                "这是我 2026-10-01 改错的那个写法（导致角色死亡）")
+
+    def test_switch_next_char_last(self):
+        """★ 最后一句必须是 ``switch_next_char()``（ok-ww 的节奏）。"""
+        node = _do_perform()
+        last = node.body[-1]
+        self.assertIsInstance(last, ast.Expr)
+        call = last.value
+        self.assertIsInstance(call, ast.Call)
+        self.assertEqual(getattr(call.func, "attr", ""), "switch_next_char")
+
+
+class TestMatchesLocalOkww(unittest.TestCase):
+    """★★ 如果有本机 ok-ww，就直接逐语句对比（最硬的证据）。"""
+
+    def test_do_perform_identical(self):
+        if not REF_SK.exists():
+            self.skipTest("本机 ok-ww 不在")
+
+        def code_of(path: pathlib.Path) -> str:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            cls = next(n for n in tree.body
+                       if isinstance(n, ast.ClassDef)
+                       and n.name == "ShoreKeeper")
+            fn = next(m for m in cls.body
+                      if isinstance(m, ast.FunctionDef)
+                      and m.name == "do_perform")
+            body = [n for n in fn.body
+                    if not (isinstance(n, ast.Expr)
+                            and isinstance(n.value, ast.Constant)
+                            and isinstance(n.value.value, str))]
+            return ast.unparse(
+                ast.Module(body=body, type_ignores=[])).replace("src.", "okww.")
+
+        self.assertEqual(
+            code_of(REF_SK), code_of(SK),
+            "do_perform 和本机 ok-ww 不一致 —— 我们不该改守岸人的战斗逻辑")
+
+    def test_methods_identical(self):
+        if not REF_SK.exists():
+            self.skipTest("本机 ok-ww 不在")
+
+        def methods(path: pathlib.Path) -> set[str]:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            cls = next(n for n in tree.body
+                       if isinstance(n, ast.ClassDef)
+                       and n.name == "ShoreKeeper")
+            return {m.name for m in cls.body
+                    if isinstance(m, ast.FunctionDef)}
+
+        self.assertEqual(methods(REF_SK), methods(SK),
+                         "守岸人的方法集合和 ok-ww 不一致")
+
+
+class TestPatchScriptIsInert(unittest.TestCase):
+    """★ 补丁脚本**不许**再往 vendor 里塞守岸人改动。"""
+
+    def test_patch_does_not_touch_shorekeeper(self):
+        patch = ROOT / "tools" / "install_xin_patch.py"
+        if not patch.exists():
+            self.skipTest("补丁脚本不存在")
+        text = patch.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "SK_BLOCK = (", text,
+            "补丁脚本里还有守岸人改动的代码块 —— "
+            "跑一次就会把『无条件重击』装回去，会导致角色死亡")
 
 
 if __name__ == "__main__":

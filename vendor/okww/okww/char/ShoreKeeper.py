@@ -9,6 +9,7 @@ class ShoreKeeper(BaseChar):
         self.outrotime = -1
         self.dodge_count = 0
         self.attribute = 0
+        self.check_f_on_switch = True
 
     def get_switch_priority(self, current_char=None, has_intro=False, target_low_con=False):
         self.decide_teammate()
@@ -43,14 +44,8 @@ class ShoreKeeper(BaseChar):
                 self.task.skip_combat_check = False
         self.click_echo(time_out=0)
         self.click_liberation()
-        # ★ MyTools 修的 ok-ww bug（2026-10-01）：原来写成
-        #   ``if not self.click_resonance(): heavy_click_forte(...)``，
-        #   而 click_resonance() 返回的是**元组**（永远真值）——
-        #   于是重击成了**死代码**，守岸人永远不放重击。
-        #   改成无条件调用（heavy_click_forte 内部自己判断能量满没满），
-        #   和 ok-ww 自己的 Changli 写法一致。
-        self.click_resonance()
-        self.heavy_click_forte(check_fun=self.is_mouse_forte_full)
+        if not self.click_resonance():
+            self.heavy_click_forte(self.is_mouse_forte_full)
         self.switch_next_char()
 
     def switch_next_char(self, *args, **kwargs):

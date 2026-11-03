@@ -56,7 +56,7 @@ from qfluentwidgets import (
     TitleLabel,
 )
 
-from ....core import gacha, gacha_store, paths
+from ....core import gacha, gacha_history_view, gacha_store, paths
 from ....core.categories import ToolCategory
 from ....core.registry import registry
 from ....core.tool_base import BaseTool
@@ -429,6 +429,142 @@ class _SpanBar(QWidget):
         painter.end()
 
 
+class HistoryCard(QWidget):
+    """抽卡历史卡片：一个账号的一个月。
+
+    ## 用户 2026-10-28
+
+    > 以卡片的形式展示，另外我要能够切换
+
+    ## 长什么样
+
+    ::
+
+        ┌────────────────┐
+        │ …856011        │   ← 账号（后 6 位）
+        │ 2026年10月     │   ← 年月
+        │ 960 抽 / 21 金 │   ← 数字
+        └────────────────┘
+
+    点一下整张卡 = 选中（黄色边框高亮），并发出
+    :attr:`clicked` 信号，页面据此把角色统计切换成这个快照的数据。
+
+    ## 为什么自己做而不用 qfluentwidgets 的 CardWidget
+
+    ``CardWidget`` 没有"选中态"和点击信号，套一层 QPushButton 又会
+    让卡片里的多行文字排版变形。这里直接继承 ``QWidget``，
+    - 用 ``mousePressEvent`` 收点击
+    - 用 ``paintEvent`` 画圆角底 + 选中边框（跟练度页/抽卡页同一套观感）
+
+    ⚠ **必须重写 ``paintEvent`` 而不是只靠 ``setStyleSheet``**：
+    ``QWidget`` 的样式表背景默认不绘制，得手动 ``QStyle`` 画。
+    """
+
+    clicked = Signal(object)      #: 参数是 MonthlyHistory
+
+    WIDTH = 168
+    HEIGHT = 92
+
+    def __init__(self, record, parent=None):
+        super().__init__(parent)
+        self._record = record
+        self._selected = False
+        self.setFixedSize(self.WIDTH, self.HEIGHT)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(
+            f"{record.month_text}（该月 {record.snapshots} 次拉取）\n"
+            f"共 {record.total} 抽 / {record.five} 金\n"
+            "点一下：只看这个月的记录")
+        #: 里面用 layout 放三行字 —— 比在 paintEvent 里手画文字好维护
+        box = QVBoxLayout(self)
+        box.setContentsMargins(12, 9, 12, 9)
+        box.setSpacing(2)
+
+        who = CaptionLabel(
+            gacha_store.account_label(record.player_id), self)
+        who.setTextColor(*MUTED)
+        box.addWidget(who)
+
+        month = StrongBodyLabel(record.month_text, self)
+        box.addWidget(month)
+
+        stats = CaptionLabel(f"{record.total} 抽 / {record.five} 金", self)
+        stats.setTextColor(*MUTED)
+        box.addWidget(stats)
+        box.addStretch(1)
+
+    # ------------------------------------------------------------ 状态
+    def set_selected(self, selected: bool) -> None:
+        if self._selected == selected:
+            return
+        self._selected = selected
+        self.update()          #: 触发 paintEvent 重画边框
+
+    @property
+    def record(self):
+        return self._record
+
+    # ------------------------------------------------------------ 事件
+    def mousePressEvent(self, event) -> None:      # noqa: N802 - Qt 命名
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._record)
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event) -> None:           # noqa: N802 - Qt 命名
+        """画圆角底 + 选中边框。
+
+        颜色跟 ``GachaWidget`` 里那套皮肤常量保持一致（浅/深色都要能看）。
+        """
+        from PySide6.QtGui import QPainterPath, QPen
+
+        skin = _skin()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        path = QPainterPath()
+        path.addRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
+        #: ``_skin()`` 已经把这些字段转成 QColor 了
+        painter.fillPath(path, skin["card"])
+
+        #: 选中 = 粗黄边；未选中 = 细淡边（保证深色主题下也能看出边界）
+        if self._selected:
+            pen = QPen(QColor(SELECT_BORDER))
+            pen.setWidth(2)
+        else:
+            pen = QPen(skin["border"])
+            pen.setWidth(1)
+        painter.setPen(pen)
+        painter.drawPath(path)
+        painter.end()
+
+
+def _skin() -> dict:
+    """当前皮肤的颜色表（读不到就给浅色兜底）。
+
+    六个皮肤里 ``card`` / ``border`` 有的是 ``rgba(255,255,255,0.72)``
+    这种 CSS 写法 —— Qt 的 ``QColor`` 不认，必须走
+    :func:`skins.parse_color` 转成 QColor。这里统一转好放在一个
+    ``QColor`` 字段里，画的时候直接用。
+    """
+    from ....core import skins
+
+    try:
+        raw = dict(skins.active_skin())
+    except Exception:  # noqa: BLE001 - 皮肤系统坏了也不能让历史卡片画不出来
+        raw = {}
+
+    def qc(value: str, fallback: str) -> QColor:
+        try:
+            color = skins.parse_color(value)
+            return color if isinstance(color, QColor) else QColor(fallback)
+        except Exception:  # noqa: BLE001
+            return QColor(fallback)
+
+    return {
+        "card": qc(raw.get("card") or "", "#FFFFFF"),
+        "border": qc(raw.get("border") or "", "#D8DEE9"),
+    }
+
 
 class GachaWidget(ScrollArea):
     """抽卡记录分析页面。"""
@@ -446,6 +582,10 @@ class GachaWidget(ScrollArea):
         #: 卡片墙的卡片（建好存着，位置由 _relayout_cards 算）
         self._card_widgets: list[QWidget] = []
         self._card_columns = 0
+        #: ★ 历史记录卡片（2026-10-28 改成卡片 + 可切换）
+        self._history_cards: list[HistoryCard] = []
+        #: 当前选中的历史卡片（``MonthlyHistory`` 或 None）
+        self._selected_history = None
 
         view = QWidget(self)
         view.setObjectName("gachaView")
@@ -755,13 +895,103 @@ class GachaWidget(ScrollArea):
         note.setWordWrap(True)
         self.history_box.addWidget(note)
 
-        for snapshot in known[:20]:                  # 只列最近 20 次，够看
-            #: ★ 多账号：标出这次是**哪个号**拉的（用户 2026-10-06）
-            label = gacha_store.account_label(snapshot.player_id)
-            row = CaptionLabel(
-                f"· [{label}] " + snapshot.describe(), self.history_host)
-            row.setTextColor(*MUTED)
-            self.history_box.addWidget(row)
+        #: ★★★ 2026-10-28 用户：「历史记录按时间和账号维度统计，
+        #: 同一账号不同时间内，数据一样就用最新时间，不一样就合并，
+        #: 时间显示 xxxx年xx月」「以卡片的形式展示，另外我要能够切换」
+        #:
+        #: 按 **(账号, 年月)** 聚合（见 gacha_history_view 的模块文档），
+        #: 每个组合渲染成**一张可点的卡片**：
+        #:   * 点一下 → 下面的统计切到那个快照的账号
+        #:   * 选中的卡片黄色粗边框（跟练度页/抽卡页同一套观感）
+        #:   * 卡片横向排，超过宽度自动换行
+        monthly = gacha_history_view.group_by_account_month(known)
+        self._history_cards = []
+        cards_host = QWidget(self.history_host)
+        cards_box = QGridLayout(cards_host)
+        cards_box.setContentsMargins(0, 6, 0, 0)
+        cards_box.setHorizontalSpacing(10)
+        cards_box.setVerticalSpacing(10)
+        #: 一行放几张 —— 按页面可用宽度估（卡片 168 + 间距 10）
+        per_row = 4
+        for index, item in enumerate(monthly):
+            card = HistoryCard(item, cards_host)
+            card.clicked.connect(self._on_history_selected)
+            #: ★ 默认选中**第一张**（最新那个月的账号）——
+            #: 用户打开页面就想看最近的数据，不该让他先点一下。
+            if index == 0:
+                card.set_selected(True)
+                self._selected_history = item
+            self._history_cards.append(card)
+            cards_box.addWidget(card, index // per_row, index % per_row)
+        #: 最后补一个空列撑开，卡片不会被拉成平均宽度
+        if monthly:
+            cards_box.setColumnStretch(len(monthly) % per_row or per_row, 1)
+        self.history_box.addWidget(cards_host)
+
+        #: ⚠ 聚合后还有"被折叠掉了多少条"要说明白 ——
+        #: 否则用户会以为"我拉过 20 次，怎么只剩 3 行"是丢了数据。
+        folded = len(known) - sum(item.snapshots for item in monthly)
+        if monthly and folded > 0:
+            tip = CaptionLabel(
+                f"（同一账号同一个月的 {folded + len(monthly)} 次拉取已按月份合并，"
+                f"数字取该月最大，时间取最晚一次）", self.history_host)
+            tip.setTextColor(*MUTED)
+            tip.setWordWrap(True)
+            self.history_box.addWidget(tip)
+
+    # ------------------------------------------------------------ 历史切换
+    def _on_history_selected(self, record) -> None:
+        """点了某张历史卡片 → 把统计切到那个账号的数据。
+
+        ## 用户 2026-10-28
+
+        > 以卡片的形式展示，另外我要能够切换
+
+        ## 切什么
+
+        卡片代表「一个账号的一个月」。点它要做的：
+
+        1. **高亮**这张卡（其余取消）
+        2. 用那个账号的记录**重新渲染**统计区块
+        3. 状态栏说清"你正在看哪个号的哪个月"
+
+        ## ⚠ 为什么按账号取记录，而不是按月份筛
+
+        ``gacha_store`` 只存**累计记录**（每条有 ``time`` 但没按月索引），
+        按月筛要把 2000 多条记录逐条解析时间。而用户点卡片的动机是
+        **「换个号看」** —— 账号维度才是他真正要切的。月份只是标签。
+
+        所以这里按 ``player_id`` 取全部记录重画，月份仅用于**显示**
+        （说明"你点的是 2026年10月 那张卡"）。
+        """
+        if record is None:
+            return
+        self._selected_history = record
+        #: 1. 高亮切换
+        for card in self._history_cards:
+            card.set_selected(card.record is record)
+        #: 2. 按账号重画
+        who = str(record.player_id or "")
+        try:
+            history = self._get_store().load()
+            rows = history.all_records(who) if who else history.all_records()
+        except Exception:  # noqa: BLE001 - 读不到就维持现状
+            logger.warning("切换历史账号时读取失败", exc_info=True)
+            return
+        if not rows:
+            self.status.setText(
+                f"{record.month_text} 没有可显示的单条记录。")
+            return
+        report = gacha.report_from_records(rows, player_id=who)
+        self._report = report
+        self.render(report)
+        #: 3. 状态栏说明当前在看什么
+        label = gacha_store.account_label(who) if who else "未知账号"
+        self.status.setText(
+            f"正在看 [{label}] {record.month_text} 的快照："
+            f"共 {record.total} 抽 / {record.five} 金"
+            f"（本地累计 {report.total} 抽 / {len(rows)} 条记录）。"
+            "点别的卡片可以切换账号。")
 
     def clear_history(self) -> None:
         """清空本地累积记录（用户要求能重置）。

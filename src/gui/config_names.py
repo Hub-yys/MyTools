@@ -27,6 +27,8 @@
 
 from __future__ import annotations
 
+import re
+
 #: 三类配置在界面上的**类型名**（同时也是「新增配置」时下拉里的选项）
 TYPE_LOADOUT = "角色声骸筛选"
 TYPE_ECHO_PROFILE = "角色声骸强化"
@@ -182,6 +184,31 @@ def live_flow_summary(flow) -> str:
 #: 直接指定，改的时候别互相带跑。
 FLOW_NAME_SUFFIX = "-声骸自动强化"
 
+#: 任务名末尾的**属性级别 + 套装结构**括号后缀，如 ``（小毕业 43311）``。
+#:
+#: ## 用户 2026-10-29
+#:
+#: > 每个任务里，每个角色、声骸属性级别只能有1条，
+#: > 同一个角色，同一个声骸属性级别再保存时就直接提示，并保存不了
+#:
+#: > 任务再增加一个是否成套声骸，如果是再让用户选择是43311,还是44111
+#:
+#: 要做"同一个角色 + 同一级别不能重复"，就得能从**已存的流程**里
+#: 反推出它属于哪个级别。``TaskFlow`` 只有 name/steps/id/updated_at，
+#: 没有单独的"级别/套装"字段 —— 所以把这些写进**名字**：
+#:
+#:     绯雪-声骸自动强化（小毕业）
+#:     绯雪-声骸自动强化（小毕业 43311）
+#:     绯雪-声骸自动强化（大毕业 44111）
+#:
+#: 好处：用户一眼能看出这条任务是什么级别、什么套装结构。
+#:
+#: ⚠ 套装结构是**可选**的（"不成套"时不写）—— 现有老流程名不带它，
+#: 解析时不写就当不成套。
+_FLOW_LEVEL_PATTERN = re.compile(
+    r"\s*[（(]\s*(小毕业|大毕业|完美毕业)"
+    r"(?:\s+(43311|44111))?\s*[）)]\s*$")
+
 #: 老流程名可能**不带连字符** —— 存量数据里就是「绯雪声骸自动强化」这种
 #: （用户手打的名字，见 ``data/tasks.json``）。读取时要认出来，否则打开「修改」
 #: 会把角色下拉留空、还弹一句"这不是一个角色"的警告。
@@ -189,6 +216,56 @@ _FLOW_LEGACY_SUFFIXES = (
     "声骸自动强化",
     "声骸强化",
 )
+
+
+def flow_level_of(name: str) -> str:
+    """从流程名里取出**属性级别**；没有就返回空串。
+
+    >>> flow_level_of("绯雪-声骸自动强化（小毕业）")
+    '小毕业'
+    >>> flow_level_of("绯雪-声骸自动强化（小毕业 43311）")
+    '小毕业'
+    >>> flow_level_of("绯雪-声骸自动强化")
+    ''
+    """
+    text = str(name or "").strip()
+    match = _FLOW_LEVEL_PATTERN.search(text)
+    return match.group(1) if match else ""
+
+
+def flow_set_plan_of(name: str) -> str:
+    """从流程名里取出**套装结构**（``43311`` / ``44111``）；没有就空串。
+
+    >>> flow_set_plan_of("绯雪-声骸自动强化（小毕业 43311）")
+    '43311'
+    >>> flow_set_plan_of("绯雪-声骸自动强化（小毕业）")
+    ''
+    """
+    text = str(name or "").strip()
+    match = _FLOW_LEVEL_PATTERN.search(text)
+    return (match.group(2) or "") if match else ""
+
+
+def flow_name_with_level(character: str, level: str,
+                         set_plan: str = "") -> str:
+    """角色 + 级别（+ 套装结构）→ 完整流程名。
+
+    >>> flow_name_with_level("绯雪", "小毕业")
+    '绯雪-声骸自动强化（小毕业）'
+    >>> flow_name_with_level("绯雪", "小毕业", "43311")
+    '绯雪-声骸自动强化（小毕业 43311）'
+
+    级别为空时等价于 :func:`flow_name_for`（老流程不带级别）。
+    """
+    base = flow_name_for(character)
+    lv = str(level or "").strip()
+    if not base or not lv:
+        return base
+    #: 先剥掉可能已经带的级别，避免「（小毕业）（大毕业）」
+    stripped = _FLOW_LEVEL_PATTERN.sub("", base).strip()
+    plan = str(set_plan or "").strip()
+    tail = f"{lv} {plan}" if plan else lv
+    return f"{stripped}（{tail}）"
 
 
 def flow_name_for(character: str) -> str:
@@ -247,8 +324,15 @@ def live_flow_avatar(flow) -> str:
 
 
 def _strip_flow_suffix(text: str) -> str:
-    """去掉流程名末尾的自动后缀（新式优先，再试老式）。没命中就原样返回。"""
-    text = str(text or "").strip()
+    """去掉流程名末尾的自动后缀（新式优先，再试老式）。没命中就原样返回。
+
+    ★ 2026-10-29：**先剥「（小毕业）」这种级别括号**，再剥后面的
+    「-声骸自动强化」—— 因为名字是 ``绯雪-声骸自动强化（小毕业）``，
+    级别在**最末尾**。不先剥的话，反推出来的"角色"会是
+    ``绯雪-声骸自动强化（小毕业）`` 去掉后缀后的
+    ``绯雪（小毕业）`` → 查数据集查不到 → 头像和下拉都回填不了。
+    """
+    text = _FLOW_LEVEL_PATTERN.sub("", str(text or "").strip()).strip()
     if not text:
         return ""
     if text.endswith(FLOW_NAME_SUFFIX):

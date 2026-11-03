@@ -22,15 +22,12 @@ sys.path.insert(0, str(ROOT))
 #: 代码（原包名 src，改成 okww 才不会和 MyTools 的 src 撞名）。
 #: 见 src/tools/game/echo_enhance/okww_task.py（ok-ww 流程 + MyTools 判定条件）。
 OWN_TASKS = {
+    # 4C 刷声骸：ok-ww 的 FarmEchoTask 流程 + 本工具「拾取角标计数」钩子。
+    # ⚠ 2026-10-25 回退到 HEAD 后又变回子类了 ——
+    #   **不要**改成 "okww.task.FarmEchoTask"（那会丢掉拾取计数）。
+    "src.tools.game.auto_combat.okww_farm",    # 4C 刷声骸（ok-ww 流程 + 拾取计数）
     "src.tools.game.echo_enhance.okww_task",   # 声骸强化（ok-ww 流程 + 本工具判定）
     "src.tools.game.echo_change.okww_task",    # 声骸调频（ok-ww 流程 + 本工具容错）
-    "src.tools.game.auto_combat.okww_farm",    # 4C 刷声骸（ok-ww 流程 + 拾取角标计数）
-    # 查缺补漏（视觉伺服）：**整条流程都是 MyTools 的**，不基于任何 ok-ww 任务。
-    # 它只是个宿主外壳 —— 判断全在 src/core/explore_gap（已离线验证）。
-    # ⚠ 这个模块的类名走 PEP 562 ``__getattr__`` 懒构造（平时 import 不碰
-    #   ok-ww，ok-script ``getattr`` 时才建类），所以它必须留在
-    #   ``onetime_tasks`` 里按名字引用 —— 不能改成 ``okww.*``。
-    "src.tools.game.explore_gap.okww_task",   # 查缺补漏（MyTools 自研）
     # 扫荡残像聚落：ok-ww 的 NightmareNestTask 流程 + 本工具的勾选清单。
     # ⚠ 类名同样走 PEP 562 ``__getattr__`` 懒构造 —— 必须留在
     #   ``onetime_tasks`` 里按名字引用，不能改成 ``okww.*``。

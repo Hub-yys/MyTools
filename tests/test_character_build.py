@@ -527,48 +527,6 @@ class TestQueryUserId(unittest.TestCase):
             kuro_account._post = orig
 
 
-class TestFetchExplore(unittest.TestCase):
-    """★★ ``fetch_explore`` —— 「查缺补漏」的数据源。
-
-    :data:`API_EXPLORE` 早就定义在模块里，但**全仓从来没有调用过**。
-    这里钉住它的接口路径与请求体 —— 这两个是实测出来的，
-    改错了接口就通不了（声匣/奇藏那些分项会一条都拿不到）。
-    """
-
-    def test_hits_the_explore_endpoint(self):
-        calls = {}
-
-        def fake_post(path, body, token="", dev_code="", **kw):
-            calls.update(path=path, body=body)
-            return {"code": 200, "data": {"exploreList": []}}
-
-        orig = kuro_account._post
-        kuro_account._post = fake_post
-        try:
-            kuro_account.fetch_explore("DT", "113152489", "srv")
-        finally:
-            kuro_account._post = orig
-
-        self.assertEqual(calls["path"], "/aki/roleBox/akiBox/exploreIndex")
-        self.assertEqual(calls["body"]["roleId"], "113152489")
-        self.assertEqual(calls["body"]["serverId"], "srv")
-        self.assertEqual(calls["body"]["gameId"], kuro_account.GAME_ID_WUWA)
-
-    def test_defined_but_was_never_called(self):
-        """接口常量必须在（它一度只是个没人用的定义）。"""
-        self.assertTrue(kuro_account.API_EXPLORE.startswith("/aki/"))
-
-    def test_empty_data_raises_role_not_found(self):
-        """``200 + data:null`` 是"查不到"，不是"查到了空的"。"""
-        orig = kuro_account._post
-        kuro_account._post = lambda *a, **kw: {"code": 200, "data": None}
-        try:
-            with self.assertRaises(kuro_account.RoleNotFound):
-                kuro_account.fetch_explore("DT", "113152489", "srv")
-        finally:
-            kuro_account._post = orig
-
-
 class TestEchoIssues(unittest.TestCase):
     """★★ 声骸"待优化"判定 —— 第一版只报**客观事实**。
 
@@ -4370,6 +4328,142 @@ class TestDoesNotTouchWikiModule(unittest.TestCase):
         text = (ROOT / "src" / "core" / "wuwa_update.py").read_text(
             encoding="utf-8")
         self.assertNotIn("kuro_account", text)
+
+
+class TestIconBackfill(unittest.TestCase):
+    """★★ 启动时**后台补缺图** —— 用户 2026-10-14 报的「共鸣链空白」。
+
+    ## 用户看到什么
+
+    换账号后：**技能 7 个图标都在，共鸣链整条空白**，
+    技能说明也点不出内容。他以为是数据丢了。
+
+    ## 真实原因（量出来的）
+
+    数据**完全正常**（``skillList`` 7 条、``chainList`` 6 条、
+    说明文字 466/146 字符、图标 URL 都在）。
+    问题在**时序**：
+
+    ::
+
+        _FetchThread：先落盘数据 → 界面 partial 渲染 → 最后才下图标
+        下次启动：  load_cache() → _render()   ← **完全不下图标**
+
+    所以图标没下全时，那条空白会**永久留着**。
+    而共鸣链块**只有图标**（技能块还有名字+等级兜着），
+    所以症状在共鸣链上最明显 —— 这解释了"为什么只有它空"。
+
+    ## 这条测什么
+
+    ``IconBackfill`` 能把缺的图标补回来，并且**补完要发 done 信号**
+    （不发信号 = 不重画 = 下了也看不见，这正是原来漏的一步）。
+    """
+
+    def test_backfill_class_exists_and_has_done_signal(self):
+        """★ 必须有 ``done`` 信号 —— 补完不通知界面等于白补。"""
+        src = TOOL.read_text(encoding="utf-8")
+        self.assertIn("class IconBackfill", src)
+        #: done 信号要在类体里声明
+        tree = ast.parse(src)
+        found = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "IconBackfill":
+                for stmt in node.body:
+                    if isinstance(stmt, ast.Assign):
+                        targets = [t.id for t in stmt.targets
+                                   if isinstance(t, ast.Name)]
+                        if "done" in targets and isinstance(stmt.value, ast.Call):
+                            func = stmt.value.func
+                            if getattr(func, "id", "") == "Signal":
+                                found = True
+        self.assertTrue(found, "IconBackfill 里没有 done = Signal() —— "
+                               "补完图不通知界面，空白不会消失")
+
+    def test_init_starts_backfill_and_rerenders(self):
+        """★★ 面板 ``__init__`` 必须**真的调用**补图，并且补完**重画**。
+
+        ⚠ 这两步缺一不可：
+        * 不启动 → 缺的图永远不补
+        * 补完不重画 → 补了也看不见（**原来就漏在这一步**）
+
+        ⚠⚠ 这条测试第一版是**假的**：只用 ``assertIn`` 查源码里有没有
+        ``_start_icon_backfill`` 这个字符串 —— 那把 ``__init__`` 里
+        那一行删掉，字符串还在方法定义处，**测试照样绿**。
+        （注入 bug 验证时发现的。这就是"必须证明测试会红"的价值。）
+
+        现在改成查 **``__init__`` 的函数体里有没有调用它**。
+        """
+        src = TOOL.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+
+        init_calls = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "CharacterBuildPanel":
+                for sub in ast.walk(node):
+                    if (isinstance(sub, ast.FunctionDef)
+                            and sub.name == "__init__"):
+                        for call in ast.walk(sub):
+                            if isinstance(call, ast.Call):
+                                f = call.func
+                                name = (f.attr if isinstance(f, ast.Attribute)
+                                        else getattr(f, "id", ""))
+                                if name:
+                                    init_calls.add(name)
+
+        self.assertIn("_start_icon_backfill", init_calls,
+                      "CharacterBuildPanel.__init__ 里没有调用 _start_icon_backfill "
+                      "—— 缺的图标永远不会补（用户报的空白就永久留着）")
+
+        #: 补完的回调里必须调 _render
+        rerender = False
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.FunctionDef)
+                    and node.name == "_on_icons_backfilled"):
+                for sub in ast.walk(node):
+                    if (isinstance(sub, ast.Call)
+                            and isinstance(sub.func, ast.Attribute)
+                            and sub.func.attr == "_render"):
+                        rerender = True
+        self.assertTrue(rerender,
+                        "_on_icons_backfilled 里没有调 _render —— "
+                        "图标补下来了界面还是空白（用户报的就是这个）")
+
+    def test_backfill_does_not_gate_on_visibility(self):
+        """★ 补图回调**不能**用 ``isVisible()`` 挡掉重画。
+
+        ⚠ 我第一版就是加了 ``if not self.isVisible(): return`` ——
+        想"没显示就不用重画"，结果漏掉最常见的场景：
+        用户切到别的页签 → 补图完成 → 跳过重画 → **切回来还是空白**。
+        """
+        src = TOOL.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.FunctionDef)
+                    and node.name == "_on_icons_backfilled"):
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.If):
+                        seg = ast.unparse(sub.test)
+                        self.assertNotIn("isVisible", seg,
+                                         "_on_icons_backfilled 里用 isVisible() "
+                                         "挡了重画 —— 切页签回来的场景会漏掉")
+
+    def test_backfill_uses_icon_cache_only(self):
+        """★ 补图**只下图片**，不去碰网络接口。
+
+        补图是"把已经拿到的 URL 下载下来"，
+        不该再走一遍角色/推荐标准那些接口（用户没点「获取数据」）。
+        """
+        src = TOOL.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "IconBackfill":
+                body = ast.unparse(node)
+                self.assertIn("ensure_many", body)
+                for banned in ("fetch_recommend", "fetch_role_detail",
+                               "requestDataToken", "request_data_token"):
+                    self.assertNotIn(banned, body,
+                                     f"IconBackfill 里出现了 {banned} —— "
+                                     f"补图不该重拉接口")
 
 
 if __name__ == "__main__":

@@ -96,9 +96,11 @@ class TestNotifyNeverBlocks(unittest.TestCase):
 
 
 class TestMainWindowCallbackGoesThroughSignal(unittest.TestCase):
-    """界面侧：回调必须是 ``emit``，不能直接调 ``go_background_to_game``。
+    """界面侧：回调必须**只 emit 信号**，不能直接碰 Qt。
 
-    直接调 = 从工作线程碰 Qt（``hide()`` / ``QTimer`` / ``processEvents()``）。
+    ⚠ 2026-10-25：``go_background_to_game`` 已按用户要求删除
+    （「是不是我让你加的启动后要最小化的问题？你先把这个去掉」），
+    所以这里改成断言「那些方法不存在」。
     """
 
     SRC = ROOT / "src/gui/main_window.py"
@@ -106,17 +108,65 @@ class TestMainWindowCallbackGoesThroughSignal(unittest.TestCase):
     def test_listener_emits_signal_not_direct_call(self):
         src = self.SRC.read_text(encoding="utf-8")
         self.assertIn("self.task_started.emit()", src)
-        # 被禁的写法：回调里直接调那个碰 Qt 的函数
+        # 被禁的写法：回调里直接调碰 Qt 的函数
         self.assertNotIn("lambda _key: self.go_background_to_game()", src)
 
-    def test_signal_connected_to_slot(self):
-        """信号要真的连到槽 —— 否则界面永远不缩到后台了（功能静默丢失）。"""
+    def test_signal_not_connected_to_minimize(self):
+        """★ 信号**不许**再连到最小化 —— 用户要求撤掉启动即最小化。"""
         src = self.SRC.read_text(encoding="utf-8")
-        self.assertIn("self.task_started.connect(self.go_background_to_game)", src)
+        self.assertNotIn(
+            "self.task_started.connect(self.go_background_to_game)", src,
+            "task_started 又连回 go_background_to_game 了 —— "
+            "用户明确要求去掉启动后自动最小化")
 
     def test_signal_is_declared(self):
         src = self.SRC.read_text(encoding="utf-8")
         self.assertIn("task_started = Signal()", src)
+
+
+class TestNoAutoMinimizeAnywhere(unittest.TestCase):
+    """★★ 启动后自动最小化/抢前台那整套必须**彻底不存在**。
+
+    ## 用户 2026-10-25
+
+    > 还是不行，我不知道你在干什么，是不是我让你加的启动后要最下化的问题？
+    > 你先把这个去掉
+
+    ## 我当初怎么理解错的
+
+    用户 2026-10-24 说的是「不再最小化到**托盘栏**，而是直接最小化」——
+    那是说**关闭/托盘**的行为从 `hide()`（藏到托盘）改成
+    `showMinimized()`（缩到任务栏）。
+
+    我却扩大成「点启动立刻最小化 + 抢游戏前台」，还另起
+    `_go_background_now()` 绕过信号时序。这条链子持续抢窗口/焦点，
+    很可能是 4C 进游戏后不对的诱因之一。
+
+    ## 守什么
+
+    这两个方法名**不许**在任何地方再出现（定义或调用）：
+    `go_background_to_game` / `_focus_game` / `_go_background_now`。
+    """
+
+    SRC = ROOT / "src/gui/main_window.py"
+
+    def test_methods_removed(self):
+        import ast
+
+        tree = ast.parse(self.SRC.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.ClassDef)
+                    and node.name == "MainWindow"):
+                continue
+            names = {m.name for m in node.body
+                     if isinstance(m, ast.FunctionDef)}
+            for banned in ("go_background_to_game", "_focus_game"):
+                self.assertNotIn(
+                    banned, names,
+                    f"MainWindow.{banned} 还在 —— 用户要求撤掉"
+                    f"「启动后自动最小化/抢前台」")
+            return
+        self.fail("找不到 MainWindow")
 
 
 if __name__ == "__main__":

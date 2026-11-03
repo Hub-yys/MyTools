@@ -53,6 +53,24 @@ class FlowRunResult:
     ok: bool = True
     #: 失败原因 / 跳过原因（``ok`` 为 False 时有意义）
     note: str = ""
+    #: ★ 2026-10-30 用户：
+    #:
+    #: > 任务里也是一样（要展示强化好的声骸图片）
+    #:
+    #: 这一步**符合条件的声骸清单**，每项形如::
+    #:
+    #:     {"index": 1, "image": "17-37-23.049_2_original.png",
+    #:      "stats": ["暴击伤害 21.0", "暴击 10.5"], "perfect": False}
+    #:
+    #: 来自任务实例的 ``info["符合条件的声骸"]``（见
+    #: ``echo_enhance/okww_task.py`` 的 ``_record_qualifying``）。
+    #:
+    #: ⚠ 只存**截图文件名**，不存绝对路径 —— 截图目录在不同机器/用户下
+    #: 不一样，存路径换台机器就打不开了（工具页历史卡片也是这个做法）。
+    #:
+    #: ⚠ 默认空列表而不是 None：``lines()`` / 展示代码到处都要遍历它，
+    #: 少一层判空。
+    qualifying: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -62,11 +80,14 @@ class FlowRunResult:
             "checked": int(self.checked),
             "ok": bool(self.ok),
             "note": self.note,
+            "qualifying": [dict(it) for it in self.qualifying
+                           if isinstance(it, dict)],
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "FlowRunResult":
         data = data if isinstance(data, dict) else {}
+        raw_qual = data.get("qualifying")
         return cls(
             name=str(data.get("name") or ""),
             locked=_int(data.get("locked")),
@@ -74,6 +95,9 @@ class FlowRunResult:
             checked=_int(data.get("checked")),
             ok=bool(data.get("ok", True)),
             note=str(data.get("note") or ""),
+            qualifying=[dict(it) for it in (raw_qual or [])
+                        if isinstance(it, dict)]
+            if isinstance(raw_qual, list) else [],
         )
 
 

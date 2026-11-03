@@ -529,6 +529,71 @@ def load_cache() -> dict:
         return {}
 
 
+#: ★ 后台补图线程（模块级持有，避免被 GC —— QThread 被回收会连带崩）
+_backfill: "IconBackfill | None" = None
+
+
+class IconBackfill(QThread):
+    """★★ 启动时**补下缺的图标**（用户 2026-10-14 报「共鸣链空白」）。
+
+    ## 为什么需要它
+
+    用户换账号后看到「共鸣链」整条空白、技能说明也点不出内容。
+    根因不在数据（``skillList`` 7 条、``chainList`` 6 条、说明都在），
+    而在**时序**：``_FetchThread`` 是
+
+    ::
+
+        ① 拉详情 → partial.emit() → 界面 _render()   ← 图标**还没下**
+        ② save_cache()
+        ③ 拉官方推荐标准（几十秒）
+        ④ ensure_many() 下图标
+        ⑤ succeeded.emit() → 界面再 _render()
+
+    正常走完是好的。但用户若在第 ④ 步之前就切到那个角色（或第 ④ 步
+    被跳过 / 失败），他看到的就是空白 —— 而且**下次启动更糟**：
+
+    ::
+
+        __init__ → load_cache() → _render()   ← 从缓存画，**完全不下图标**
+
+    缓存的图标没补齐时，那条空白就**永久留着**了。
+
+    ## 这个类做的事
+
+    启动后（界面已经画完）在后台把 ``collect_urls`` 里**缺的**图标补下来；
+    补完了发 :attr:`done` → 界面**重画一次**，空白就消失了。
+
+    ⚠ **只补不重拉**：不碰网络接口，只下载确实缺的图片。
+    ⚠ 补完必须**重画**，否则下了也看不到（这正是原来漏掉的一步）。
+    """
+
+    done = Signal()
+
+    def __init__(self, data: dict, parent=None):
+        super().__init__(parent)
+        self._data = data or {}
+
+    def run(self) -> None:                     # noqa: D102
+        try:
+            urls: list[str] = []
+            for d in (self._data.get("details") or {}).values():
+                if isinstance(d, dict):
+                    urls.extend(icon_cache.collect_urls(d))
+            for r in (self._data.get("roleList") or []):
+                if isinstance(r, dict) and r.get("roleIconUrl"):
+                    urls.append(r["roleIconUrl"])
+            if not urls:
+                return
+            #: ``ensure_many`` 自己会跳过已存在的 —— 这里只关心"补了几个"
+            ok, _bad = icon_cache.ensure_many(urls)
+            if ok:
+                logger.info("后台补齐图标 %d 个", ok)
+                self.done.emit()
+        except Exception as exc:               # noqa: BLE001 - 少图不该崩
+            logger.debug("后台补图跳过：%s", exc)
+
+
 def clear_cache() -> None:
     try:
         cache_file().unlink()
@@ -560,9 +625,34 @@ class CharacterBuildPanel(ScrollArea):
         self._auto_fetched = False
         self._build()
         self._render(self._data)               # 有缓存就先显示
+        # ★★ 从缓存画完之后，**后台补下缺的图标**，补完重画一次。
+        #   没有这一步的话：图标当初没下全 → 这次仍然空白 → **永久空白**
+        #   （用户 2026-10-14 报的「共鸣链空白」就是这个状态）。
+        self._start_icon_backfill()
         # ★ 已登录但**没有缓存**（比如上次没拉完）→ 自动拉一次
         #   （用户："我上次已经登陆，为什么不显示数据"）
         QTimer.singleShot(300, self._maybe_auto_fetch)
+
+    def _start_icon_backfill(self) -> None:
+        """后台补下这次显示要用、但本地没有的图标。"""
+        global _backfill
+        if not self._data.get("details"):
+            return
+        #: ⚠ 持有到模块级变量 —— QThread 被 GC 掉会让程序崩
+        _backfill = IconBackfill(self._data, self)
+        _backfill.done.connect(self._on_icons_backfilled)
+        _backfill.start()
+
+    def _on_icons_backfilled(self) -> None:
+        """图标补齐了 → **重画一次**（下了不重画等于没下）。
+
+        ⚠ 这里**不判断 ``isVisible()``** —— 第一版加了那个判断，
+        想"没显示就不用重画"，但那正好漏掉最常见的场景：
+        用户切到别的页签 → 补图完成 → 跳过重画 →
+        回到本页时**图标还是空的**（因为不会再触发一次渲染）。
+        重画一次的代价很小（几十个控件），换来的是"一定正确"。
+        """
+        self._render(self._data)
 
     def _maybe_auto_fetch(self) -> None:
         """已登录 + 没数据 → 自动拉一次（不用用户再点）。"""
@@ -821,7 +911,8 @@ class CharacterBuildPanel(ScrollArea):
               position=InfoBarPosition.TOP, duration=5000, parent=self)
 
     def _refresh_login_state(self) -> None:
-        if self._account.logged_in:
+        logged = self._account.logged_in
+        if logged:
             tail = self._account.mobile_tail
             self._login_status.setText(
                 f"已登录（手机号 ****{tail}）" if tail else "已登录")
@@ -835,9 +926,43 @@ class CharacterBuildPanel(ScrollArea):
         else:
             self._login_status.setText("未登录")
             self._mobile_edit.setPlaceholderText("手机号")
-        self._refresh_button.setEnabled(self._account.logged_in)
+        self._refresh_button.setEnabled(logged)
+        self._apply_inputs_editable(not logged)
+
+    def _apply_inputs_editable(self, editable: bool) -> None:
+        """已登录 → 三个输入框置灰不可改；退出登录 → 恢复可编辑。
+
+        ## 用户 2026-10-28
+
+        > 这里如果已经登陆的话，应该置灰不可更改，只有退出登陆才可以
+
+        ## 为什么该这样
+
+        登录后账号由**令牌**决定（``kuro_account.save_account`` 落盘），
+        输入框里再改手机号/验证码**不会生效**：
+
+        * 手机号我们只存后 4 位（隐私）→ 框里本来就是空的
+        * 验证码是一次性的 → 登录完就没用了
+        * 特征码改了虽然会传给 ``FetchThread``，但用户在"已登录"状态下
+          改它，多半是以为能换号 —— 而换号必须走「退出登录」
+
+        留着能编辑 = 让人以为改了有用，实际点了「刷新数据」还是拉老号。
+        """
+        for edit in (self._feature_edit, self._mobile_edit, self._code_edit):
+            edit.setEnabled(editable)
+        #: 登录按钮在已登录时也没有意义（点了只会报"手机号要填11位"）
+        self._login_button.setEnabled(editable)
+        #: 置灰时给个说明，不然用户不知道为什么点不动
+        tip = "" if editable else "已登录 —— 想换号请先点「退出登录」"
+        for edit in (self._feature_edit, self._mobile_edit, self._code_edit):
+            edit.setToolTip(tip)
+        self._login_button.setToolTip(tip)
 
     def _busy(self, busy: bool) -> None:
+        #: ⚠ ``_refresh_login_state()`` 里会按登录状态再决定输入框能不能改，
+        #: 所以这里 busy=False 时**不能**无条件启用登录按钮 ——
+        #: 否则"已登录 + 拉完数据"会把刚置灰的按钮又点亮。
+        #: 先设 busy 态，再调 _refresh_login_state 让它统一裁决。
         for b in (self._login_button, self._refresh_button):
             b.setEnabled(not busy)
         if not busy:
