@@ -135,23 +135,42 @@
 /* ══════════════════════════════════════════════════════════════════════════
    ② 侧栏专用玻璃
 
-   DSH 实测侧栏色 ``#0a0913``（几乎纯黑，比内容区更深）——
-   侧栏是「骨架」不是「内容」，压得更实，内容区、玻璃才显得透。
+   ## 2026-11-04（用户圈图）：「左边也要玻璃透明的效果」
+
+   原来这里是**近乎不透明**的 ``rgba(10, 9, 19, 0.92)``，理由是
+   「侧栏是骨架不是内容，压得更实，内容区才显得透」——
+   观感上确实沉，但整条侧栏变成一块死黑板，壁纸在它背后被硬生生切断，
+   和右边的玻璃卡完全不搭。
+
+   现在改成**真玻璃**，配方和 ``.glass-titlebar`` 同源（同一个
+   ``--we-readability-floor``，只把系数调高一点点 —— 侧栏要压导航文字，
+   比标题栏更需要对比度）：
+
+     * 底色 = 深藏青 @ readability-floor × 0.78（约 46% 不透明）
+     * backdrop-filter 模糊背后的壁纸 —— 侧栏背后就是壁纸的左边，
+       全屏 ``object-fit: cover`` 铺满，**模糊得出来**
+       （旧注释说「模糊了也看不出来」是错的：铺满的壁纸在每一列都有内容）
+     * 顶部白高光 + 右侧一像素发丝线，保持「有厚度」的观感
    ══════════════════════════════════════════════════════════════════════════ */
 .glass-sidebar {
-  /* 侧栏不用 backdrop-filter（它背后是壁纸边缘，模糊了也看不出来），
-     用接近实色 + 极低透明度 —— 性能更好，观感更"沉"。 */
   background-color: var(--sidebar-bg);
   background-image: linear-gradient(
     180deg,
-    rgba(255, 255, 255, 0.045) 0%,
-    rgba(255, 255, 255, 0.012) 22%,
+    rgba(255, 255, 255, 0.075) 0%,
+    rgba(255, 255, 255, 0.022) 22%,
     rgba(255, 255, 255, 0.00) 60%
   );
+  /* ★ 和标题栏同一套 —— saturate 让壁纸的颜色渗上来，否则玻璃发灰 */
+  backdrop-filter: blur(calc(var(--we-blur) * 0.9))
+                   saturate(var(--we-saturate))
+                   brightness(var(--we-glass-brightness));
+  -webkit-backdrop-filter: blur(calc(var(--we-blur) * 0.9))
+                           saturate(var(--we-saturate))
+                           brightness(var(--we-glass-brightness));
   border-right: 1px solid var(--sidebar-border);
   box-shadow:
     inset -1px 0 0 rgba(255, 255, 255, 0.04),
-    2px 0 24px rgba(0, 0, 0, 0.24);
+    2px 0 24px rgba(0, 0, 0, 0.18);
 }
 
 
