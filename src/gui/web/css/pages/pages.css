@@ -571,60 +571,32 @@
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   任务完成后自动关机（用户 2026-11-04「任务完成后自动关机」）
-   ══════════════════════════════════════════════════════════════════════════ */
+   任务页的浮动提示（2026-11-04 用户圈图「干掉」运行日志后的替代品）
+   ══════════════════════════════════════════════════════════════════════════
+   * 用户要删的是**那块日志面板**，不是「点了没反应」——
+     ``appendLog`` 那些「✗ 无法运行：游戏没开」的反馈必须还看得见，
+     所以改成右上角浮出、几秒自己消失。
+   * 复用 ``.toast-float``（config.js 的 toast 同一套），但它自带
+     ``position: fixed`` —— 多条会叠在同一个坐标上，所以放进 host 后
+     改回 ``static``，由 host 的 flex 列排开。 */
 
-.task-shutdown-card {
-  /*: 和报告卡同一套底子，只多一点内部间距 */
+.task-toast-host {
+  position: fixed;
+  top: 56px;
+  right: 18px;
+  z-index: 9500;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 8px;
+  align-items: flex-end;
+  pointer-events: none;
 }
 
-.task-shutdown-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-/*: 分钟框窄一点 —— 最多四位数，给太宽反而看不出是数字 */
-.task-shutdown-minutes {
-  width: 56px;
-}
-
-.task-shutdown-unit {
-  font-size: 12px;
-  color: var(--dim);
-}
-
-.task-shutdown-hint {
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--faint);
-}
-
-/*: 倒计时条：默认 ``.hidden`` 藏起来，倒计时开始才显示 */
-.task-shutdown-countdown {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 9px 12px;
-  border-radius: var(--radius-sm);
-  background: rgba(239, 68, 68, 0.10);
-  border: 1px solid rgba(239, 68, 68, 0.28);
-}
-
-.task-shutdown-countdown-text {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: #fca5a5;
-}
-
-/*: 「取消关机」靠右，别和倒计时文本挤在一起 */
-.task-shutdown-countdown .btn {
-  margin-left: auto;
+.task-toast {
+  /*: 位置交给 host 的 flex —— 自己 fixed 的话多条会糊成一张 */
+  position: static;
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

@@ -336,9 +336,13 @@ def main() -> int:
         # —— 顶部的提示条和「运行面板」大卡被删了，运行状态改在**每一行**的
         # ``.task-status`` 里（对应 main 的 ``TaskRowCard.status_label``）。
         #
+        # ⚠ 2026-11-04 又改：用户第三次圈图，把「运行日志」面板和
+        # 「完成后自动关机」整块都「干掉」了，刷新按钮也删了、新增按钮
+        # 挪到标题旁边。所以 ``#task-log`` 相关的断言（原 T3/T4/T4b/T5）
+        # 全部作废，改成 T1c 的**反向**断言 —— 谁把这两块加回来，这里会红。
+        #
         # 所以 T1 不能再找 ``#task-progress-bar`` / ``#task-stop`` / ``#task-run-state``
         # （这三个 id 已随面板一起消失），改成断言新的结构：
-        #   * 日志窗还在（``#task-log`` —— T3/T4/T5 还要用）
         #   * 行卡有新头像位（``.task-avatar``）
         #   * 行卡有状态行（``.task-status``）
         #   * 行卡**只有**运行/停止/删除三个按钮（2026-11-04 用户圈图：
@@ -348,7 +352,6 @@ def main() -> int:
         #   * 页头有「＋ 新增任务流程」（main 的 ``add_button``）
         layout = bundle(
             "JSON.stringify({"
-            "logBox: !!document.querySelector('#task-log'),"
             "avatars: document.querySelectorAll('#page-tasks .task-avatar').length,"
             "status: document.querySelectorAll('#page-tasks .task-status').length,"
             "runBtns: document.querySelectorAll("
@@ -373,7 +376,6 @@ def main() -> int:
         )
         ok = (
             isinstance(layout, dict)
-            and layout.get("logBox")
             and (layout.get("avatars") or 0) >= 1
             and (layout.get("status") or 0) >= 1
             and (layout.get("runBtns") or 0) >= 1
@@ -394,6 +396,65 @@ def main() -> int:
             and (layout.get("notice") or 0) == 0
         )
         check("T1b", gone, "顶部提示条 / 运行面板已删除")
+
+        #: ── ★ 2026-11-04 用户第三次圈图的三条硬要求（反向 + 顺序）──
+        #:
+        #: ① 「运行日志」面板 → 删了（``#task-log`` / ``#task-autoscroll``
+        #:    都必须**不存在**）
+        #: ② 「完成后自动关机」整块 → 删了（``.task-shutdown`` 必须**不存在**）
+        #: ③ 「刷新」按钮 → 删了；「＋ 新增任务流程」挪到标题旁边
+        #: ④ 行卡按钮顺序：运行 → 停止 → 删除（破坏性操作放最右）
+        #:
+        #: 这些都是「用户说干掉」的东西，断言必须写**不存在**——
+        #: 写成 ``>=1`` 等于默认它还在，下次谁加回来脚本照样绿。
+        chrome = bundle(
+            "JSON.stringify((function(){"
+            #: 页头：新增按钮是不是在标题行里
+            "var titleRow = document.querySelector("
+            "  '#page-tasks .page-title-row');"
+            "var addInTitle = !!(titleRow && titleRow.querySelector("
+            "  '[data-action=\"add-flow\"]'));"
+            #: 刷新按钮（按文案找，data-action 已随之删掉）
+            "var refreshBtns = Array.from(document.querySelectorAll("
+            "  '#page-tasks .page-head button')).filter(function(b){"
+            "  return (b.textContent || '').trim() === '刷新';}).length;"
+            #: 被删的两块
+            "var logBox = !!document.querySelector('#task-log');"
+            "var autoScroll = !!document.querySelector('#task-autoscroll');"
+            "var shutdownBlock = document.querySelectorAll("
+            "  '#page-tasks .task-shutdown').length;"
+            #: 行卡按钮顺序 —— 取第一条行卡的三个按钮
+            "var row = document.querySelector('#page-tasks .flow-card');"
+            "var order = row ? Array.from("
+            "  row.querySelectorAll('.task-actions [data-action]')"
+            ").map(function(b){return b.dataset.action;}) : [];"
+            "return {"
+            "  addInTitle: addInTitle,"
+            "  refreshBtns: refreshBtns,"
+            "  logBox: logBox,"
+            "  autoScroll: autoScroll,"
+            "  shutdownBlock: shutdownBlock,"
+            "  order: order"
+            "};"
+            "})())",
+            "tasks_chrome",
+        )
+        chrome_ok = (
+            isinstance(chrome, dict)
+            and chrome.get("addInTitle") is True
+            and (chrome.get("refreshBtns") or 0) == 0
+            and not chrome.get("logBox")
+            and not chrome.get("autoScroll")
+            and (chrome.get("shutdownBlock") or 0) == 0
+        )
+        check("T1c", chrome_ok, f"页头/已删块 = {chrome}")
+
+        order = (chrome or {}).get("order") if isinstance(chrome, dict) else []
+        check(
+            "T1d",
+            list(order or []) == ["run", "stop", "delete"],
+            f"行卡按钮顺序 = {order}（期望 run, stop, delete）",
+        )
 
         rows = int(layout.get("rows") or 0) if isinstance(layout, dict) else 0
         check("T2", rows >= 1, f"任务行 {rows} 条（期望 >=1）")
@@ -422,37 +483,25 @@ def main() -> int:
             check("T2c", True, "（getFlowList 未接入，跳过步骤链断言）")
             check("T2d", True, "（getFlowList 未接入，跳过箭头断言）")
 
-        # ── 日志窗是等宽字体 ──
-        font = js(
-            "(function(){var b=document.querySelector('#task-log');"
-            "if(!b) return '';"
-            "return getComputedStyle(b).fontFamily;})()"
-        )
-        DETAIL["log_font"] = font
-        ok_font = any(
-            key in str(font).lower()
-            for key in ("mono", "consolas", "cascadia", "courier")
-        )
-        check("T3", ok_font, f"日志字体 = {font}")
-
-        # ── ★ 日志不重复：跑一次任务，应该有增长但**没有重复行** ──
+        # ── ★ 日志面板删了，但「点了有反应」不能跟着没 ──
         #
-        # ⚠ 2026-11-02 改：以前断言「只 +1~3 行」，那是**模拟实现**的行为
-        # （只发 1 条 logLine）。真引擎接上后一次运行会发 ~9 条：
+        # ⚠ 2026-11-04 改：用户圈图「干掉」了整块「运行日志」面板，
+        # 所以原来量 ``#task-log`` 的 T3（等宽字体）/ T4（行数增长）/
+        # T4b（无重复行）/ T5（时间戳）全部作废。
         #
-        #   ▶ 开始运行 / ▶ 开始 / ▶ 流程开始 / 检查客户端 / ✓ 客户端已启动
-        #   / 判定配置 / ⚠ 没挂筛选配置 / ■ 已停止 / ■ 结束
-        #
-        # 卡死具体条数会把「引擎多说了几句」误判成回归。
-        # 真正要守的性质有两个：
-        #   ① 有增长（事件通道是通的）
+        # 但**反馈本身还在**：``appendLog(text, level)`` 这 30 多个调用点
+        # 一行没改，实现换成了右上角浮动提示（``#task-toast-host``）。
+        # 所以这里改成量那套 toast —— 守的性质和原来 T4b 一样：
+        #   ① 跑一次**真的会冒出提示**（事件通道 + 反馈链路是通的）
         #   ② **同一句话不出现两次**（app.js 和本页各写一次才会重复）
-        base_lines = js("document.querySelectorAll('#task-log .log-line').length")
+        base_toasts = js(
+            "document.querySelectorAll('#task-toast-host .task-toast').length"
+        )
         try:
-            base_lines = int(float(base_lines))
+            base_toasts = int(float(base_toasts))
         except (TypeError, ValueError):
-            base_lines = -1
-        DETAIL["log_before"] = base_lines
+            base_toasts = 0
+        DETAIL["toast_before"] = base_toasts
         QTimer.singleShot(120, trigger_run)
 
     def trigger_run() -> None:
@@ -463,28 +512,32 @@ def main() -> int:
     def check_log_once() -> None:
         detail = bundle(
             "JSON.stringify({"
-            "count: document.querySelectorAll('#task-log .log-line').length,"
-            #: 只看正文，时间戳每次都不同、不能参与去重
+            "count: document.querySelectorAll("
+            "  '#task-toast-host .task-toast').length,"
             "texts: Array.from(document.querySelectorAll("
-            "  '#task-log .log-text')).map(function(t){"
-            "  return t.textContent.trim();})"
+            "  '#task-toast-host .task-toast .notice-text')).map(function(t){"
+            "  return t.textContent.trim();}),"
+            #: 顺带确认日志面板真的没了（不在的话这条永远是 0 也没意义）
+            "logBox: !!document.querySelector('#task-log'),"
+            "host: !!document.querySelector('#task-toast-host')"
             "})",
-            "log_lines",
+            "toast_lines",
         )
-        lines = int(detail.get("count") or 0) if isinstance(detail, dict) else -1
+        lines = int(detail.get("count") or 0) if isinstance(detail, dict) else 0
         texts = detail.get("texts") if isinstance(detail, dict) else []
-        before = DETAIL.get("log_before") or 0
-        growth = lines - before if lines >= 0 else -99
-        DETAIL["log_after"] = lines
+        before = DETAIL.get("toast_before") or 0
+        growth = lines - before
+        DETAIL["toast_after"] = lines
 
-        #: ① 有增长 —— 上限放到 30（真引擎阶段说明多，但也不该刷屏）
-        check("T4", 1 <= growth <= 30,
-              f"运行一次日志 +{growth} 行（{before} → {lines}）")
+        #: ① 跑一次要冒出提示 —— 没反应就是死界面
+        check("T3", growth >= 1,
+              f"运行一次浮出提示 +{growth} 条（{before} → {lines}，"
+              f"host={detail.get('host') if isinstance(detail, dict) else '?'}）")
 
         #: ② ★ 无重复 —— 同一句正文只能出现一次
         #:
         #: 这是「app.js 与本页都写一遍」的唯一可靠指纹：
-        #: 两个写入点会让**每条**日志各出现两次，而正文完全一致。
+        #: 两个写入点会让**每条**提示各出现两次，而正文完全一致。
         seen = {}
         dupes = []
         for text in (texts or []):
@@ -494,20 +547,13 @@ def main() -> int:
             seen[key] = seen.get(key, 0) + 1
             if seen[key] == 2:
                 dupes.append(key[:40])
-        DETAIL["log_dupes"] = dupes
-        check("T4b", not dupes,
-              f"日志无重复行（重复项：{dupes[:3] if dupes else '无'}）")
+        DETAIL["toast_dupes"] = dupes
+        check("T4", not dupes,
+              f"提示无重复（重复项：{dupes[:3] if dupes else '无'}）")
 
-        # ── 有状态、有时间戳 ──
-        stamp = js(
-            "(function(){var l=document.querySelector('#task-log .log-line');"
-            "if(!l) return '';"
-            "var t=l.querySelector('.log-time');"
-            "return t ? t.textContent : 'NO-TIME';})()"
-        )
-        DETAIL["log_time"] = stamp
-        check("T5", bool(stamp) and stamp != "NO-TIME" and len(str(stamp)) >= 5,
-              f"日志带时间戳 = {stamp}")
+        #: ③ 日志面板必须真的不在了（否则上面的 toast 断言可能来自别处）
+        check("T5", not (detail.get("logBox") if isinstance(detail, dict) else True),
+              "运行日志面板已删除（#task-log 不存在）")
 
         # ── 运行状态：要么「运行中」，要么被前置检查**明确拒绝** ──
         #

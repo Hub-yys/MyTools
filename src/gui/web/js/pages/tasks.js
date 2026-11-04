@@ -11,13 +11,13 @@
 
    .. code:: text
 
-     任务流程                                       [＋ 新增任务流程]
+     任务流程  [＋ 新增任务流程]
      把工具和配置编成一条流程，按顺序自动跑。点「新增任务流程」开始编排。
 
      ┌──────────────────────────────────────────────────────────────┐
      │ (头像48) 秧秧·玄翎-声骸自动强化（小毕业 43311）                │
      │          开始 → 配置 → 配置 → 工具 → 结束                      │
-     │          空闲                              [删除][运行][停止]   │
+     │          空闲                              [运行][停止][删除]   │
      └──────────────────────────────────────────────────────────────┘
 
      运行报告
@@ -25,8 +25,6 @@
      └──────────────────────────────────────────────────────────────┘
      ┌─ 所有任务累计 ────────────────────────────────[清零]─────────┐
      └──────────────────────────────────────────────────────────────┘
-
-     运行日志（web 版独有，main 的日志在后台/消息里）
 
    **状态在每一行里**（main 的 ``status_label``），没有全局运行面板 ——
    因为同一时刻只允许跑一条流程，一个面板也表达不了"哪条在跑"。
@@ -43,6 +41,35 @@
 
    所以下面的对照表只剩「新增」，没有「修改 / 详情」了。
 
+   ## ★ 2026-11-04 用户第三次圈图（三张，本轮改动）
+
+   图 1 圈住整块「运行日志」批注「**干掉**」
+   → ``buildLogPanel`` 整块删掉，页面不再有日志窗。``app.js`` 的
+     ``App.appendLog`` 找 ``#task-log``，找不到就静默返回，不用改。
+
+     ⚠ 但**提示不能跟着删**：本页 ``appendLog`` 那 30 多个调用点装的是
+     「✗ 无法运行：游戏没开」「✗ 正在运行，先停止再删除」这类必须让人
+     看见的反馈，静默 return 就是死界面。所以 ``appendLog`` 名字保留、
+     实现换成右上角浮动提示（``#task-toast-host`` + ``.task-toast``，
+     4.5 秒后自己消失，``debug`` 级别不弹）。
+     **这是用户第二次要求删掉 web 版独有的东西**
+     （第一次是顶部提示条 + 运行面板），main 分支本来也没有页面内日志。
+
+   图 2 三处批注：
+   ① 右上「刷新」按钮「**刷新按钮干掉，新增任务流程挪到任务流程旁边**」
+      → ``refreshBtn`` 删掉；``＋ 新增任务流程`` 从 ``head.actions``
+        挪进 ``.page-title-row``（和标题同一行），照 ``config.js`` 的写法。
+   ② 行卡「删除」按钮「**删除挪到最后面**」
+      → 按钮顺序改成 ``运行 → 停止 → 删除``。
+   ③ 圈住整块「完成后自动关机」批注「**干掉**」
+      → ``buildShutdownCard`` 及配套的 ``refreshShutdown`` /
+        ``paintShutdown`` / ``saveShutdown`` / ``cancelShutdown`` /
+        ``applyShutdownArmed`` 和 4 个后端事件订阅全部删掉。
+        **后端（``web_bridge.py`` 那套）一并删** —— 留着就是死代码。
+
+   图 3 圈住新增弹框四行「**角色放第一排，任务类型放第二排**」
+   → ``openNewFlowDialog`` 里 ``charRow`` 提到最前，``typeRow`` 第二。
+
    ## 和 main 的对应关系
 
    ==============================  ==================================
@@ -55,12 +82,6 @@
    ``_build_report_section``       :func:`buildReportSection`
    ``note_running``（互斥）         :func:`syncRowStates`
    ==============================  ==================================
-
-   ## 日志区为什么留着
-
-   main 分支没有页面内日志（日志进 ``notify`` 和文件），但 web 版一直是
-   「跑的时候能看见每一步」，而且 ``pages_verify`` 的 T3/T4/T5 就靠这块
-   做回归。所以保留，样式不变。
    ══════════════════════════════════════════════════════════════════════════ */
 
 (function () {
@@ -78,9 +99,6 @@
   const P = window.Pages;
   const App = window.App;
 
-  /** 日志最多留多少行（超出丢最老的，防长时间运行把内存吃满）*/
-  const MAX_LOG_LINES = 800;
-
   /** 流程名自动后缀 —— 和 ``src/gui/config_names.FLOW_NAME_SUFFIX`` 一致 */
   const FLOW_NAME_SUFFIX = '-声骸自动强化';
 
@@ -97,38 +115,25 @@
   /** 名字末尾的级别括号（「（小毕业 43311）」这种），剥角色名时要先去掉 */
   const LEVEL_RE = /（(?:小毕业|大毕业|完美毕业)(?:\s*(?:43311|44111))?）\s*$/;
 
-  //: ★ 2026-11-04 用户：「任务完成后自动关机」
-  //:
-  //: 设置**分开存**（后端 ``TASK_SHUTDOWN_KEY = 'tasks'``），不复用 4C 页的
-  //: ``auto_combat`` 那套 —— 两个页面各有各的开关，混在一起会出现
-  //: 「在任务页关了，4C 工具页的定时关机也跟着没了」。
-  /** 默认多少分钟后关机（与后端 ``getTaskShutdown`` 的 defaultMinutes 同值）*/
-  const SHUTDOWN_DEFAULT_MINUTES = 30;
+  //: ★ 2026-11-04 用户圈图：「任务完成后自动关机」整块**删了**。
+  //: 后端那套（``TASK_SHUTDOWN_KEY`` / ``_arm_task_shutdown`` / ``QTimer`` 轮询 …）
+  //: 也一起删了 —— 留着就是谁也不调的死代码。
+  //: （教训：那个坑值得记 —— 把 ``QTimer.timeout`` 接到 Bridge 上**没加
+  //: ``@Slot`` 的绑定方法**会悄悄废掉 QWebChannel 往 JS 转发事件的链路。）
 
   const state = {
     /** 当前运行的 key（空 = 空闲）*/
     running: '',
-    /** 当前进度 0~100（日志区不再画进度条，仍保留给状态行用）*/
+    /** 当前进度 0~100（页面上不画进度条，仍保留给状态行用）*/
     progress: 0,
     /** 当前步骤描述 */
     step: '',
-    /** 日志行数 */
-    logCount: 0,
-    /** 是否自动滚动到底 */
-    autoScroll: true,
     /** 流程列表数据 */
     flows: [],
     /** 数据来源：'flows'（真流程）| 'tools'（降级）*/
     source: 'flows',
     /** 运行报告：{round, total} */
     report: { round: null, total: null },
-    /**
-     * 任务完成后自动关机：{enabled, minutes, active, remainingText, flowName}。
-     *
-     * ``active`` 为真时表示「某条流程刚跑完，正在倒计时关机」——
-     * 这时卡片上要出现「取消关机」按钮和倒计时文本。
-     */
-    shutdown: null,
     /** 角色候选缓存（编辑器用；null = 还没拉过）*/
     characterPool: null,
     /** 各个 DOM 引用 */
@@ -218,11 +223,20 @@
   // ════════════════════════════════════════════════════════════════════════
 
   async function renderTasks(section, app) {
-    // ── 页头（照 main：标题 + 说明 + 右上「＋ 新增任务流程」）──
-    const head = P.pageHead({
-      title: '任务流程',
-      subtitle: '把工具和配置编成一条流程，按顺序自动跑。点「新增任务流程」开始编排。'
-    });
+    // ── 页头（照 main：标题 + 说明；「＋ 新增任务流程」贴在标题右边）──
+    //
+    //: ★ 2026-11-04 用户圈图：「刷新按钮干掉，新增任务流程挪到任务流程旁边」。
+    //:
+    //: ``P.pageHead()`` 把 actions 放在右侧（``margin-left:auto``），
+    //: 想贴在标题旁只能**不用 actions**，自己往 ``page-head-text`` 里拼
+    //: ``.page-title-row`` —— 和 ``config.js`` 的配置页一个写法。
+    //:
+    //: 「刷新」按钮直接删了：流程列表每次操作后都会 ``reload()``
+    //: （新建 / 删除 / 跑完都会刷），手动刷新没有非它不可的场景。
+    const head = P.el('div', { class: 'page-head' });
+    const headText = P.el('div', { class: 'page-head-text' });
+    const titleRow = P.el('div', { class: 'page-title-row' });
+    titleRow.appendChild(P.el('div', { class: 'page-title', text: '任务流程' }));
 
     const addBtn = P.button('＋ 新增任务流程', {
       kind: 'primary',
@@ -230,41 +244,29 @@
       onClick: function () { openNewFlowDialog(app); }
     });
     addBtn.dataset.action = 'add-flow';
+    titleRow.appendChild(addBtn);
 
-    const refreshBtn = P.button('刷新', {
-      icon: 'HISTORY',
-      size: 'sm',
-      onClick: function () { reload(app, refreshBtn); }
-    });
-
-    head.actions.appendChild(addBtn);
-    head.actions.appendChild(refreshBtn);
-    section.appendChild(head.head);
+    headText.appendChild(titleRow);
+    headText.appendChild(P.el('div', {
+      class: 'page-subtitle',
+      text: '把工具和配置编成一条流程，按顺序自动跑。点「新增任务流程」开始编排。'
+    }));
+    head.appendChild(headText);
+    section.appendChild(head);
 
     // ── ① 流程列表（状态在每一行里，没有全局运行面板）──
     const listHost = P.el('div', { class: 'section' });
     section.appendChild(listHost);
 
     // ── ② 运行报告（照 main：紧跟在流程列表下面，两块卡）──
-    //
-    //: ⚠ 顺序是**流程列表 → 运行报告 → 运行日志**。
-    //: main 分支没有页面内日志，报告直接贴着行卡；如果日志排在前面，
-    //: 那 300px 高的日志窗会把报告整个推到折叠线以下 —— 用户看不到
-    //: 刚跑完的结果，等于白做。日志仍然留在最后（回归脚本要靠它）。
     section.appendChild(buildReportSection(app));
 
-    // ── ②b 任务完成后自动关机（用户 2026-11-04）──
-    section.appendChild(buildShutdownCard(app));
-
-    // ── ③ 运行日志（web 版独有；页面既有能力，回归脚本也依赖）──
-    section.appendChild(buildLogPanel());
+    //: ★ 2026-11-04 用户圈图「干掉」过两块内容，别顺手加回来：
+    //:   ① 「运行日志」面板（``buildLogPanel`` 已删）
+    //:   ② 「完成后自动关机」卡（``buildShutdownCard`` 已删）
+    //: 都在 ``pages_verify.py`` 的 T1c 里做了**反向**断言。
 
     state.dom.listHost = listHost;
-    state.dom.logBox = section.querySelector('#task-log');
-    state.dom.logCount = section.querySelector('#task-log-count');
-
-    //: ★ 把 app.js 的日志入口接到本页的实现上（见 hookGlobalLog 的说明）
-    hookGlobalLog();
 
     //: 从 app 的全局状态恢复（比如在别处点了运行再切过来）
     restoreState(app);
@@ -273,14 +275,8 @@
     bindEvents(section, app);
 
     // ── 拉数据 ──
-    await reload(app, refreshBtn);
+    await reload(app);
     await refreshReport(true);
-    await refreshShutdown(true);
-
-    //: 页面刚渲染完，给一条定位提示（用户至少知道日志在等什么）
-    if (!state.logCount) {
-      appendLog('就绪 —— 随便点一条流程的「运行」，日志会实时出现在这里', 'debug');
-    }
   }
 
   // ────────────────────────────────────────────────────────────────────────
@@ -396,252 +392,6 @@
     void app;
   }
 
-  // ────────────────────────────────────────────────────────────────────────
-  //  日志面板
-  // ────────────────────────────────────────────────────────────────────────
-  function buildLogPanel() {
-    const panel = P.el('div', { class: 'section' });
-
-    const titleRow = P.el('div', {
-      style: 'display:flex;align-items:center;gap:10px;margin-bottom:9px'
-    }, [
-      P.el('div', { class: 'section-title', style: 'margin:0', text: '运行日志' }),
-      P.el('div', { class: 'log-count', id: 'task-log-count', text: '0 行' }),
-      P.el('div', { style: 'margin-left:auto;display:flex;gap:7px;align-items:center' }, [
-        P.el('label', {
-          class: 'sw',
-          for: 'task-autoscroll'
-        }, [
-          (function () {
-            const input = P.el('input', {
-              type: 'checkbox',
-              id: 'task-autoscroll',
-              class: 'sw-input'
-            });
-            input.checked = true;
-            input.addEventListener('change', function () {
-              state.autoScroll = input.checked;
-              if (state.autoScroll) scrollLogToEnd();
-            });
-            return input;
-          })(),
-          P.el('span', { class: 'sw-track' }, [P.el('span', { class: 'sw-thumb' })]),
-          P.el('span', { class: 'sw-label', text: '自动滚动' })
-        ])
-      ])
-    ]);
-    panel.appendChild(titleRow);
-
-    //: ★ id 必须叫 task-log —— app.js 的 App.appendLog 也是找这个 id
-    panel.appendChild(P.el('div', { class: 'log-box', id: 'task-log' }));
-    return panel;
-  }
-
-  // ────────────────────────────────────────────────────────────────────────
-  //  任务完成后自动关机（用户 2026-11-04「任务完成后自动关机」）
-  // ────────────────────────────────────────────────────────────────────────
-
-  /**
-   * 建「完成后自动关机」卡。
-   *
-   * ## 为什么不做成 main 那种「运行时才开始倒计时」
-   *
-   * Qt 版 AutoCombat 工具页是「点启动 → 立刻开始倒计时 N 分钟关机」。
-   * 任务页要的是另一回事：**流程跑完**才开始倒计时 —— 「我挂机让它跑，
-   * 跑完把电脑关了」。所以计时器在**后端**（流程结束的那一刻起算），
-   * 页面只负责显示剩余时间和「取消关机」。
-   *
-   * 后端为什么不用页面来计时：用户随时会切走页面（``App.go`` 只切显示，
-   * JS 定时器还在，但页面被删掉重建就没人了），而关机必须按时发生。
-   */
-  function buildShutdownCard(app) {
-    const holder = P.el('div', { class: 'section task-shutdown' });
-    holder.appendChild(P.el('div', { class: 'section-title', text: '完成后自动关机' }));
-
-    const card = P.el('div', { class: 'card task-report-card task-shutdown-card' });
-    const head = P.el('div', { class: 'task-report-head' }, [
-      P.el('div', { class: 'task-report-title', text: '流程跑完后自动关机' })
-    ]);
-    card.appendChild(head);
-
-    //: 开关 + 分钟输入 + 说明，一行摆开
-    const row = P.el('div', { class: 'task-shutdown-row' });
-
-    const toggleEl = P.toggle('启用', false, function (checked) {
-      state.shutdown = Object.assign({}, state.shutdown || {}, {
-        enabled: checked,
-        minutes: shutdownMinutes()
-      });
-      //: 打开时把分钟框也叫醒，否则用户点了开关却改不了数字
-      if (state.dom.shutdownMinutes) {
-        state.dom.shutdownMinutes.input.disabled = !checked;
-      }
-      saveShutdown(app, false);
-    }, { onText: '启用', offText: '不启用' });
-    toggleEl.dataset.action = 'toggle-shutdown';
-    row.appendChild(toggleEl);
-
-    //: 分钟数用 numberInput（和项目其它数字框一致：− N ＋）
-    const minutesInput = window.Panels.numberInput(
-      SHUTDOWN_DEFAULT_MINUTES,
-      { min: 1, max: 1440, clampOnBlur: true }
-    );
-    minutesInput.input.id = 'task-shutdown-minutes';
-    minutesInput.input.classList.add('task-shutdown-minutes');
-    minutesInput.input.disabled = true;
-    //: change 才存盘 —— 每敲一个数字就写一次文件太吵
-    minutesInput.input.addEventListener('change', function () {
-      if (state.shutdown && state.shutdown.enabled) saveShutdown(app, true);
-    });
-    row.appendChild(minutesInput.el);
-
-    row.appendChild(P.el('div', { class: 'task-shutdown-unit', text: '分钟后关机' }));
-    card.appendChild(row);
-
-    const hint = P.el('div', { class: 'task-shutdown-hint' });
-    card.appendChild(hint);
-
-    //: 倒计时行（没有在倒计时就藏起来）
-    const countdown = P.el('div', { class: 'task-shutdown-countdown hidden' });
-    const countdownText = P.el('div', { class: 'task-shutdown-countdown-text' });
-    countdown.appendChild(countdownText);
-    const cancelBtn = P.button('取消关机', {
-      size: 'sm',
-      kind: 'danger',
-      onClick: function () { cancelShutdown(app); }
-    });
-    cancelBtn.dataset.action = 'cancel-shutdown';
-    countdown.appendChild(cancelBtn);
-    card.appendChild(countdown);
-
-    holder.appendChild(card);
-
-    state.dom.shutdownToggle = toggleEl;
-    state.dom.shutdownMinutes = minutesInput;
-    state.dom.shutdownHint = hint;
-    state.dom.shutdownCountdown = countdown;
-    state.dom.shutdownCountdownText = countdownText;
-
-    //: 先画成「读取中」，``refreshShutdown`` 回来后覆盖
-    hint.textContent = '正在读取设置…';
-    return holder;
-  }
-
-  /** 分钟框当前值（夹 1~1440，非法给默认值）*/
-  function shutdownMinutes() {
-    const input = state.dom.shutdownMinutes && state.dom.shutdownMinutes.input;
-    const raw = input ? String(input.value || '').trim() : '';
-    const n = parseInt(raw, 10);
-    if (!isFinite(n) || n <= 0) return SHUTDOWN_DEFAULT_MINUTES;
-    return Math.max(1, Math.min(1440, n));
-  }
-
-  /** 读后端设置 + 当前倒计时状态，重画卡片 */
-  async function refreshShutdown(quiet) {
-    const result = await P.call('getTaskShutdown');
-    if (!result.ok) {
-      if (!quiet) appendLog('✗ 读取关机设置失败（接口未就绪）', 'warn');
-      return;
-    }
-    const data = result.data || {};
-    state.shutdown = {
-      enabled: !!data.enabled,
-      minutes: Number(data.minutes) || SHUTDOWN_DEFAULT_MINUTES,
-      minMinutes: Number(data.minMinutes) || 1,
-      maxMinutes: Number(data.maxMinutes) || 1440,
-      warnSeconds: Number(data.warnSeconds) || 60,
-      active: !!data.active,
-      remainingText: String(data.remainingText || ''),
-      flowName: String(data.flowName || '')
-    };
-    paintShutdown();
-  }
-
-  /** 按 ``state.shutdown`` 重画开关 / 分钟 / 提示 / 倒计时 */
-  function paintShutdown() {
-    const info = state.shutdown || {};
-    const toggleEl = state.dom.shutdownToggle;
-    const minutesInput = state.dom.shutdownMinutes;
-
-    if (toggleEl) {
-      const input = toggleEl.querySelector('input');
-      if (input && input.checked !== !!info.enabled) {
-        input.checked = !!info.enabled;
-        if (typeof toggleEl.syncText === 'function') toggleEl.syncText();
-      }
-    }
-    if (minutesInput && minutesInput.input) {
-      const want = String(info.minutes || SHUTDOWN_DEFAULT_MINUTES);
-      //: 正在编辑的时候别抢输入框（用户敲到一半被改回去最恼人）
-      if (document.activeElement !== minutesInput.input) {
-        minutesInput.set(Number(want));
-      }
-      minutesInput.input.disabled = !info.enabled;
-    }
-
-    if (state.dom.shutdownHint) {
-      state.dom.shutdownHint.textContent = info.enabled
-        ? '流程成功跑完后开始倒计时，关机前 ' + (info.warnSeconds || 60) +
-          ' 秒会提醒你，想反悔可以点「取消关机」。手动按「停止」也会取消。'
-        : '开启后，流程成功跑完会自动关机（跑失败不关，免得白关）。';
-    }
-
-    if (state.dom.shutdownCountdown && state.dom.shutdownCountdownText) {
-      if (info.active) {
-        state.dom.shutdownCountdown.classList.remove('hidden');
-        state.dom.shutdownCountdownText.textContent =
-          '⏻ ' + (info.flowName ? '「' + info.flowName + '」跑完了 —— ' : '') +
-          '还有 ' + (info.remainingText || '') + ' 关机';
-      } else {
-        state.dom.shutdownCountdown.classList.add('hidden');
-        state.dom.shutdownCountdownText.textContent = '';
-      }
-    }
-  }
-
-  /** 存设置（``fromInput``=true 时读分钟框，否则用 state 里的）*/
-  async function saveShutdown(app, fromInput) {
-    const enabled = !!(state.shutdown && state.shutdown.enabled);
-    const minutes = fromInput ? shutdownMinutes() : (state.shutdown || {}).minutes ||
-      SHUTDOWN_DEFAULT_MINUTES;
-    if (state.shutdown) state.shutdown.minutes = minutes;
-
-    const result = await P.call('setTaskShutdown',
-      JSON.stringify({ enabled: enabled, minutes: minutes }));
-    if (!result.ok) {
-      appendLog('✗ 保存关机设置失败：' + (result.missing
-        ? '桥接缺少 setTaskShutdown 方法'
-        : String(result.error && result.error.message || result.error)), 'error');
-      return;
-    }
-    const data = result.data || {};
-    if (data.ok === false) {
-      appendLog('✗ ' + (data.message || '保存关机设置失败'), 'warn');
-      //: 后端拒绝了 → 重读一次，把界面拉回真实状态（别让开关停在假的 ON）
-      await refreshShutdown(true);
-      return;
-    }
-    if (state.shutdown) state.shutdown.enabled = !!data.enabled;
-    paintShutdown();
-    appendLog(enabled
-      ? '✔ 已开启：流程跑完后 ' + minutes + ' 分钟自动关机'
-      : '✔ 已关闭「完成后自动关机」', 'ok');
-    void app;
-  }
-
-  /** 用户点「取消关机」*/
-  async function cancelShutdown(app) {
-    const result = await P.call('cancelTaskShutdown');
-    if (!result.ok) {
-      appendLog('✗ 取消失败：' + (result.missing
-        ? '桥接缺少 cancelTaskShutdown 方法'
-        : String(result.error && result.error.message || result.error)), 'error');
-      return;
-    }
-    appendLog('✔ 已取消自动关机', 'ok');
-    await refreshShutdown(true);
-    void app;
-  }
 
   // ────────────────────────────────────────────────────────────────────────
   //  数据加载
@@ -826,14 +576,8 @@
     //: 想换配置就删掉重建，留着「修改」反而是两条会打架的路径。
     const actions = P.el('div', { class: 'flow-actions task-actions' });
 
-    const delBtn = P.button('删除', {
-      size: 'sm',
-      title: '删除这条流程',
-      onClick: function () { deleteFlow(app, flow); }
-    });
-    delBtn.dataset.action = 'delete';
-    actions.appendChild(delBtn);
-
+    //: ★ 2026-11-04 用户圈图：「删除挪到最后面」——
+    //: 顺序定为 **运行 → 停止 → 删除**（破坏性操作放最右，别让它挨着常用按钮）。
     const runBtn = P.button(isRunning ? '运行中' : '运行', {
       kind: 'primary',
       size: 'sm',
@@ -856,6 +600,14 @@
     });
     stopBtn.dataset.action = 'stop';
     actions.appendChild(stopBtn);
+
+    const delBtn = P.button('删除', {
+      size: 'sm',
+      title: '删除这条流程',
+      onClick: function () { deleteFlow(app, flow); }
+    });
+    delBtn.dataset.action = 'delete';
+    actions.appendChild(delBtn);
 
     card.appendChild(actions);
     return card;
@@ -1098,64 +850,18 @@
       }),
       window.Bridge.on('progress', function (data) {
         applyProgress(data || {});
-      }),
-      //: ★ 2026-11-04「任务完成后自动关机」的后端事件。
-      //:
-      //: 计时器在后端（页面切走也得按时关机），这些事件只是让界面跟上：
-      //: 起倒计时 / 60 秒警告 / 已关机 / 已取消。
-      window.Bridge.on('shutdownArmed', function (data) {
-        applyShutdownArmed(data || {});
-      }),
-      window.Bridge.on('shutdownWarning', function (data) {
-        const seconds = Number((data || {}).seconds) || 0;
-        appendLog('⚠ ' + seconds + ' 秒后自动关机！要取消就点任务页的「取消关机」。', 'warn');
-        refreshShutdown(true);
-      }),
-      window.Bridge.on('shutdownFired', function (data) {
-        const info = data || {};
-        appendLog(info.ok === false
-          ? '✗ 关机失败：' + String(info.message || '')
-          : '⏻ 已安排关机（' + String(info.message || '') + '）', info.ok === false ? 'error' : 'warn');
-        refreshShutdown(true);
-      }),
-      window.Bridge.on('shutdownCancelled', function () {
-        appendLog('✔ 自动关机已取消', 'ok');
-        refreshShutdown(true);
       })
-      //: ⚠ 这里**故意不订阅 logLine** —— 见 hookGlobalLog 的说明
+      //: ⚠ 这里**故意不订阅 logLine** —— 后端 ``pushLog`` 发的那条已经由
+      //: ``app.js`` 的 ``Bridge.subscribe(handleEvent)`` 转给 ``App.appendLog``，
+      //: 本页再写一遍就会**每条两份**。
+      //:
+      //: ★ 2026-11-04 用户圈图「干掉」了「完成后自动关机」整块，所以原
+      //: ``shutdownArmed`` / ``shutdownWarning`` / ``shutdownFired`` /
+      //: ``shutdownCancelled`` 四个订阅一并删掉（后端那套也删了，见
+      //: ``web_bridge.py``）。
     ];
     //: 页面常驻 DOM，不需要退订；记录一下便于将来支持重建
     section._offs = (section._offs || []).concat(offs);
-  }
-
-  /**
-   * ★ 接管 ``app.js`` 的日志入口。
-   *
-   * ``app.js`` 的 ``boot()`` 里 ``Bridge.subscribe(handleEvent)``，
-   * 收到 ``logLine`` 就调 ``App.appendLog(text)`` —— 直接往 ``#task-log``
-   * 里塞一行**没有时间戳**的纯文本。本页再写一遍就会**每条两份**。
-   *
-   * 所以把 ``App.appendLog`` **替换**成解析 ``#task-log`` 的通用版本：
-   * 目标是 ``#task-log`` → 走本页的 :func:`appendLog`；否则走原来的。
-   */
-  function hookGlobalLog() {
-    if (!App || typeof App.appendLog !== 'function') return;
-    if (App.appendLog._hookedByTasks) return;
-
-    const original = App.appendLog.bind(App);
-
-    const patched = function (text, level) {
-      const box = document.getElementById('task-log');
-      if (box) {
-        //: 任务页存在 → 用带时间戳的版本
-        appendLog(text, level);
-        return;
-      }
-      //: 任务页还没渲染 → 退回 app.js 原实现（它自己会判断 #task-log 在不在）
-      original(text, level);
-    };
-    patched._hookedByTasks = true;
-    App.appendLog = patched;
   }
 
   // ── 状态变更 ──
@@ -1207,28 +913,6 @@
     if (text) {
       state.step = text;
     }
-  }
-
-  /**
-   * 后端起了「跑完关机」倒计时。
-   *
-   * 这里**不自己算剩余时间** —— 后端每秒 tick 一次，页面只在收到事件时
-   * 拉一次状态。两边各算一份一定会漂（页面切走再切回、标签页被节流），
-   * 而关机是**不可撤销**的操作，宁可少显示也不要显示错。
-   */
-  function applyShutdownArmed(data) {
-    const info = state.shutdown || {};
-    state.shutdown = Object.assign({}, info, {
-      active: true,
-      minutes: Number(data.minutes) || info.minutes || SHUTDOWN_DEFAULT_MINUTES,
-      flowName: String(data.flowName || ''),
-      remainingText: String(data.remainingText || '')
-    });
-    paintShutdown();
-    appendLog('⏻ 「' + (data.flowName || '任务') + '」跑完了 —— ' +
-      (data.remainingText || '') + ' 后自动关机（可点「取消关机」）', 'warn');
-    //: 剩余时间是后端算的，隔一会儿再对齐一次（倒计时在走）
-    window.setTimeout(function () { refreshShutdown(true); }, 1200);
   }
 
   /** 恢复外部设置过的状态（app.status / app 里的全局 progress）*/
@@ -1312,65 +996,71 @@
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  //  日志
+  //  提示（浮动 toast）
   // ════════════════════════════════════════════════════════════════════════
+  //
+  //: ★ 2026-11-04 用户圈图「干掉」了整块「运行日志」面板，所以原来那套
+  //: ``#task-log`` 滚动日志（``appendLog`` / ``clock`` / ``scrollLogToEnd`` /
+  //: ``updateLogCount`` / ``clearLog``）全部删掉。
+  //:
+  //: 但**提示不能一起删** —— ``appendLog`` 那 30 多个调用点装的是
+  //: 「✗ 无法运行：游戏没开」「✗ 正在运行，先停止再删除」「✔ 已删除」这类
+  //: **必须让人看见**的反馈。日志窗没了还静默 return 的话，用户点了没反应
+  //: 就是死界面。
+  //:
+  //: 所以保留 ``appendLog(text, level)`` 这个名字（30 多个调用点一行不改），
+  //: 实现换成右上角的浮动提示，几秒后自己淡出。CSS 复用 ``.toast-float``
+  //: （``pages.css``，config.js 的 toast 也在用同一套）。
+
+  /** 浮动提示的容器（惰性创建，挂 body 上，不随页面切换销毁）*/
+  function toastHost() {
+    let host = document.getElementById('task-toast-host');
+    if (host && host.isConnected) return host;
+    host = P.el('div', { class: 'task-toast-host', id: 'task-toast-host' });
+    document.body.appendChild(host);
+    return host;
+  }
+
+  /** 同时最多挂几条 —— 一次运行可能连着发好几条，别糊满屏幕 */
+  const MAX_TOASTS = 4;
 
   /**
-   * 追加一行日志（带时间戳 / 级别色 / 计数 / 受自动滚动开关控制）。
+   * 追加一条提示。
+   *
+   * 名字沿用 ``appendLog``（30 多个调用点不用动），行为是右上角浮出、
+   * 4.5 秒后自己消失。
    *
    * @param {string} text
    * @param {string} [level] - info | warn | error | ok | debug
    */
   function appendLog(text, level) {
-    const box = state.dom.logBox || document.getElementById('task-log');
-    if (!box) return;
+    //: debug 是「就绪 —— 随便点一条流程的运行」这类可有可无的，不弹
+    if (level === 'debug') return;
 
     const content = String(text == null ? '' : text);
     if (!content) return;
 
-    const line = P.el('div', {
-      class: 'log-line',
-      dataset: { level: level || 'info' }
-    }, [
-      P.el('span', { class: 'log-time', text: clock() }),
-      P.el('span', { class: 'log-text', text: content })
-    ]);
+    const host = toastHost();
+    const lv = level || 'info';
+    const node = P.el('div', {
+      class: 'toast-float notice notice-' + lv + ' task-toast',
+      dataset: { level: lv }
+    });
+    node.appendChild(P.el('div', { class: 'notice-text', text: content }));
+    host.appendChild(node);
 
-    box.appendChild(line);
-    state.logCount += 1;
-
-    //: 超出上限丢最老的
-    while (box.childElementCount > MAX_LOG_LINES) {
-      box.removeChild(box.firstElementChild);
-      state.logCount -= 1;
+    //: 超出上限掐掉最老的（运行一次可能连着报好几条）
+    while (host.childElementCount > MAX_TOASTS) {
+      host.removeChild(host.firstElementChild);
     }
 
-    updateLogCount();
-
-    if (state.autoScroll) scrollLogToEnd();
-  }
-
-  function clock() {
-    const now = new Date();
-    function pad(n) { return n < 10 ? '0' + n : String(n); }
-    return pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
-  }
-
-  function scrollLogToEnd() {
-    const box = state.dom.logBox || document.getElementById('task-log');
-    if (box) box.scrollTop = box.scrollHeight;
-  }
-
-  function updateLogCount() {
-    const label = state.dom.logCount || document.getElementById('task-log-count');
-    if (label) label.textContent = state.logCount + ' 行';
-  }
-
-  function clearLog() {
-    const box = state.dom.logBox || document.getElementById('task-log');
-    if (box) box.innerHTML = '';
-    state.logCount = 0;
-    updateLogCount();
+    //: 自己淡出；点一下也能立刻关掉
+    const ttl = lv === 'error' ? 7000 : 4500;
+    const kill = function () {
+      if (node && node.parentNode) node.parentNode.removeChild(node);
+    };
+    node.addEventListener('click', kill);
+    window.setTimeout(kill, ttl);
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -1568,6 +1258,24 @@
       };
     }
 
+    //: ★ 2026-11-04 用户圈图：「角色放第一排，任务类型放第二排」。
+    //: 角色是最先要定下来的（任务类型现在只有一种，级别/成套都跟着角色走），
+    //: 所以从「先选类型」改成「先选角色」。
+    //
+    // ── 角色 ──
+    const charRow = P.el('div', { class: 'task-editor-row' });
+    charRow.appendChild(P.el('div', { class: 'task-label', text: '角色' }));
+    const charPicker = buildCharacterPicker(function (name) {
+      EDITOR.character = name;
+      syncLevelAvailability();
+    });
+    charPicker.set(EDITOR.character);
+    charRow.appendChild(charPicker.el);
+    body.appendChild(charRow);
+
+    const charHint = P.el('div', { class: 'task-suffix-hint task-char-hint' });
+    body.appendChild(charHint);
+
     // ── 任务类型 ──
     const typeRow = P.el('div', { class: 'task-editor-row' });
     typeRow.appendChild(P.el('div', { class: 'task-label', text: '任务类型' }));
@@ -1582,20 +1290,6 @@
       class: 'task-suffix-hint task-type-hint',
       text: '选好类型后会自动生成整条流程（开始 → 筛选 → 强化 → 工具 → 结束），不用再手动排步骤。'
     }));
-
-    // ── 角色 ──
-    const charRow = P.el('div', { class: 'task-editor-row' });
-    charRow.appendChild(P.el('div', { class: 'task-label', text: '角色' }));
-    const charPicker = buildCharacterPicker(function (name) {
-      EDITOR.character = name;
-      syncLevelAvailability();
-    });
-    charPicker.set(EDITOR.character);
-    charRow.appendChild(charPicker.el);
-    body.appendChild(charRow);
-
-    const charHint = P.el('div', { class: 'task-suffix-hint task-char-hint' });
-    body.appendChild(charHint);
 
     // ── 声骸属性级别 ──
     const levelRow = P.el('div', { class: 'task-editor-row' });
