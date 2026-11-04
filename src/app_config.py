@@ -13,7 +13,7 @@
 APP_NAME = "WutheringWavesTools"
 APP_DISPLAY_NAME = "鸣潮工具箱"
 
-APP_VERSION = "1.1.2"
+APP_VERSION = "2.0.0"
 APP_AUTHOR = "yys"
 
 WINDOW_MIN_WIDTH = 960
