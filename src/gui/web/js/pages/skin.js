@@ -370,8 +370,14 @@
     const actions = P.el('div', { class: 'wallpaper-actions' });
 
     if (supported) {
-      const btn = P.button(active ? '取消使用' : '使用这个壁纸', {
-        kind: active ? '' : 'primary',
+      //: ★ 2026-11-04（用户圈图）：**没有「取消使用」** —— 「取消使用之后用什么的？
+      //: 原生的吗」这句是对的：关掉壁纸只会退回一片深色底，对用户没有任何价值，
+      //: 只会让人误以为能"卸载壁纸"。所以每张卡（含当前这张）按钮恒为
+      //: 「使用这个壁纸」，点当前那张 = 幂等重设一次。
+      //: 后端 ``setWallpaper("")``（空串 = 关壁纸）**保留不动** —— 它不是死代码，
+      //: ``_apply_wallpaper_accent()`` 靠「没有当前壁纸」退回默认精选主题色。
+      const btn = P.button('使用这个壁纸', {
+        kind: 'primary',
         size: 'sm',
         onClick: function () { applyWallpaper(item, app, btn); }
       });
@@ -397,19 +403,20 @@
   // ════════════════════════════════════════════════════════════════════════
   async function applyWallpaper(item, app, btn) {
     const id = String(item.id || '');
-    const isActive = id === String(state.currentId);
 
     btn.disabled = true;
-    btn.textContent = isActive ? '关闭中…' : '切换中…';
+    btn.textContent = '切换中…';
 
-    //: 旧界面「取消使用」= 传空串关掉壁纸（L328 ``chosen.emit("")``）
-    const target = isActive ? '' : id;
+    //: ★ 2026-11-04：原来当前那张会传空串关掉壁纸（旧界面 L328 ``chosen.emit("")``）。
+    //: 用户要求去掉「取消使用」后，这里恒传真实 id —— 点当前那张就是重设一次，
+    //: 用来把「壁纸/主题色被我调乱了」一键拉回正轨。
+    const target = id;
     const result = await P.call('setWallpaper', target);
 
     btn.disabled = false;
 
     if (!result.ok) {
-      btn.textContent = isActive ? '取消使用' : '使用这个壁纸';
+      btn.textContent = '使用这个壁纸';
       app.appendLog('切换壁纸失败：' + (result.missing
         ? '桥接缺少 setWallpaper'
         : String(result.error && result.error.message || result.error)), 'error');
@@ -418,13 +425,17 @@
 
     const data = result.data || {};
     if (data.ok === false) {
-      btn.textContent = isActive ? '取消使用' : '使用这个壁纸';
+      btn.textContent = '使用这个壁纸';
       app.appendLog('切换壁纸失败：' + (data.message || data.reason || '未知原因'),
         'warn');
       return;
     }
 
     //: 更新本地状态 + 界面
+    //: ★ 按钮文案要自己复原 —— refreshActive() 现在**不管按钮**了
+    //: （「取消使用」删掉后文案恒为一句，见那边注释）。漏了这行，
+    //: 点完就永久停在「切换中…」（2026-11-04 截图实测抓到）。
+    btn.textContent = '使用这个壁纸';
     state.currentId = target;
     app.setWallpaper(data);
     refreshActive();
@@ -453,8 +464,9 @@
         badge.remove();
       }
 
-      const btn = card.querySelector('[data-action="apply"]');
-      if (btn) btn.textContent = active ? '取消使用' : '使用这个壁纸';
+      //: ★ 2026-11-04：「取消使用」已删，按钮文案不再随激活态变化 ——
+      //: 当前这张靠「使用中」角标（上面那段）标出来就够了。
+      //: 这里**故意不动按钮**：动它就要写回一句文案，等于把文案又散成两处。
     }
   }
 })();
