@@ -71,3 +71,32 @@ cache/
 
 # 系统
 Thumbs.db
+
+# ---------------------------------------------------------------------------
+# 备份 / 临时改名留下的残留
+# ---------------------------------------------------------------------------
+# ⚠ 例：``src/core/skins.py.bak_before_remove_themes``、
+#   ``vendor/okww/okww/Labels.py.bak``、``coco_annotations.json.bak_pickup``。
+#   这些是本地改代码前的快照，不该进库（也没有任何代码 import 它们）。
+*.bak
+*.bak_*
+*.orig
+
+# ---------------------------------------------------------------------------
+# ffmpeg / ffprobe（本地二进制，不进库）
+# ---------------------------------------------------------------------------
+# ⚠ 为什么不提交：``vendor/ffmpeg/ffmpeg.exe`` 108,702,720 字节、
+#   ``ffprobe.exe`` 108,486,656 字节 —— **双双超过 GitHub 单文件 100MB 硬限**，
+#   推上去会被拒（而且本仓库没有配 Git LFS）。
+#
+#   运行时怎么找它：见 :func:`src.core.webm_transcode.find_ffmpeg` —
+#   ① ``MYTOOLS_FFMPEG`` 环境变量
+#   ② ``<资源根>/vendor/ffmpeg/ffmpeg.exe``（就是这里，本地放进来即可）
+#   ③ ``<用户数据目录>/tools/ffmpeg.exe``
+#   ④ 系统 ``PATH``
+#   所以**从源码跑只要把 ffmpeg.exe / ffprobe.exe 丢进 vendor/ffmpeg/ 就行**；
+#   拿不到时壁纸页会显示"（无缩略图）"而不是崩。
+#
+#   获取方式：https://www.gyan.dev/ffmpeg/builds/ 的 release 版，解压后把
+#   ``bin/ffmpeg.exe`` 与 ``bin/ffprobe.exe`` 拷进 ``vendor/ffmpeg/``。
+/vendor/ffmpeg/*.exe
