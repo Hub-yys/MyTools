@@ -985,7 +985,156 @@ def main() -> int:
         js('(function(){var b=document.querySelector('
            '\'.dlg-overlay [data-action="close-detail"]\');'
            'if(b) b.click();})()')
-        QTimer.singleShot(200, check_roundtrip)
+        QTimer.singleShot(200, stage_menu_open)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  ★ C8.6：编辑弹框的角色下拉**必须整块看得见**
+    #
+    #  ## 用户反馈（2026-11-04）
+    #
+    #  「编辑状态这都看不见，而且还一闪一闪的」—— 截图里候选菜单只露出
+    #  一行，其余全被下面的「核心属性」卡盖住。
+    #
+    #  ## 根因
+    #
+    #  ``.card-glass`` 带 ``backdrop-filter``，而 ``backdrop-filter`` 会
+    #  **创建新的 stacking context**。角色行 ``.dlg-card-row.card-glass``
+    #  因此把 ``.char-menu`` 的 ``z-index: 20`` 关在自己这层里 —— 那个 20
+    #  是「层内数字」，出不了父级上下文，后面的 ``.dlg-settings``（一堆
+    #  同样 ``card-glass`` 的卡）是普通流后续内容，直接盖在菜单上。
+    #
+    #  实测（探针 A/B，菜单 264px 高 / 59 个候选、沿竖直每 8px 采样）：
+    #
+    #  .. code:: text
+    #
+    #    修复前  menu,menu,dlg-settings,dlg-settings,dlg-settings,
+    #            menu,dlg-settings,dlg-settings,…      ← 条纹穿透
+    #    修复后  menu,menu,menu,menu,…（12/12 全 menu）
+    #
+    #  「一闪一闪」是同一个根因的视觉副作用：菜单被盖住时鼠标其实划过
+    #  **下面的卡**，那些卡带 ``.card-glass:hover{transform:translateY(-3px)}``，
+    #  卡片上下跳 → 露出来的那一小条菜单跟着变高变矮。
+    #
+    #  ## 修法与这条断言
+    #
+    #  ``pages.css`` 给 ``.dlg-card-row`` 加 ``position: relative; z-index: 1``，
+    #  整张角色卡（连同里面菜单）抬到所有非定位兄弟之上。
+    #
+    #  断言不查 CSS 文本（那谁都能写出漂亮规则），而是**实测命中**：
+    #  在菜单竖向等距取 12 个点做 ``elementFromPoint``，必须**全部**落在
+    #  菜单内部；再算「可见像素高度」必须接近 ``clientHeight``。
+    # ══════════════════════════════════════════════════════════════════════
+    def stage_menu_open() -> None:
+        state["stage"] = "menu_open"
+        js("""
+        (function(){
+          var rows = document.querySelectorAll('#page-config .config-row');
+          if (!rows.length) { window.__MN_ERR__ = '没有配置行'; return; }
+          var all = rows[0].querySelectorAll('.config-actions button');
+          var btn = null;
+          for (var i = 0; i < all.length; i++) {
+            if (all[i].textContent.trim() === '编辑') { btn = all[i]; }
+          }
+          if (!btn) { window.__MN_ERR__ = '这一行没有「编辑」按钮'; return; }
+          window.__MN_ERR__ = '';
+          btn.click();
+        })()
+        """)
+        QTimer.singleShot(900, stage_menu_fill)
+
+    def stage_menu_fill() -> None:
+        #: 点开下拉 + 清空过滤词，让候选摊满（用户看到的就是这个状态）
+        js("""
+        (function(){
+          var dlg = document.querySelector('.dlg-overlay .dlg-box');
+          if (!dlg) { window.__MN_ERR__ = '编辑弹框没打开'; return; }
+          var input = dlg.querySelector('.char-input');
+          if (!input) { window.__MN_ERR__ = '没有角色输入框'; return; }
+          input.focus();
+          input.dispatchEvent(new MouseEvent('mousedown', {bubbles: true}));
+          input.value = '';
+          input.dispatchEvent(new Event('input', {bubbles: true}));
+        })()
+        """)
+        QTimer.singleShot(700, check_menu_visible)
+
+    def check_menu_visible() -> None:
+        data = bundle("""
+        (function(){
+          if (window.__MN_ERR__) {
+            return JSON.stringify({error: window.__MN_ERR__});
+          }
+          var dlg = document.querySelector('.dlg-overlay .dlg-box');
+          if (!dlg) { return JSON.stringify({error: '编辑弹框没了'}); }
+          var menu = dlg.querySelector('.char-menu');
+          if (!menu) { return JSON.stringify({error: '没有 .char-menu'}); }
+          if (menu.hidden) { return JSON.stringify({error: '菜单没展开'}); }
+
+          var r = menu.getBoundingClientRect();
+          var nodes = menu.querySelectorAll('.char-option');
+
+          // ① 竖向等距采样 12 点，看最上层是谁
+          var menuHits = 0;
+          var others = [];
+          var y0 = Math.ceil(r.top);
+          var step = Math.max(4, Math.floor(r.height / 12));
+          for (var n = 0; n < 12; n++) {
+            var y = y0 + n * step;
+            if (y >= r.bottom) break;
+            var el = document.elementFromPoint(Math.round(r.left + 30), y);
+            if (el && menu.contains(el)) {
+              menuHits += 1;
+            } else {
+              others.push(el ? (el.tagName + '.' +
+                String(el.className || '').slice(0, 28)) : 'null');
+            }
+          }
+
+          // ② 菜单实际可见的像素高度（逐 2px 采样）
+          var visiblePx = 0;
+          for (var yy = r.top + 1; yy < r.bottom - 1; yy += 2) {
+            var e2 = document.elementFromPoint(Math.round(r.left + 30),
+                                               Math.round(yy));
+            if (e2 && menu.contains(e2)) visiblePx += 2;
+          }
+
+          return JSON.stringify({
+            error: '',
+            rect: {t: Math.round(r.top), l: Math.round(r.left),
+                   w: Math.round(r.width), h: Math.round(r.height)},
+            optCount: nodes.length,
+            clientH: menu.clientHeight,
+            scrollH: menu.scrollHeight,
+            visiblePx: visiblePx,
+            hitMenu: menuHits,
+            hitOther: others.length,
+            others: others.slice(0, 4),
+            menuZ: getComputedStyle(menu).zIndex,
+            cardPos: getComputedStyle(
+              menu.closest('.dlg-card-row') || menu).position
+          });
+        })()
+        """, "menu_visible")
+        d = data if isinstance(data, dict) else {}
+        err = str(d.get("error") or "")
+        client_h = int(d.get("clientH") or 0)
+        visible = int(d.get("visiblePx") or 0)
+        ok = (
+            not err
+            and int(d.get("optCount") or 0) >= 2
+            and int(d.get("hitOther") or 0) == 0
+            and client_h > 0
+            #: 允许 8px 误差（圆角 / 边框不被 elementFromPoint 命中）
+            and visible >= client_h - 8
+        )
+        check("C8.6", ok,
+              f"编辑弹框角色下拉整块可见 = {d}"
+              + (f"  ✗ {err}" if err else ""))
+
+        js('(function(){var b=document.querySelector('
+           '\'.dlg-overlay [data-action="cancel"]\');'
+           'if(b) b.click();})()')
+        QTimer.singleShot(260, check_roundtrip)
 
     # ══════════════════════════════════════════════════════════════════════
     #  ★ C9：写操作**往返一致**（2026-11-02 加）
