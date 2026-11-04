@@ -2827,6 +2827,61 @@ class WebBridge(QObject):
             payload["message"] = "ok-ww 引擎模块不可用"
         return _json(payload)
 
+    @Slot(result=str)
+    def getEngineStatus(self) -> str:
+        """★ ok-ww 引擎**状态轻量查询** —— 给侧栏底部那颗状态药丸用。
+
+        ## 为什么不复用 :meth:`getOkwwState`
+
+        ``getOkwwState`` 除了状态还拼 ``tasks`` 表 —— 那要
+        ``ToolRegistry.get_meta`` 四次 + 逐工具 ``importlib.import_module``。
+        药丸**每 1.5 秒轮询一次**，扛不住这个开销（也会把
+        ``importlib`` 的锁反复拿一遍）。
+
+        这里只读宿主对象上几个 property，成本近乎零。
+
+        ## 2026-11-04 用户要求（圈图批注）
+
+        > 如果 okww 引擎启动成功，原点就变绿色，文字变成「引擎就绪」；
+        > 如果失败，原点变成红色，文字变成「引擎启动失败」，
+        > 而且各种任务、工具无法运行
+
+        所以这里把「能不能跑」直接给出 ``ready`` 字段，别让页面自己猜：
+
+        * ``state="ready"``   → 引擎在、没在跑 → 就绪
+        * ``state="running"`` → 引擎在、正在跑某个任务 → 就绪（运行中）
+        * ``state="booting"`` → 引擎正在加载（首次冷启动实测 ~20 秒）
+        * ``state="error"``   → 引擎启动失败（``bootError`` 有原因）
+        * ``state="idle"``    → 宿主还没被创建 / 还没点过启动
+
+        ``available=False`` 表示**连 ok-ww 模块都导入不了**（装坏了），
+        和 ``state="error"`` 一样属于「跑不了」。
+        """
+        payload: dict = {
+            "state": "idle", "runningTask": "", "pendingStart": "",
+            "bootError": "", "available": True, "ready": False,
+        }
+        try:
+            from ..tools.game.auto_combat import okww_boot  # noqa: PLC0415
+
+            host = okww_boot.current_host()
+            if host is not None:
+                payload["state"] = _safe(lambda: host.state, "idle")
+                payload["runningTask"] = _safe(
+                    lambda: host.running_task or "", "")
+                payload["pendingStart"] = _safe(
+                    lambda: host.pending_start or "", "")
+                payload["bootError"] = _safe(
+                    lambda: host.boot_error or "", "")
+        except Exception:  # noqa: BLE001
+            logger.warning("getEngineStatus 失败", exc_info=True)
+            payload["available"] = False
+            payload["message"] = "ok-ww 引擎模块不可用"
+            return _json(payload)
+
+        payload["ready"] = payload["state"] in ("ready", "running")
+        return _json(payload)
+
     def _okww_task_map(self) -> list[dict]:
         """工具 key → ok-ww TASKS key 的映射表。
 

@@ -85,6 +85,14 @@
   /** 任务页日志最多保留多少行（超出丢最早的）*/
   const LOG_MAX_LINES = 500;
 
+  /**
+   * ok-ww 引擎状态轮询间隔（毫秒）。
+   *
+   * 和工具页 ``combatPoll()`` 同一个节奏（1.5 秒）——
+   * 引擎冷启动实测要 ~20 秒，比这慢就看着像卡住了。
+   */
+  const ENGINE_POLL_MS = 1500;
+
   // ════════════════════════════════════════════════════════════════════════
   //  应用状态
   // ════════════════════════════════════════════════════════════════════════
@@ -105,6 +113,12 @@
     info: {displayName: '鸣潮工具箱', version: '—'},
     /** 运行状态 */
     status: {running: '', progress: 0},
+    /** ★ ok-ww 引擎状态（getEngineStatus 的结果；侧栏药丸据此上色）*/
+    engine: null,
+    /** 引擎报错原因（药丸只显示短文案，完整原因留给工具页/日志）*/
+    _engineError: '',
+    /** 引擎状态轮询定时器 */
+    _engineTimer: null,
     /** 已注册的页面渲染函数 {key: fn} */
     _pages: new Map(),
     /** 页面容器缓存 */
@@ -774,6 +788,110 @@
       if (label) label.textContent = text;
     },
 
+    // ──────────────────────────────────────────────────────────────────────
+    //  ok-ww 引擎状态（侧栏底部药丸）
+    // ──────────────────────────────────────────────────────────────────────
+
+    /**
+     * ★ 把引擎状态画到侧栏底部那颗药丸上（2026-11-04 用户圈图要求）。
+     *
+     * 用户原话：
+     *
+     * > 如果 okww 引擎启动成功，原点就变绿色，文字变成引擎就绪；
+     * > 如果失败，原点变成红色，文字变成引擎启动失败，
+     * > 而且各种任务、工具无法运行
+     *
+     * ## 为什么状态判定全放在后端
+     *
+     * ``getEngineStatus`` 直接给 ``ready`` / ``state``，页面只做**翻译**。
+     * 让页面自己从 ``state`` 猜「能不能跑」的话，后端加一个新状态
+     * （比如 ``booting``）页面就会静默显示错的东西 —— 而这条药丸
+     * 恰恰是用户判断「现在能不能点运行」的唯一依据。
+     *
+     * ## 和桥接层运行状态的关系
+     *
+     * 药丸显示**优先级**：
+     *
+     * 1. 引擎启动失败 → 红（最要紧 —— 这时按运行也跑不起来）
+     * 2. 桥接层有任务在跑 → 绿「运行中」
+     * 3. 引擎就绪 → 绿「引擎就绪」
+     * 4. 引擎正在启动 → 灰「引擎启动中…」
+     * 5. 其它 → 灰「就绪」
+     *
+     * @param {{state:string, ready:boolean, available:boolean,
+     *          bootError:string, runningTask:string}} st
+     */
+    applyEngineStatus(st) {
+      this.engine = st || null;
+      if (!st) return;
+      const pill = document.getElementById('status-pill');
+      //: 药丸窄，失败原因放悬停提示（完整原因仍在工具页状态行/日志里）
+      const why = String(st.bootError || '').trim();
+      if (pill) {
+        if (st.state === 'error' || st.available === false) {
+          pill.title = st.available === false
+            ? 'ok-ww 引擎模块导入失败 —— 任务和工具都跑不了，详见日志'
+            : ('ok-ww 引擎启动失败' + (why ? '：' + why : '')
+               + ' —— 任务和工具都跑不了');
+        } else if (st.ready) {
+          pill.title = st.state === 'running'
+            ? 'ok-ww 引擎就绪，正在跑：' + (st.runningTask || '某个任务')
+            : 'ok-ww 引擎就绪 —— 任务和工具可以运行';
+        } else if (st.state === 'booting' || st.pendingStart) {
+          pill.title = 'ok-ww 引擎正在启动（首次冷启动约 20 秒）';
+        } else {
+          pill.title = '';
+        }
+      }
+      //: 桥接层有任务在跑时戴「运行中」的帽子（引擎那格留给下面判断）
+      if (this.status && this.status.running) {
+        this.setStatus('running', '运行中');
+        return;
+      }
+      //: 模块都导不进来 / 引擎报错过 → 红
+      if (st.available === false || st.state === 'error') {
+        //: 药丸窄，只给短文案；完整原因见悬停提示与工具页状态行
+        const short = st.available === false ? '引擎不可用' : '引擎启动失败';
+        this.setStatus('error', short);
+        this._engineError = why;
+        return;
+      }
+      if (st.state === 'running') {
+        //: 引擎正在跑任务 —— 呼吸绿光晕（和「就绪」的静止绿区分开）
+        this.setStatus('running', '引擎运行中');
+      } else if (st.ready) {
+        //: 就绪：绿点绿字，但不呼吸 —— 一眼能看出「没在跑、但能跑」
+        this.setStatus('ready', '引擎就绪');
+      } else if (st.state === 'booting' || st.pendingStart) {
+        this.setStatus('idle', '引擎启动中…');
+      } else {
+        this.setStatus('idle', '就绪');
+      }
+    },
+
+    /** 拉一次引擎状态并画药丸（失败静默 —— 别为一条提示打断界面）*/
+    async pollEngineStatus() {
+      if (typeof Bridge === 'undefined' || !Bridge) return null;
+      try {
+        const res = await Bridge.call('getEngineStatus');
+        this.applyEngineStatus(res || {});
+        return res;
+      } catch (err) {
+        //: 桥接断开时上面已经画过「桥接断开」了，这里不要覆盖
+        return null;
+      }
+    },
+
+    /** 启动引擎状态轮询（boot 末尾调一次；重复调用无害）*/
+    startEnginePoll() {
+      const self = this;
+      if (this._engineTimer) return;
+      this.pollEngineStatus();
+      this._engineTimer = setInterval(function () {
+        self.pollEngineStatus();
+      }, ENGINE_POLL_MS);
+    },
+
     /** 追加一行日志到任务页（如果存在）*/
     appendLog(text, level) {
       const box = document.getElementById('task-log');
@@ -984,7 +1102,9 @@
     // ── 6) 进首页 ──
     await App.go('home', {silent: true});
 
-    App.setStatus('idle', '就绪');
+    //: ★ 2026-11-04：药丸改成反映 ok-ww 引擎状态（用户圈图要求），
+    //: 不再写死「就绪」—— 先拉一次，再每 1.5 秒轮询。
+    App.startEnginePoll();
     console.info(
       '[app] 就绪：%d 个工具，%d 个导航项，壁纸 %d 个',
       App.tools.length, App.nav.length, App.wallpapers.length
@@ -1028,7 +1148,10 @@
         break;
       case 'taskFinished':
         App.status.running = '';
+        //: ★ 结束之后**别写死「就绪」** —— 药丸归引擎状态管
+        //: （引擎挂了还显示「就绪」就是骗人）
         App.setStatus('idle', '就绪');
+        App.pollEngineStatus();
         App.appendLog('■ 结束：' + (data.summary || data.key || ''), 'ok');
         App.setProgress(100, '完成');
         break;

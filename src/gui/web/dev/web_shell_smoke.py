@@ -124,6 +124,8 @@ SMOKE_ARGS: dict[str, list] = {
     "saveFlow": ['{"name":"","steps":[]}'],     #: 校验不过 → invalid
     #: ★★ P4 新接口（2026-11-02）
     "getOkwwState": [],                          #: 只读，安全
+    #: ★ 2026-11-04 侧栏状态药丸用的轻量版（不拼 tasks 表，1.5 秒轮询）
+    "getEngineStatus": [],                       #: 只读，安全
     "getToolSettings": ["echo_change"],          #: 只读，安全
     "runOkwwTask": ['{"taskKey":"__no_such_task__"}'],  #: 不存在的任务 → 早失败
     "stopOkwwTask": [],                          #: 没引擎时返回 idle，安全

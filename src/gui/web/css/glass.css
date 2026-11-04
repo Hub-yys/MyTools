@@ -337,6 +337,17 @@
               box-shadow var(--dur) var(--ease);
 }
 
+/* ★ 2026-11-04：引擎就绪 —— 绿点绿字，但**不呼吸**
+   （呼吸光晕留给「运行中」，两个绿态要能一眼区分） */
+.status-pill[data-state="ready"] {
+  color: #7ee1a8;
+  border-color: rgba(126, 225, 168, 0.30);
+}
+
+.status-pill[data-state="ready"] .status-dot {
+  background: #4ade80;
+}
+
 /* 运行中：绿点 + 呼吸光晕 */
 .status-pill[data-state="running"] {
   color: #7ee1a8;
