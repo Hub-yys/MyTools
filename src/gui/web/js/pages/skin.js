@@ -306,52 +306,65 @@
     }
     card.appendChild(preview);
 
-    // ── ② 标题 + 「使用中」角标 ──
-    const titleRow = P.el('div', { class: 'wallpaper-title-row' });
-    titleRow.appendChild(P.el('div', {
-      class: 'wallpaper-title',
-      text: String(item.title || '（未命名）')
-    }));
-    if (active) {
-      titleRow.appendChild(P.el('span', {
-        class: 'wallpaper-badge',
-        text: '使用中'
-      }));
-    }
-    card.appendChild(titleRow);
-
-    // ── ②-b 类型标签 —— ★ 2026-11-04 用户圈图要求删掉 ──
+    // ── ② 名字行 + 「使用中」角标 ──
     //
-    //: 原样是 ``("▶ 视频" if wp_type == "video" else f"{wp_type}") if ok``
-    //: （旧界面 ``skin_page.py`` L391）。用户圈图写着「只留角色主题这几个字，
-    //: 比如上面的守岸人钢琴版，视频去掉」—— 每张卡都挂一条「▶ 视频」纯属
-    //: 噪音：能在这里列出来的、能点「使用这个壁纸」的，本来就是视频。
-    //: 现在卡片正文只留标题 + 「X 主题」（见下面的 ②-c）。
+    //: ★ 2026-11-04 **第二次**圈图（第一次只删了「▶ 视频」，标题还留着）。
+    //: 用户这次把**标题**全框住：「守岸人钢琴版 / 尤诺 / 心月狐 /
+    //: 爱弥斯-Joe / 长离 / 鸣潮 千咲「回眸」 Wuthering Waves Chisa」，
+    //: 批注「这些都删掉啊，下面坎特蕾拉也是，**后面如果新加壁纸也不要这些**」。
     //:
-    //: ⚠ 不要以为删掉它会丢掉「不支持」的提示 —— 那种卡走的是 ③ 分支的
-    //: 禁用按钮 + 「需要 WebGL 渲染」，跟类型标签无关。
-
-    // ── ②-c ★ 精选主题：主色角标（2026-11-04）──
-    //
-    //: 用户点名要「心月狐红色 / 爱弥斯粉红 / 千咲黑红」这几个主题。
-    //: 自动抽色给不出这些色（实测心月狐抽成橙、千咲抽成紫），
-    //: 所以主色是**人工挑好写死**在后端 ``core/wallpaper_themes.py`` 里的，
-    //: 这里只是把主题名和色块显示出来，让用户知道选这套会是什么颜色。
-    if (item.theme && item.theme.primary) {
-      const themeRow = P.el('div', { class: 'wallpaper-theme' });
-      themeRow.appendChild(P.el('span', {
+    //: 那些是 Wallpaper Engine 创意工坊的**目录标题**，不是我们起的名字：
+    //: 带「-Joe」「Wuthering Waves Chisa」这种上游残留，和下面那行
+    //: 「X 主题」重复了一遍。精选主题的卡有主题名当名字，标题纯属噪音。
+    //:
+    //: ⚠ 没有主题的卡（用户自己放进 ``wallpapers`` 目录的视频）**仍保留标题**
+    //: —— 那种卡没有「X 主题」行，去掉标题就整张没名字了，认不出是哪一张。
+    const hasTheme = !!(item.theme && item.theme.primary);
+    //: 两种卡的行样式不同（主题行 11px 淡色 + 色点；标题行 13px 加粗），
+    //: 但都要能挂「使用中」角标、都要被 ``refreshActive()`` 找到 ——
+    //: 所以给两者都加一个稳定的 ``wallpaper-label`` 类当选择器。
+    const labelRow = P.el('div', {
+      class: hasTheme
+        ? 'wallpaper-theme wallpaper-label'
+        : 'wallpaper-title-row wallpaper-label'
+    });
+    if (hasTheme) {
+      //: 主色是**人工挑好写死**在后端 ``core/wallpaper_themes.py`` 里的
+      //: —— 自动抽色给不出用户点名的红/粉红/黑红（实测心月狐抽成橙、
+      //: 千咲抽成紫），这里只负责把主题名和色块显示出来。
+      labelRow.appendChild(P.el('span', {
         class: 'wallpaper-theme-dot',
         style: 'background-color:' + String(item.theme.primary)
       }));
-      themeRow.appendChild(P.el('span', {
+      labelRow.appendChild(P.el('span', {
         class: 'wallpaper-theme-name',
         text: String(item.theme.name || '') + ' 主题'
       }));
       if (item.theme.desc) {
-        themeRow.title = String(item.theme.desc);
+        labelRow.title = String(item.theme.desc);
       }
-      card.appendChild(themeRow);
+    } else {
+      labelRow.appendChild(P.el('div', {
+        class: 'wallpaper-title',
+        text: String(item.title || '（未命名）')
+      }));
     }
+    if (active) {
+      labelRow.appendChild(P.el('span', {
+        class: 'wallpaper-badge',
+        text: '使用中'
+      }));
+    }
+    card.appendChild(labelRow);
+
+    // ── ②-b 类型标签 —— ★ 2026-11-04 第一次圈图要求删掉 ──
+    //
+    //: 原样是 ``("▶ 视频" if wp_type == "video" else f"{wp_type}") if ok``
+    //: （旧界面 ``skin_page.py`` L391）。每张卡都挂一条「▶ 视频」纯属噪音：
+    //: 能在这里列出来的、能点「使用这个壁纸」的，本来就是视频。
+    //:
+    //: ⚠ 不要以为删掉它会丢掉「不支持」的提示 —— 那种卡走的是 ③ 分支的
+    //: 禁用按钮 + 「需要 WebGL 渲染」，跟类型标签无关。
 
     // ── ③ 按钮 / 不支持说明 ──
     const actions = P.el('div', { class: 'wallpaper-actions' });
@@ -426,7 +439,10 @@
       const active = id === String(state.currentId);
       card.classList.toggle('is-active', active);
 
-      const row = card.querySelector('.wallpaper-title-row');
+      //: ★ 2026-11-04：名字行有两种（精选主题卡 = ``.wallpaper-theme``、
+      //: 自备视频卡 = ``.wallpaper-title-row``），统一带 ``.wallpaper-label``
+      //: 类，这里只认那个 —— 不然给自备卡加角标会静默找不到行。
+      const row = card.querySelector('.wallpaper-label');
       const badge = card.querySelector('.wallpaper-badge');
       if (active && !badge && row) {
         row.appendChild(P.el('span', {

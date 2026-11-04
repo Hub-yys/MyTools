@@ -1453,6 +1453,12 @@
   color: var(--faint);
 }
 
+/* ★ 名字行（2026-11-04 第二次圈图）
+   精选主题卡用 ``.wallpaper-theme``（主题名 + 色点），自备视频卡用
+   ``.wallpaper-title-row``（Wallpaper Engine 目录标题）。
+   两者都带 ``.wallpaper-label``，只为了 ``refreshActive()`` 有一个
+   稳定的挂「使用中」角标的选择器 —— 别再分别按两个类名去找。 */
+
 /* 标题行（旧界面 L369-379：标题 13px 加粗 + [使用中] 绿色角标）*/
 .wallpaper-title-row {
   display: flex;
