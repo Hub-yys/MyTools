@@ -117,13 +117,14 @@ img, video, svg {
   --border: rgba(170, 160, 255, 0.14);
 
   /* ── 侧栏 ──
-     ★ 2026-11-04：原来写死 ``rgba(10, 9, 19, 0.92)``（几乎实心黑板）。
-     用户圈图要求「左边也要玻璃透明的效果」，改成跟着可读性下限走 ——
-     和 ``.card-glass`` 同一个公式，只是系数小一点（侧栏要压住导航文字）。
-     深色下 effective alpha = 0.59 × 0.78 ≈ 0.46，壁纸能透上来。
-     ★ 具体配方和 backdrop-filter 见 glass.css 的 ``.glass-sidebar``。 */
-  --sidebar-bg: rgba(13, 21, 36, calc(var(--we-readability-floor) * 0.78));
-  --sidebar-border: rgba(255, 255, 255, 0.10);
+     ★ 2026-11-04 第一轮：原来写死 ``rgba(10, 9, 19, 0.92)``（几乎实心黑板），
+     改成跟着可读性下限走。
+     ★ 2026-11-04 第二轮（用户圈图「左侧边栏也是」）：系数从 0.78 降到
+     ``--we-fill-sidebar``（0.50）—— 0.59 × 0.50 ≈ **30% 不透明**，
+     壁纸的左边能真正透出来。
+     具体配方和 backdrop-filter 见 glass.css 的 ``.glass-sidebar``。 */
+  --sidebar-bg: rgba(13, 21, 36, calc(var(--we-readability-floor) * var(--we-fill-sidebar)));
+  --sidebar-border: rgba(255, 255, 255, 0.12);
 
   /* ── 滚动条 ── */
   --scrollbar: rgba(255, 255, 255, 0.14);
@@ -160,17 +161,40 @@ img, video, svg {
   /* ★ 玻璃透明度 40% → 不透明度 60% */
   --we-glass-alpha: 0.40;
 
-  /* 模糊半径 / 饱和 / 亮度 */
-  --we-blur: 16px;
-  --we-saturate: 1.8;
+  /* ── ★ 玻璃「填充系数」──
+     2026-11-04（用户圈图）：「这些模糊的不能透明吗，左侧边栏也是」。
+
+     之前每个玻璃面板都写死
+     ``calc(var(--we-readability-floor) * 0.80)`` —— 深色下就是 **47%
+     不透明的深藏青**，再加上 ``blur: 16px``，壁纸在下面只剩一团灰亮，
+     面板看着像「压暗的黑板」而不是玻璃。
+
+     现在把那个乘数抽成**四个变量**，一处调、所有面板跟着变。
+     深色下卡片 ≈ 0.59 × 0.36 ≈ **21% 不透明**，壁纸的轮廓和颜色
+     能穿上来；文字对比度靠 ``backdrop-filter`` 里的 ``brightness()``
+     压暗背景来兜（压暗比加厚底色更"透" —— 底色一厚就"闷"）。 */
+  --we-fill-card: 0.36;      /* 卡片 / 主面板 */
+  --we-fill-sidebar: 0.50;   /* 左侧边栏 */
+  --we-fill-titlebar: 0.40;  /* 标题栏 */
+  --we-fill-thin: 0.40;      /* 薄底列表行（本来就不模糊） */
+
+  /* 模糊半径 / 饱和 / 亮度
+     ⚠ blur 从出厂 16px 一路收到 **7px**（逐个版本截图比过：
+     11px 卡片里只剩一团红影，7px 才认得出是壁纸的哪一部分）。
+     「模糊到看不出是什么」= 又脏又不透，比不模糊更难看。 */
+  --we-blur: 7px;
+  --we-saturate: 1.65;
   --we-glass-brightness: 1.04;
+  /* 面板背后的压暗：玻璃要透，又要能压住白字 —— 压暗模糊层比加厚底色
+     更划算（底色一厚就"闷"，压暗只掉亮度不掉细节） */
+  --we-glass-dim: 0.88;
 
   /* 玻璃厚度：内高光 / 外阴影 */
   --we-glass-highlight: 0.32;
   --we-glass-shadow: 0.12;
 
   /* 壁纸压暗（0 = 不压暗）*/
-  --we-scrim: 0.34;
+  --we-scrim: 0.45;
 }
 
 
@@ -181,8 +205,8 @@ html[data-theme="light"] {
   --we-surface-tint-dark: #ffffff;
   --we-scrim: 0.10;
   /* ── 侧栏 ── 浅色下用白玻璃（同样跟着可读性下限，不写死实色） */
-  --sidebar-bg: rgba(255, 255, 255, calc(var(--we-readability-floor) * 0.80));
-  --sidebar-border: rgba(0, 0, 0, 0.08);
+  --sidebar-bg: rgba(255, 255, 255, calc(var(--we-readability-floor) * var(--we-fill-sidebar)));
+  --sidebar-border: rgba(0, 0, 0, 0.10);
   --text: #1a1a22;
   --dim: #5c5c70;
   --faint: rgba(26, 26, 34, 0.42);
