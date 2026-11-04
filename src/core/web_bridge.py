@@ -1142,7 +1142,7 @@ class WebBridge(QObject):
 
     # ================================================================ 真实执行
     def _start_thread(self, flow, *, kind: str, label: str,
-                      run_key: str = "") -> str:
+                      run_key: str = "", options: dict | None = None) -> str:
         """★ 启动真实执行器 :class:`FlowRunThread`，把它的信号接到 JS 事件。
 
         ## 这一层只做「翻译」，不做业务
@@ -1180,7 +1180,7 @@ class WebBridge(QObject):
             return _json({"ok": False, "reason": "busy",
                           "running": self._running})
 
-        thread = FlowRunThread(flow)
+        thread = FlowRunThread(flow, options=options)
         self._thread = thread
 
         #: 记住状态（getStatus / stopTask 用）
@@ -1334,10 +1334,67 @@ class WebBridge(QObject):
         明确返回 ``{ok: false, reason: "not_runnable"}`` ——
         以前那种"发几个事件假装跑过了"是最糟的行为（用户以为在跑）。
         """
+        #: ★ 2026-11-04 主体抽到 :meth:`_run_tool` —— 和 :meth:`runTaskWith`
+        #: 共用同一套校验，免得「带参数的」和「不带参数的」慢慢分叉。
+        return self._run_tool(key, {})
+
+    @Slot(str, str, result=str)
+    def runTaskWith(self, key: str, options_json: str) -> str:
+        """★ 2026-11-04 带额外参数的 ``runTask``（指定声骸强化用）。
+
+        :param key: 同 :meth:`runTask`。
+        :param options_json: 额外运行参数的 JSON 对象字符串，例如
+            ``{"designated": true}``。空串 / 非法 JSON 一律当 ``{}``。
+
+        ## 为什么另起一个 Slot 而不是给 runTask 加参数
+
+        QtWebChannel 的 ``@Slot`` 重载靠**参数个数**匹配，同名重载在这个
+        项目里从来没被验证过（``web_shell_smoke.py`` 也只登记单个签名）。
+        多一个参数就意味着所有老的 ``runTask(key)`` 调用都必须改 ——
+        而它们分布在 JS、冒烟脚本、回归测试里。另起一个方法名零风险。
+
+        ## ``designated`` 是什么
+
+        用户 2026-11-04：
+
+        > 增加【指定声骸强化】功能，即实现用户鼠标选中了哪个声骸就强化哪个
+        > 声骸，强化完或强化好了就停止
+
+        True 时整条链路都会带上 ``designated`` 标志：
+
+        .. code:: text
+
+            runTaskWith(key, '{"designated":true}')
+              → FlowRunThread(flow, options={"designated": True})
+              → tool.create_task_runner(options)    # options 里有 designated
+              → OkwwTaskRunner(designated_only=True)
+              → task._designated_mode = True    # 见 _configure
+
+        引擎侧效果见 ``okww_task._select_designated_echo``。
+        """
+        extra: dict = {}
+        raw = (options_json or "").strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    extra = parsed
+            except Exception:  # noqa: BLE001 - 参数写坏不该炸掉整个桥接
+                logger.warning("runTaskWith：options 不是合法 JSON：%r", raw)
+
         key = (key or "").strip()
         if not key:
             return _json({"ok": False, "reason": "empty"})
 
+        #: ★ 只透传白名单里的键 —— 免得 JS 随手塞个键就改到执行器内部状态
+        options: dict = {}
+        if extra.get("designated"):
+            options["designated"] = True
+
+        return self._run_tool(key, options)
+
+    def _run_tool(self, key: str, options: dict) -> str:
+        """``runTask`` / ``runTaskWith`` 的公共实现（校验 + 起线程）。"""
         _ensure_tools_discovered()
         if self._running:
             return _json({"ok": False, "reason": "busy", "running": self._running})
@@ -1381,12 +1438,9 @@ class WebBridge(QObject):
             blocked["key"] = key
             blocked["kind"] = "tool"
             return _json(blocked)
-        #: ⚠ 必须传 run_key=key —— 不传的话 _start_thread 会拿 flow.name
-        #: （中文显示名「声骸自动强化」）当 key，于是 stopTask 回报的
-        #: 和 JS 传进来的对不上。冒烟/集成测试逮到的。
         return self._start_thread(flow, kind="tool",
                                   label=meta.name if meta else key,
-                                  run_key=key)
+                                  run_key=key, options=options)
 
     @Slot(str, result=str)
     def runFlow(self, flow_id: str) -> str:
@@ -3155,56 +3209,6 @@ class WebBridge(QObject):
         except Exception as exc:  # noqa: BLE001 - 恢复失败要说清楚，别静默
             logger.warning("okwwResumeTask 失败", exc_info=True)
             return _json({"ok": False, "reason": "resume_failed",
-                          "message": f"{type(exc).__name__}: {exc}"})
-
-    @Slot(result=str)
-    def okwwSkipEcho(self) -> str:
-        """跳过当前声骸 —— **当成"已强化好"**，同名同类型的后面也跳过。
-
-        照抄 ``OkwwHost.request_skip_current()``（工具页那个按钮用的同一个 API）。
-
-        ## 语义（用户 2026-10-30 原话）
-
-        > 跳过相当于他已经强化好了，需要跳过同类型同名声骸
-
-        所以按一下 =
-        * 跳过它本身
-        * 之后**同名同类型**（含「异相」版）的都跳过
-        * 成套模式下计入该 Cost 档的种类数
-
-        ## 为什么走宿主中转而不是直接改任务属性
-
-        任务跑在**引擎线程**里，界面线程直接改它的属性有两个问题：
-        竞态（界面改了、任务正好在读写）、任务实例可能还没建出来。
-        主机上放一个**一次性标志**、任务自己在检查点取走 —— 宿主有锁。
-
-        :return: ``{ok, message}`` / ``{ok: false, reason, message}``
-        """
-        try:
-            from ..tools.game.auto_combat import okww_boot  # noqa: PLC0415
-
-            host = okww_boot.current_host()
-            if host is None:
-                return _json({"ok": False, "reason": "idle",
-                              "message": "引擎还没启动过，没有正在跑的强化任务"})
-
-            request = getattr(host, "request_skip_current", None)
-            if not callable(request):
-                return _json({"ok": False, "reason": "unsupported",
-                              "message": "当前引擎版本不支持跳过"})
-
-            #: 上游返回 True = 已记下请求 / False = 当前没有在跑的强化任务
-            accepted = bool(request())
-            if not accepted:
-                return _json({"ok": False, "reason": "no_task",
-                              "message": "当前没有正在跑的强化任务，跳过无处可去"})
-            msg = "已请求跳过当前声骸（同名同类型的后面也跳过）"
-            self.pushLog(f"⏭ {msg}", "warn")
-            logger.info("WebBridge：已请求跳过当前声骸")
-            return _json({"ok": True, "message": msg})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("okwwSkipEcho 失败", exc_info=True)
-            return _json({"ok": False, "reason": "error",
                           "message": f"{type(exc).__name__}: {exc}"})
 
     # ================================================ 声骸强化历史（P5）

@@ -396,7 +396,10 @@ def main() -> int:
                 "switchCards: document.querySelectorAll("
                 "  '.page.is-active .enh-switch-card').length,"
                 "collCards: document.querySelectorAll("
-                "  '.page.is-active .coll-card').length"
+                "  '.page.is-active .coll-card').length,"
+                "titleBtns: Array.from(document.querySelectorAll("
+                "  '.page.is-active .enh-title-row .btn')).map(function(b){"
+                "    return b.textContent.trim();})"
                 "})",
                 "enhance_structure",
             )
@@ -441,6 +444,18 @@ def main() -> int:
             check(f"{short}.P4g", int(s.get("collCards") or 0) == 2,
                   f"{name}：折叠卡 = {s.get('collCards')} 张"
                   f"（期望 2：核心属性 + 可选属性）")
+
+            #: ⑤ ★ 2026-11-04 标题行的按钮组（用户：「删掉跳过，增加
+            #:   【指定声骸强化】功能」）
+            #:
+            #: 旧界面是 [运行][继续][停止][跳过][恢复默认]；
+            #: 现在 **「跳过」必须消失**、「指定强化」必须出现。
+            #: 只断言这两件事 —— 其余按钮的位置/顺序没被要求改过。
+            btns = [str(x) for x in (s.get("titleBtns") or [])]
+            check(f"{short}.P4h",
+                  "跳过" not in btns and "指定强化" in btns,
+                  f"{name}：标题行按钮 = {btns}"
+                  f"（期望含「指定强化」、**不含**「跳过」）")
 
         # ══════════════════════════════════════════════════════════════════
         #  P5：点**主操作按钮**后有反应

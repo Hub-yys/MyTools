@@ -114,6 +114,8 @@ SMOKE_ARGS: dict[str, list] = {
     #: 传一个不存在的 id：扫完壁纸就 ``not_found`` 早失败，不落盘。
     "setWallpaper": ["__smoke_missing__"],
     "runTask": ["__smoke_missing__"],   #: 不存在的工具 → 明确报错
+    #: ★ 2026-11-04 「指定声骸强化」走的新 Slot（runTask 的带参数版）
+    "runTaskWith": ["__smoke_missing__", ""],
     "runFlow": ["__smoke_missing__"],
     "setSkin": ["__smoke_missing__"],
     #: ★ 写接口 —— 用**非法**参数让它早失败，绝不真改用户数据
@@ -138,10 +140,10 @@ SMOKE_ARGS: dict[str, list] = {
     #: ★ P5 ⑤ —— 抽卡历史
     "getGachaHistory": [],                       #: 只读，安全
     "clearGachaHistory": [],                     #: ⚠ 见 SMOKE_SKIP（清用户数据）
-    #: ★ P5 —— 继续 / 跳过 / 强化历史（2026-11-02）
+    #: ★ P5 —— 继续 / 强化历史（2026-11-02）
+    #: ⚠ 2026-11-04：「跳过」（okwwSkipEcho）已按用户要求删除，这里不再登记。
     "getEchoEnhanceHistory": [],                 #: 只读历史文件，安全
     "okwwResumeTask": [],                        #: 无引擎时返回 idle，安全
-    "okwwSkipEcho": [],                          #: 无引擎时返回 idle，安全
     #: ★ P6 —— 4C 历史 / 定时关机（2026-11-02）
     "getCombatHistory": [],                      #: 只读历史文件，安全
     "getShutdownTimer": [],                      #: 只读设置，安全
@@ -210,8 +212,8 @@ SMOKE_SKIP: set[str] = {
 
 #: 这些方法会真的启动引擎 / 改用户数据 —— 早期的不完整清单，
 #: 保留是为了兼容；实际跳过逻辑走上面的 ``SMOKE_SKIP``。
-DANGEROUS = {"runTask", "runFlow", "stopTask", "setSkin", "setWallpaper",
-             "setConfig", "deleteConfig", "saveFlow"}
+DANGEROUS = {"runTask", "runTaskWith", "runFlow", "stopTask", "setSkin",
+             "setWallpaper", "setConfig", "deleteConfig", "saveFlow"}
 
 
 def main() -> int:

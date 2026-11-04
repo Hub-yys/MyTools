@@ -1,16 +1,25 @@
 # -*- coding: utf-8 -*-
-"""验收 P5 第二批：`getEchoEnhanceHistory` / `okwwResumeTask` / `okwwSkipEcho`。
+"""验收 P5 第二批：`getEchoEnhanceHistory` / `okwwResumeTask`。
 
 ## 为什么需要（用户 P5 反馈）
 
 旧界面「声骸自动强化」页有 **5 个按钮**：
 **运行 / 继续 / 停止 / 跳过 / 重置**
 
-新界面只有「运行 / 停止」—— 缺「继续」和「跳过」，而且没有「历史记录」卡。
+新界面只有「运行 / 停止」—— 缺「继续」，而且没有「历史记录」卡。
 
 用户要求的「请不要擅自修改原先的布局内容」= **这些都得有**。
 
-## 三条的语义（照抄旧界面）
+## ⚠ 2026-11-04：「跳过」已删除
+
+用户：「删掉跳过，增加【指定声骸强化】功能…」—— 前端按钮、后端
+``okwwSkipEcho`` Slot、本脚本里那三条 ``skip_*`` 断言**全部移除**。
+所以现在这份验收只覆盖 ``getEchoEnhanceHistory`` + ``okwwResumeTask``。
+
+（引擎侧 ``_consume_skip_request`` 那套**保留** —— 它是任务流程内部
+"自动跳过同名同类型声骸"的实现，和那个被删掉的按钮不是一回事。）
+
+## 两条的语义（照抄旧界面）
 
 **`getEchoEnhanceHistory`** —— 旧界面 ``_build_history_card``（tool.py L577）：
 每次「运行 → 停止」记一条，**最多展示最近 10 轮**。
@@ -20,14 +29,11 @@
 **`okwwResumeTask`** —— 旧界面 ``_on_resume``：``task.unpause()``。
 旧代码注释原话：「少了它，'可续跑'就只是个说法（只能停止再重跑，前面强化的白费）」
 
-**`okwwSkipEcho`** —— 旧界面 ``OkwwHost.request_skip_current()``。
-用户 2026-10-30：「跳过相当于他已经强化好了，需要跳过同类型同名声号」
-
 ## ⚠ 本测试用 mock，不启动真引擎
 
 真 `boot()` ok-ww 引擎会让进程退出码变成 `0xC0000005`
 （引擎线程不 join，见 web_shell_p4_batch1 的注释）。
-所以 ``okwwResumeTask`` / ``okwwSkipEcho`` 都用**假宿主**验桥接层逻辑。
+所以 ``okwwResumeTask`` 用**假宿主**验桥接层逻辑。
 """
 
 from __future__ import annotations
@@ -81,24 +87,17 @@ class _FakeTask:
 class _FakeHost:
     """假的 ok-ww 宿主。"""
 
-    def __init__(self, *, task=None, run_key="声骸自动强化",
-                 skip_result=True) -> None:
+    def __init__(self, *, task=None, run_key="声骸自动强化") -> None:
         self._task = task
         self.running_task = run_key
         self.pending_start = None
         self.boot_error = None
         self.state = "running"
-        self.skip_calls = 0
-        self._skip_result = skip_result
         self.tasks_seen: list[str] = []
 
     def find_task(self, key):
         self.tasks_seen.append(key)
         return self._task
-
-    def request_skip_current(self) -> bool:
-        self.skip_calls += 1
-        return self._skip_result
 
     def stop_task(self):
         return None
@@ -233,36 +232,6 @@ def main() -> int:
     ok("resume_failure_reported",
        r.get("ok") is False and r.get("reason") == "resume_failed",
        f"reason={r.get('reason')} message={str(r.get('message'))[:60]!r}")
-
-    # ══════════════════════════════════════════════════════════════
-    # 3) okwwSkipEcho
-    # ══════════════════════════════════════════════════════════════
-    okww_boot.current_host = lambda: None
-    try:
-        r = json.loads(b.okwwSkipEcho())
-    finally:
-        okww_boot.current_host = real_cur
-    ok("skip_no_engine",
-       r.get("ok") is False and r.get("reason") == "idle",
-       json.dumps(r, ensure_ascii=False)[:100])
-
-    #: 宿主接受请求
-    host3 = _FakeHost(skip_result=True)
-    with fake_host(host3):
-        r = json.loads(b.okwwSkipEcho())
-    ok("skip_calls_host",
-       r.get("ok") is True and host3.skip_calls == 1,
-       f"request_skip_current 被调了 {host3.skip_calls} 次")
-    ok("skip_returns_message", bool(r.get("message")),
-       f"message={r.get('message')!r}")
-
-    #: 宿主拒绝（没有在跑的强化任务）→ no_task
-    host4 = _FakeHost(skip_result=False)
-    with fake_host(host4):
-        r = json.loads(b.okwwSkipEcho())
-    ok("skip_rejected_when_no_task",
-       r.get("ok") is False and r.get("reason") == "no_task",
-       json.dumps(r, ensure_ascii=False)[:110])
 
     # ══════════════════════════════════════════════════════════════
     # 4) 两个接口都已从桥接层移除（lead P4 的错误决定）

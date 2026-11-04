@@ -1309,7 +1309,8 @@ class OkwwTaskRunner:
     HEARTBEAT = 10.0
 
     def __init__(self, judge_config: JudgeConfig, *, log=None, should_stop=None,
-                 allowed_echoes=None, picks_by_cost=None, set_plan=None):
+                 allowed_echoes=None, picks_by_cost=None, set_plan=None,
+                 designated_only: bool = False):
         #: 判定条件（工具页存下来的那份）。**公开字段**：任务流程的回归测试会读它，
         #: 确认"从任务页跑"和"从工具页点运行"用的是同一套规则。
         self.judge_config = judge_config
@@ -1326,6 +1327,19 @@ class OkwwTaskRunner:
         self.picks_by_cost: dict = dict(picks_by_cost or {})
         #: ★ 成套声骸结构 ``{Cost: 需要几种不同名字}``；空 = 不成套。
         self.set_plan: dict = dict(set_plan or {})
+        #: ★★★ 2026-11-04 指定声骸强化模式（用户原话：
+        #: 「增加【指定声骸强化】功能，即实现用户鼠标选中了哪个声骸就强化哪个声骸，
+        #: 强化完或强化好了就停止」）。
+        #:
+        #: True 时：
+        #:   * 不点第一格、不扫 18 格、不按白名单/成套跳过 ——
+        #:     就强化玩家用鼠标点中的那个
+        #:   * 处理完一个（锁定或弃置）立刻结束，不找下一个
+        #:   * 「自动停止」即使开着也不 ``pause()``（会把 executor 停死）
+        #:
+        #: 传给 ``okww_task`` 靠两个东西：字段 ``_designated_mode``
+        #: 和常量 ``DESIGNATED_ECHO_FLAG``（见 ``_configure``）。
+        self.designated_only: bool = bool(designated_only)
 
     def run(self) -> "RunnerSummary":
         import time
@@ -1493,6 +1507,23 @@ class OkwwTaskRunner:
             setattr(task, FLOW_MODE_FLAG, True)
         except Exception:  # noqa: BLE001 - 打标记失败不该挡住启动
             logger.warning("给任务打「流程模式」标记失败", exc_info=True)
+        #: ★★★ 2026-11-04 指定声骸强化模式（见 ``OkwwTaskRunner.designated_only``）。
+        #:
+        #: 两处都设：
+        #:   * ``_designated_mode`` —— 任务侧所有分支实际读的字段
+        #:     （``select_0_level_echo`` / ``lock_and_esc`` / ``_auto_stop_if_needed``）
+        #:   * ``DESIGNATED_ECHO_FLAG`` 常量名 —— 和 ``FLOW_MODE_FLAG`` 一样的
+        #:     诊断/回读机制，将来别的工具也能用 ``getattr(task, 常量, False)`` 判模式
+        if self.designated_only:
+            try:
+                from .okww_task import DESIGNATED_ECHO_FLAG  # noqa: PLC0415
+
+                setattr(task, DESIGNATED_ECHO_FLAG, True)
+                setattr(task, "_designated_mode", True)
+                task.info_set("指定强化", "开（只强化玩家选中的那个声骸）")
+                logger.info("【注入】指定声骸强化模式 → task#%s", id(task))
+            except Exception:  # noqa: BLE001 - 打标记失败不该挡住启动
+                logger.warning("给任务打「指定强化」标记失败", exc_info=True)
 
 
 class RunnerSummary:
@@ -1628,6 +1659,15 @@ class EchoEnhanceTool(BaseTool):
         """
         settings, source = self._settings_for_run(options, log)
         log(f"判定配置（{source}）：{settings.describe()}")
+        #: ★★★ 2026-11-04 指定声骸强化：这条路上**白名单/成套都不参与** ——
+        #: 玩家已经用鼠标点名了要强化的那个，工具再去按名单筛就是反着来。
+        #: 判定条件（核心属性/双爆/满值锁定…）照旧生效，只是"选中谁"改成玩家决定。
+        designated = bool(options.get("designated"))
+        if designated:
+            log("【指定强化】只强化你鼠标选中的那个声骸，处理完就停"
+                "（不按白名单/成套筛选，也不会替你换目标）")
+            return OkwwTaskRunner(settings.to_judge_config(), log=log,
+                                  should_stop=should_stop, designated_only=True)
         #: 取编排里挂的筛选配置 → 勾选的声骸名
         allowed: set[str] = set()
         #: 声骸名 → Cost（成套声骸判断用）
@@ -1667,7 +1707,8 @@ class EchoEnhanceTool(BaseTool):
 
         return OkwwTaskRunner(settings.to_judge_config(), log=log,
                               should_stop=should_stop, allowed_echoes=allowed,
-                              picks_by_cost=picks_by_cost, set_plan=set_plan)
+                              picks_by_cost=picks_by_cost, set_plan=set_plan,
+                              designated_only=bool(options.get("designated")))
 
     def _settings_for_run(self, options: dict, log):
         """本次运行用哪套判定条件 → ``(EchoSettings, 来源说明)``。
@@ -1714,6 +1755,18 @@ class EchoEnhanceTool(BaseTool):
         """
         settings, source = self._settings_for_run(options, log)
         log(f"判定配置（{source}）：" + settings.describe())
+
+        #: ★★★ 2026-11-04 指定声骸强化：**准备动作全部跳过**。
+        #:
+        #: 玩家是自己用鼠标在背包里点好那个声骸才点「指定强化」的 ——
+        #: 这时候再去按 B 开背包、切页签、点筛选条件、改排序，
+        #: 会把他辛辛苦苦筛好的界面弄乱，光标也一起丢。
+        #: 所以这里直接返回一个什么都不做的 prep（``EchoPrep(steps=[])``）。
+        if options.get("designated"):
+            log("【指定强化】跳过准备动作（不按 B、不重筛）—— 直接用你当前选中的界面")
+            from .prepare import EchoPrep  # noqa: PLC0415
+
+            return EchoPrep(log=log, should_stop=should_stop, steps=[])
 
         target = _bound_loadout(options)
         if target is not None:

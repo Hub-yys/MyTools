@@ -4985,7 +4985,7 @@
   //    self.run_button    = PrimaryPushButton(FluentIcon.PLAY, "运行")
   //    self.resume_button = PushButton(FluentIcon.PLAY, "继续")
   //    self.stop_button   = PushButton(FluentIcon.CANCEL, "停止")
-  //    self.skip_button   = ... "跳过"
+  //    self.skip_button   = ... "跳过"   ← 2026-11-04 删掉，换成「指定强化」
   //    self.reset_button  = ... "恢复默认"
   //
   //  ## 可折叠卡（``gui/widgets.py`` L591-645 ``CollapsibleCard``）
@@ -5038,6 +5038,9 @@
     btnRun: null,
     btnResume: null,
     btnStop: null,
+    //: ★ 2026-11-04 「跳过」→「指定强化」（用户要求删掉跳过）。
+    //: 语义是"只强化玩家鼠标点中的那个声骸，处理完就停"。
+    btnDesignated: null,
     watchTimer: null
   };
 
@@ -5125,30 +5128,33 @@
       size: 'sm', disabled: true,
       onClick: function () { enhanceAction('stop'); }
     });
-    //: ★★★ 2026-11-03 用户圈图：「没有运行的时候，跳过应该与停止一样不可点」
+    //: ★★★ 2026-11-04 用户：「删掉跳过，增加【指定声骸强化】功能，
+    //: 即实现用户鼠标选中了哪个声骸就强化哪个声骸，强化完或强化好了就停止」
     //:
-    //: 原来「跳过」**创建时就是可点的** —— 没运行时点它，
-    //: ``enhanceAction('skip')`` 会去打引擎接口，拿到「没有在跑」的错误，
-    //: 然后往「结果报告」区写一行红字。用户看到的是"点了个按钮，报错了"。
+    //: 所以这里把原来的「跳过」换成了「指定强化」：
     //:
-    //: 「跳过」的语义是"强化途中换下一个声骸"——**没在跑时根本无意义**，
-    //: 所以初始 ``disabled: true``，和「停止」「继续」一致。
+    //:   * 「跳过」= 强化途中换下一个声骸（中途干预）
+    //:   * 「指定强化」= 只强化你在背包里用鼠标点中的那个，处理完就停
     //:
-    //: ⚠ 和「停止」的区别：停止要等真正进了运行态才能点；
-    //:   跳过还要额外要求"正在强化"（见 ``enhanceStartWatch`` 里的启停逻辑）。
-    ENHANCE_STATE.btnSkip = P.button('跳过', {
+    //: 语义差别很大，所以不是改名而是换功能。按钮初始可点（不需要先运行）。
+    //:
+    //: ⚠ 「跳过」的前端按钮、``enhanceAction('skip')`` 分支、
+    //:   后端 ``okwwSkipEcho`` Slot **全部删除**（用户明确要删掉）。
+    //:   引擎侧的跳过能力（``_consume_skip_request``）**保留** ——
+    //:   它是任务流程内部"自动跳过同名同类型"的实现，和这个按钮无关。
+    ENHANCE_STATE.btnDesignated = P.button('指定强化', {
       size: 'sm',
       disabled: true,
-      title: '强化途中遇到不想要的声骸，按一下换下一个',
-      onClick: function () { enhanceAction('skip'); }
+      title: '先在背包里用鼠标点中要强化的声骸，再点这里 —— 只强化它一个，处理完就停',
+      onClick: function () { enhanceAction('designated'); }
     });
-    const btnSkip = ENHANCE_STATE.btnSkip;
+    const btnDesignated = ENHANCE_STATE.btnDesignated;
     const btnReset = P.button('恢复默认', {
       size: 'sm',
       onClick: function () { enhanceResetSettings(); }
     });
     for (const b of [ENHANCE_STATE.btnRun, ENHANCE_STATE.btnResume,
-                     ENHANCE_STATE.btnStop, btnSkip, btnReset]) {
+                     ENHANCE_STATE.btnStop, btnDesignated, btnReset]) {
       titleRow.appendChild(b);
     }
     container.appendChild(titleRow);
@@ -5815,7 +5821,7 @@
     enhanceOnCoreChange();
   }
 
-  /** 运行 / 继续 / 停止 / 跳过 */
+  /** 运行 / 指定强化 / 继续 / 停止 */
   async function enhanceAction(action) {
     // ══════════════════════════════════════════════════════════════════════
     //  ★ 所有失败都要**看得见**
@@ -5843,16 +5849,40 @@
       }));
     }
 
-    if (action === 'skip') {
-      const r = await P.call('okwwSkipEcho');
-      if (!r.ok) {
-        fail('跳过失败（接口未就绪）');
+    if (action === 'designated') {
+      //: ★★★ 2026-11-04 指定声骸强化（替代原来的「跳过」）。
+      //:
+      //: 用户原话：「增加【指定声骸强化】功能，即实现用户鼠标选中了哪个
+      //: 声骸就强化哪个声骸，强化完或强化好了就停止（自动停止开启强化好了就停止）」
+      //:
+      //: 走 ``runTaskWith`` 而不是 ``runTask`` —— 多带一个
+      //: ``{"designated": true}``，后端一路传到引擎侧
+      //: （见 ``web_bridge.runTaskWith`` 的说明）。
+      //:
+      //: ⚠ 不用 ``runTask('echo_enhance')`` + 另一个开关接口：那需要一次
+      //: 额外的往返，中间还有"开关设了但任务没起来"的半截状态。
+      setEnhanceRunning(true, '强化');
+      //: ⚠ ``runTaskWith`` 是 ``@Slot(str, str, result=str)`` —— **两个参数**，
+      //: 必须走 ``P.callMulti``（QWebChannel 按 JS 实参个数匹配 Slot，
+      //: 用 ``P.call`` 只传一个必然 No candidates found，而且静默失败）。
+      //:
+      //: ⚠⚠ 实参**必须写在同一个物理行**：``js_sanity.py`` 的
+      //: ``check_call_arity`` 是逐行正则解析的（见它的 ``call_re``），
+      //: 换行会让它数出 0 个参数并报假失败。
+      const armed = JSON.stringify({ designated: true });
+      const result = await P.callMulti('runTaskWith', ['echo_enhance', armed]);
+      if (!result.ok) {
+        setEnhanceRunning(false, '');
+        fail('指定强化失败（接口未就绪）');
         return;
       }
-      const d = r.data || {};
-      if (d.ok === false) {
-        fail('跳过失败：' + String(d.message || d.reason || '引擎没有在跑'));
+      const data = result.data || {};
+      if (data.ok === false) {
+        setEnhanceRunning(false, '');
+        fail('指定强化失败：' + String(data.message || data.reason || '后端拒绝'));
+        return;
       }
+      enhanceStartWatch();
       return;
     }
 
@@ -5880,13 +5910,13 @@
         fail('停止失败：' + String(d.message || d.reason || '没有正在运行的任务'));
         return;
       }
-      //: 停止成功 → 四个按钮统一回「未运行」态（跳过也跟着禁用）
+      //: 停止成功 → 四个按钮统一回「未运行」态
       setEnhanceRunning(false, '');
       return;
     }
 
     // ── 运行 ──
-    //: 统一走 setEnhanceRunning（它同时管 停止 / 跳过 / 继续）
+    //: 统一走 setEnhanceRunning（它同时管 停止 / 指定强化 / 继续）
     setEnhanceRunning(true, '强化');
 
     const result = await P.call('runTask', 'echo_enhance');
@@ -5918,9 +5948,7 @@
       const r = await P.call('getStatus');
       if (!r.ok || !r.data) return;
       const running = String(r.data.running || '');
-      //: ★ 2026-11-03：「跳过」和「停止」同进同出 ——
-      //: 没有运行的时候不可点（用户圈图要求）。
-      //: 用 ``setEnhanceRunning()`` 统一改，避免两个地方各写一份走偏。
+      //: 用 ``setEnhanceRunning()`` 统一改四处 disabled，避免各写一份走偏。
       setEnhanceRunning(!!running, running);
       if (!running) {
         clearInterval(ENHANCE_STATE.watchTimer);
@@ -5930,7 +5958,7 @@
   }
 
   /**
-   * ★ 统一维护「运行 / 停止 / 跳过 / 继续」四个按钮的可点状态（2026-11-03）。
+   * ★ 统一维护「运行 / 指定强化 / 停止 / 继续」四个按钮的可点状态。
    *
    * ## 为什么要一个函数
    *
@@ -5938,11 +5966,20 @@
    * ``enhanceAction`` 里两处、``enhanceStartWatch`` 里一处、
    * 别处还有 —— 漏一个就是"某个按钮状态不对"。
    *
-   * 实测漏的就是「跳过」：它**从头到尾没有任何地方控制 disabled**，
-   * 所以一直可点。用户圈图：「没有运行的时候，跳过应该与停止一样不可点」。
+   * ## 2026-11-04：``btnSkip`` → ``btnDesignated``
+   *
+   * 用户：「删掉跳过，增加【指定声骸强化】功能，即实现用户鼠标选中了哪个
+   * 声骸就强化哪个声骸，强化完或强化好了就停止」。
+   *
+   * ⚠ 两者可点条件**正好相反**：
+   *   * 「跳过」要**正在强化途中**才有意义（``running && 强化``）
+   *   * 「指定强化」要**空闲时**才能点 —— 它本身就是一次新的运行
+   *
+   * 所以这里改成了 ``!running``。如果照抄 ``btnSkip`` 的条件，
+   * 会得到一个「永远点不了」的按钮（点它之前一定是空闲态）。
    *
    * @param {boolean} running - 引擎是否在跑
-   * @param {string} [taskName] - 正在跑的任务名（用来判断"是不是强化"）
+   * @param {string} [taskName] - 正在跑的任务名（暂时没用，留着给将来细分）
    */
   function setEnhanceRunning(running, taskName) {
     running = !!running;
@@ -5952,12 +5989,10 @@
     if (ENHANCE_STATE.btnStop) {
       ENHANCE_STATE.btnStop.disabled = !running;
     }
-    //: 「跳过」只在**正在强化**时有意义 ——
-    //: 跑别的工具（比如 4C）时点「跳过」也是错的动作。
-    if (ENHANCE_STATE.btnSkip) {
-      const isEnhance = running
-        && (!taskName || String(taskName).indexOf('强化') >= 0);
-      ENHANCE_STATE.btnSkip.disabled = !isEnhance;
+    //: 「指定强化」是**发起一次新的运行** —— 空闲时可点，跑着时禁用。
+    //: （原来是「跳过」的 `running && 强化` 条件，那会让这个按钮永远点不了）
+    if (ENHANCE_STATE.btnDesignated) {
+      ENHANCE_STATE.btnDesignated.disabled = running;
     }
     //: 「继续」只在**暂停**时出现（引擎那边自动停止会暂停任务）——
     //: 这里没有暂停态的可靠信号，保守起见保持"运行中可点，
@@ -5965,6 +6000,7 @@
     if (ENHANCE_STATE.btnResume) {
       ENHANCE_STATE.btnResume.disabled = !running;
     }
+    void taskName;
   }
 
   //  导出（调试用）

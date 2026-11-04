@@ -69,13 +69,40 @@ class FlowRunThread(QThread):
     #: 参数是 :class:`~src.core.run_report.RoundReport`（对象，不是字符串）。
     report_ready = Signal(object)
 
-    def __init__(self, flow: TaskFlow, parent=None):
+    def __init__(self, flow: TaskFlow, parent=None, options: dict | None = None):
         super().__init__(parent)
         self._flow = flow
         self._stop = False
+        #: ★★★ 2026-11-04 额外运行参数（``runTask`` 那条单工具路传进来的）。
+        #:
+        #: 目前只有一个键：
+        #:   * ``designated`` —— 指定声骸强化模式（不点第一格、不扫格、
+        #:     不按白名单筛，就强化玩家鼠标选中的那个，处理完就停）。
+        #:
+        #: 走 ``FlowRunThread`` 而不新开一条执行器的理由：权限闸门、前置检查、
+        #: 报告统计这些全是同一条路，复制一份迟早不一致。
+        self._extra_options: dict = dict(options or {})
         #: 本轮报告 —— 一路往里记，出口处统一发出去
         self.report = RoundReport(flow_name=flow.name or "",
                                   started_at=_now())
+
+    def _run_options(self, binding) -> dict:
+        """拼 ``create_task_runner`` / ``create_task_prep`` 的 options。
+
+        集中一处拼，避免"prepare 拿到了、runner 没拿到"这种半截透传。
+        """
+        options = {
+            "configs": [live_config_name(c) for c in binding["configs"]],
+            "config_keys": [c.key for c in binding["configs"]],
+            # 工具靠它判断"挂的是不是我这类配置"（见 core 里的 KIND）
+            "config_kinds": [c.config_kind for c in binding["configs"]],
+            #: ★ 2026-10-29 流程名 —— 声骸强化工具要从中读
+            #: 「套装结构」（``（小毕业 43311）`` 那个 43311），
+            #: 据此判断某档凑够种类后跳过同类声骸。
+            "flow_name": str(getattr(self._flow, "name", "") or ""),
+        }
+        options.update(self._extra_options)
+        return options
 
     def request_stop(self) -> None:
         self._stop = True
@@ -120,14 +147,7 @@ class FlowRunThread(QThread):
                     self._report_step(step.name, ok=False, note="工具实例化失败")
                     continue
                 runner = tool.create_task_runner(
-                    {"configs": [live_config_name(c) for c in binding["configs"]],
-                     "config_keys": [c.key for c in binding["configs"]],
-                     # 工具靠它判断"挂的是不是我这类配置"（见 core 里的 KIND）
-                     "config_kinds": [c.config_kind for c in binding["configs"]],
-                     #: ★ 2026-10-29 流程名 —— 声骸强化工具要从中读
-                     #: 「套装结构」（``（小毕业 43311）`` 那个 43311），
-                     #: 据此判断某档凑够种类后跳过同类声骸。
-                     "flow_name": str(getattr(self._flow, "name", "") or "")},
+                    self._run_options(binding),
                     log=lambda msg: self._emit(f"  {msg}"),
                     should_stop=lambda: self._stop,
                 )
@@ -246,10 +266,7 @@ class FlowRunThread(QThread):
             if tool is None:
                 continue
             prep = tool.create_task_prep(
-                {"configs": [live_config_name(c) for c in binding["configs"]],
-                     "config_keys": [c.key for c in binding["configs"]],
-                     # 工具靠它判断"挂的是不是我这类配置"（见 core 里的 KIND）
-                     "config_kinds": [c.config_kind for c in binding["configs"]]},
+                self._run_options(binding),
                 # ⚠ 必须走 self._emit（不用 self.message.emit）：准备动作那 18 步
                 #   的逐条日志是排查的主力证据，只发界面就进不了日志文件。
                 log=self._emit,

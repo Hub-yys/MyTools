@@ -153,6 +153,38 @@ class SkipCurrentEcho(Exception):
 FLOW_MODE_FLAG = "_mytools_flow_mode"
 
 
+#: 「指定声骸强化」标记 —— 只强化**玩家鼠标选中的那个**声骸，处理完就收工。
+#:
+#: ## 用户 2026-11-04
+#:
+#: > 增加【指定声骸强化】功能，即实现用户鼠标选中了哪个声骸就强化哪个声骸，
+#: > 强化完或强化好了就停止（自动停止开启强化好了就停止）
+#:
+#: ## 为什么需要一个独立开关，而不是复用现有逻辑
+#:
+#: ok-ww 的 ``run()`` 每轮开头都调 ``select_0_level_echo()``，而**原版实现
+#: 第一件事就是点列表第一格**（``self.click(0.13, 0.21)``）—— 那一下会把
+#: 光标从"玩家选中的那个"挪走，指定强化就无从谈起。
+#:
+#: 所以指定模式下这个方法是**整个换掉**的（见 :meth:`MyToolsEnhanceEchoTask.
+#: _select_designated_echo`），一个点击都不做：
+#:
+#:     * 第一次问它 → 直接判当前光标那个是不是 0 级（是→强化它 / 否→收工）
+#:     * 第二次问它 → 说明已经处理完一个了 → 返回 False，让 ok-ww 正常收工
+#:
+#: ## 顺带被关掉的东西
+#:
+#: * ``_skip_reason`` 那一整套白名单/成套跳过判断（玩家既然点了名，就不该被
+#:   「配置里没勾这个声骸」之类的规则挡回去）
+#: * ``lock_and_esc`` 末尾的 ``_aim_at_next_unenhanced``（不要动玩家的光标）
+#: * ``_auto_stop_if_needed`` 里的 ``pause()``（本来处理完就要停，
+#:   再 pause 一下会让任务停在"暂停"态而不是正常结束）
+#:
+#: 由 ``OkwwTaskRunner._configure`` 通过 ``setattr`` 注入（和 ``FLOW_MODE_FLAG``
+#: 同一套机制），默认值在 ``__init__`` 里给 —— **`run()` 里不要重置它**。
+DESIGNATED_ECHO_FLAG = "_mytools_designated_echo"
+
+
 #: 「跳过已处理同种声骸」时，一轮最多连续跳几个。
 #:
 #: ## 用户 2026-10-28
@@ -395,6 +427,23 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
         self._set_plan: dict[int, int] = {}
         self._set_done: set[int] = set()
         self._echo_cost: dict[str, int] = {}
+
+        #: ★★★ 2026-11-04 「指定声骸强化」模式（见 :data:`DESIGNATED_ECHO_FLAG`）。
+        #:
+        #: True = 只强化玩家鼠标选中的那个声骸，处理完就收工。
+        #: 由 ``OkwwTaskRunner._configure`` 注入；⚠ **`run()` 里不要重置**。
+        self._designated_mode: bool = False
+
+        #: 指定模式下"已经处理完一个了"的标记。
+        #:
+        #: 为什么需要：``ok-ww`` 的 ``run()`` 是 ``while True``，每轮开头都会
+        #: 问一次 ``select_0_level_echo()``。指定模式下第一次问 = "这东西能强化吗"，
+        #: 处理完一圈之后**第二次**问就是"还继续吗" —— 必须答"不继续"，
+        #: 否则它会去强化玩家没点名的下一个声骸。
+        #:
+        #: 这个是**本轮运行状态**，所以由 ``run()`` 每次开跑时清零（和
+        #: ``_allowed_echoes`` 那批配置不一样）。
+        self._designated_consumed: bool = False
 
     # ------------------------------------------------------ 符合条件的判定
     def _remember_judgement(self, stats: list[EchoStat], full: bool) -> None:
@@ -961,6 +1010,17 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
         #: 见 ``run`` 里的 ``MAX_CONSECUTIVE_SKIPS``（防 OCR 坏掉时死循环）。
         self._consecutive_skips = 0
         self._auto_stop_if_needed(hit)
+        #: ★★★ 2026-11-04 指定声骸模式：处理完这一个就收工，**不要动光标**。
+        #:
+        #: `_aim_at_next_unenhanced()` 会把光标挪到下一个未强化的声骸上
+        #: （为了修 3.7 堆叠导致的卡死）。指定模式下那正是要避免的事 ——
+        #: 玩家点名了一个，我们处理完就该停，把光标留在原地。
+        #:
+        #: 而且指定模式压根不知道 `_cursor_slot`（没有扫格），
+        #: 让它跑也会白扫 18 格。
+        if getattr(self, "_designated_mode", False):
+            self.log_info("【指定强化】处理完成 → 任务结束，光标留在原处", notify=True)
+            return
         self._aim_at_next_unenhanced()
 
     def _auto_stop_if_needed(self, qualifying: bool) -> bool:
@@ -1020,6 +1080,21 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
                 notify=False)
             return False
 
+        #: ★★★ 2026-11-04 指定声骸模式：**绝对不能 `pause()`**。
+        #:
+        #: `ok.task.task.Task.pause()`（`.venv/Lib/site-packages/ok/task/task.py:1203`）
+        #: 会把 executor 停掉（`self.executor.pause(self)`），
+        #: 而 `OkwwTaskRunner.run()` 是靠轮询 `host.poll_done()` 等它结束的
+        #: —— executor 一停，`poll_done()` 永远不来，调用方就永久卡住。
+        #:
+        #: 指定模式本来处理完一个就要收工（`lock_and_esc` 末尾那段分叉），
+        #: 所以这里只记日志、不做动作。用户原话：
+        #: 「强化完或强化好了就停止（自动停止开启强化好了就停止）」
+        #: —— 「停止」在指定模式下就是"不再强化下一个"，不需要暂停引擎。
+        if getattr(self, "_designated_mode", False):
+            self.log_info(f"★ {summary} —— 指定强化只处理这一个，任务结束", notify=True)
+            return False
+
         #: 工具页单独跑：暂停（原行为，可点「继续」）
         self.log_info(f"★ {summary} —— 已暂停任务，请回来确认", notify=True)
         try:
@@ -1028,6 +1103,81 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
         except Exception as exc:  # noqa: BLE001 - 暂停失败不该把任务搞崩
             self.log_error(f"自动暂停失败：{type(exc).__name__}: {exc}")
             return False
+        return True
+
+    def _select_designated_echo(self) -> bool:
+        """★ 指定声骸模式：**一个点击都不做**，只认玩家点名的那个声骸。
+
+        返回 ``True`` = 就强化当前光标这个；``False`` = 收工（交给 ok-ww 的
+        ``run()`` 正常 return）。
+
+        ## 用户 2026-11-04
+
+        > 增加【指定声骸强化】功能，即实现用户鼠标选中了哪个声骸就强化哪个声骸，
+        > 强化完或强化好了就停止（自动停止开启强化好了就停止）
+
+        ## 为什么不能调 ``super()``
+
+        原版 ``select_0_level_echo()`` 第一件事是 ``self.click(0.13, 0.21)``
+        —— 点列表第一格。那一下就把玩家选的光标挪走了，"指定强化"立刻失效。
+        所以这条路**完全绕开** super，连一个点击都不发。
+
+        ## 两次调用分别是什么语义
+
+        ok-ww 的 ``run()`` 是 ``while True``，每轮开头问一次这个方法：
+
+        ======  ==========================================================
+        第 1 次  当前光标那个是不是 0 级？是 → 返回 True（去强化它）
+                                      否 → 返回 False（已经强化过，收工）
+        第 2 次  上一个已处理完（``_designated_consumed``）→ 返回 False
+                 （**绝不**自己去点下一个 —— 那会强化玩家没点名的声骸）
+        ==========  ========================================================
+
+        ## 「强化完或强化好了就停止」
+
+        两条都由上面那个"第二次答 False"覆盖：
+
+        * **强化完**（满级上锁 / 判定弃置）→ ok-ww 的 ``break`` 回到 while 顶
+          → 第二次问 → False → ``run()`` return；
+        * **强化好了**（``enable_auto_stop`` 开着且出了符合条件的声骸）
+          → 同上，一样是在处理完那一个之后停。指定模式**不看**自动停止开关，
+          因为它本来就是一个声骸就停。
+        """
+        if self._designated_consumed:
+            self.log_info("【指定强化】选中的声骸已处理完 → 任务结束", notify=True)
+            return False
+
+        try:
+            name = self._read_current_name()
+        except Exception:  # noqa: BLE001 - 读不到名字不挡主流程
+            name = ""
+        self._cursor_name = name or ""
+
+        #: ★ 指定模式下光标就是玩家自己放的，`_cursor_slot` 无从得知（也不能
+        #: 去扫 18 格 —— 那会移动视线/耗时）。记成 None，`_aim_at_next_unenhanced`
+        #: 那条路在指定模式下本来就不会被调用。
+        self._cursor_slot = None
+        #: ★★ 强制跳过 `find_add_mat` 里的「进强化界面后再核一次」那道闸。
+        #:
+        #: 那道闸是给"白名单 / 成套自动筛选"用的：靠名字判这个声骸该不该
+        #: 强化。指定模式下玩家已经点名了，再拿 `_skip_reason` 去否掉它
+        #: 就是**和用户对着干**。
+        self._entry_checked = True
+
+        try:
+            zero = bool(self.is_0_level())
+        except Exception:  # noqa: BLE001
+            zero = False
+        if not zero:
+            self.log_info(
+                f"【指定强化】选中的「{name or '这个声骸'}」不是 0 级"
+                f"（已经强化过）→ 任务结束", notify=True)
+            return False
+
+        self._designated_consumed = True
+        self.log_info(
+            f"【指定强化】就强化选中的「{name or '这个声骸'}」"
+            f"（强化完 / 判定完成后自动结束）", notify=True)
         return True
 
     def select_0_level_echo(self):
@@ -1064,6 +1214,14 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
         ``_read_current_name()`` 每次多一次 OCR（约 0.1~0.3 秒）。
         只在 ``_handled_echoes`` 非空时才做 —— 第一次强化前完全零开销。
         """
+        #: ★★★ 2026-11-04 指定声骸模式：**完全绕开 super()**。
+        #:
+        #: super() 第一件事是 ``self.click(0.13, 0.21)`` —— 点列表第一格，
+        #: 那一下就把玩家选的光标挪走了。指定强化必须一个点击都不做，
+        #: 所以在这里直接分叉出去（详见 :meth:`_select_designated_echo`）。
+        if getattr(self, "_designated_mode", False):
+            return self._select_designated_echo()
+
         found = super().select_0_level_echo()
         #: ★ ``super()`` 一定把光标点回**第 0 格**（它开头就是
         #: ``self.click(0.13, 0.21)``），所以此刻"当前格"= (0, 0)。
@@ -1835,7 +1993,8 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
                 f"【run 启动】task#{id(self)}  "
                 f"白名单={len(getattr(self, '_allowed_echoes', ()))}个  "
                 f"成套={dict(getattr(self, '_set_plan', None) or {})}  "
-                f"Cost 索引={len(getattr(self, '_echo_cost', None) or {})} 条")
+                f"Cost 索引={len(getattr(self, '_echo_cost', None) or {})} 条"
+                + ("  【指定强化模式】" if getattr(self, '_designated_mode', False) else ""))
         except Exception:  # noqa: BLE001 - 日志打不出来不该挡住启动
             pass
         # 不指望 default_config 单点生效：configs/<类名>.json 里可能留着旧值，
@@ -1960,6 +2119,14 @@ class MyToolsEnhanceEchoTask(EnhanceEchoTask):
         #: 在 ``run()`` 每次重开时重置（跳过后会 continue 重跑 run）。
         #: 见 ``find_add_mat`` 里那段「最后一道闸」。
         self._entry_checked = False
+        #: ★★★ 2026-11-04 指定声骸模式：**本轮运行状态**，每次开跑清零。
+        #:
+        #: 语义是「这一个已经处理完了，下一次 `select_0_level_echo` 就答"没了"」。
+        #: ok-ww 的 `run()` 是 `while True`：第一轮问 = 就强化它；强化完
+        #: (`lock_and_esc` 末尾的分叉) 直接 return 收工，本来就走不到第二次问。
+        #: 但**判定失败走 `trash_and_esc()` 的路**也 break 出去，同样收工。
+        #: 留着清零是为了「跳过 → run() 重开」这条老路径万一被走到时的安全网。
+        self._designated_consumed = False
         try:
             self.info_set(QUALIFYING_INFO_KEY, [])
             self.info_set("自动停止原因", "")
