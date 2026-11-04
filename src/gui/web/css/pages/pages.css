@@ -390,9 +390,9 @@
 
 /* 按步骤类型着色（类型常量见 src/core/tasks.py）*/
 .step-chip[data-type="tool"] {
-  color: #a5b4ff;
-  background: rgba(139, 124, 255, 0.13);
-  border-color: rgba(139, 124, 255, 0.24);
+  color: color-mix(in srgb, var(--primary) 70%, white);
+  background: color-mix(in srgb, var(--primary) 13%, transparent);
+  border-color: color-mix(in srgb, var(--primary) 24%, transparent);
 }
 
 .step-chip[data-type="config"] {
@@ -1098,21 +1098,12 @@
  *     多行文本才折得开（否则挤成一长条，右边被弹框直接截掉）；
  *   * 行距比列表里的抽屉大一点，弹框里空间够。
  */
-.dlg-detail-grid {
-  grid-template-columns: 78px 1fr;
-  gap: 9px 14px;
-  font-size: 12.5px;
-  line-height: 1.68;
-}
-
-.dlg-detail-grid .detail-key {
-  padding-top: 1px;
-  text-align: right;
-}
-
-/* 校验错误那几行要红（``.detail-val.is-warn``）*/
-.dlg-detail-grid .detail-val.is-warn {
-  color: #ff8f88;
+/* 只读弹框（「查看」）：表单长得跟编辑一样，只是点不动。
+   禁用的输入框已经有灰样式（``.input:disabled`` / ``.echo-stat input:disabled``），
+   这里只把玻璃卡底稍微压暗一点，好和「能编辑」区分开。*/
+.dlg-box.dlg-readonly .card-glass,
+.dlg-box.dlg-readonly .echo-row {
+  opacity: 0.92;
 }
 
 .detail-title {
@@ -1680,7 +1671,7 @@
 /* 已勾选：主色描边 + 轻微底色（扫一眼就知道选了哪些）*/
 .sweep-row.is-checked {
   background-color: var(--primary-dim);
-  border-color: rgba(139, 124, 255, 0.42);
+  border-color: color-mix(in srgb, var(--primary) 42%, transparent);
 }
 
 .sweep-check {
@@ -1724,9 +1715,9 @@
 }
 
 .sweep-tag[data-kind="nest"] {
-  color: #a5b4ff;
-  background: rgba(139, 124, 255, 0.13);
-  border-color: rgba(139, 124, 255, 0.24);
+  color: color-mix(in srgb, var(--primary) 70%, white);
+  background: color-mix(in srgb, var(--primary) 13%, transparent);
+  border-color: color-mix(in srgb, var(--primary) 24%, transparent);
 }
 
 .sweep-tag[data-kind="nightmare"] {
@@ -1771,7 +1762,7 @@
   padding: 8px 11px;
   border-radius: var(--radius-sm);
   background-color: rgba(13, 21, 36, calc(var(--we-readability-floor) * 0.40));
-  border-left: 2px solid rgba(139, 124, 255, 0.45);
+  border-left: 2px solid color-mix(in srgb, var(--primary) 45%, transparent);
   font-size: 11.5px;
   line-height: 1.62;
   color: var(--dim);
@@ -1821,7 +1812,7 @@
 
 .build-row.is-active {
   background-color: var(--primary-dim);
-  border-color: rgba(139, 124, 255, 0.42);
+  border-color: color-mix(in srgb, var(--primary) 42%, transparent);
 }
 
 .build-avatar {
@@ -2902,8 +2893,8 @@
 
 /* 选中：主色描边 */
 .build-tile.is-selected {
-  border-color: rgba(139, 124, 255, 0.6);
-  box-shadow: inset 0 0 0 1px rgba(139, 124, 255, 0.35);
+  border-color: color-mix(in srgb, var(--primary) 60%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 35%, transparent);
   background-color: var(--primary-dim);
 }
 
@@ -3620,7 +3611,7 @@
 
 .sweep-card.is-checked {
   background-color: var(--primary-dim);
-  border-color: rgba(139, 124, 255, 0.38);
+  border-color: color-mix(in srgb, var(--primary) 38%, transparent);
 }
 
 /* 套装区（每行 2 个）*/
@@ -4153,7 +4144,7 @@
 .gk-pool-tab.is-active {
   color: var(--text);
   background-color: var(--primary-dim);
-  border-color: rgba(139, 124, 255, 0.40);
+  border-color: color-mix(in srgb, var(--primary) 40%, transparent);
 }
 
 /* 池详情行 */

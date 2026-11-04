@@ -1688,7 +1688,8 @@ _WALLPAPER_PRIMARY: str = ""
 _WALLPAPER_TINT: float = 0.0
 
 
-def apply_wallpaper_palette(primary: str, tint: float = 0.0) -> None:
+def apply_wallpaper_palette(primary: str, tint: float = 0.0,
+                            *, repaint: bool = True) -> None:
     """★ 按壁纸主色覆盖主题配色（内存，不写盘）。
 
     ## 为什么是覆盖而不是改主题
@@ -1708,12 +1709,19 @@ def apply_wallpaper_palette(primary: str, tint: float = 0.0) -> None:
 
     :param primary: 主色 `#RRGGBB`
     :param tint: 暗化层不透明度 0~0.45
+    :param repaint: 是否顺手重刷 Qt 界面。**Web 外壳必须传 False** ——
+        那边根本没有 Qt 控件在画主题（整个窗口是一块 QWebEngineView），
+        ``refresh_windows()`` 白跑一趟还可能碰到已销毁的控件。
     """
     global _WALLPAPER_PRIMARY, _WALLPAPER_TINT
     _WALLPAPER_PRIMARY = str(primary or "")
     _WALLPAPER_TINT = max(0.0, min(0.62, float(tint or 0.0)))
     logger.info("皮肤：壁纸配色 primary=%s tint=%.2f",
                 _WALLPAPER_PRIMARY, _WALLPAPER_TINT)
+    #: Web 外壳只想要「内存里那份主色」，界面由 CSS 变量自己跟
+    #: （``app.js`` 的 ``applySkin``）—— 不重刷 Qt。
+    if not repaint:
+        return
     #: ★★★ 2026-10-31 **必须立刻重刷界面**
     #:
     #: 用户：「这怎么还是紫色啊，应该是搭配的蓝色啊」。

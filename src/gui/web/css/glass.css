@@ -292,7 +292,7 @@
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(1200px 700px at 22% 12%, rgba(139, 124, 255, 0.20), transparent 62%),
+    radial-gradient(1200px 700px at 22% 12%, color-mix(in srgb, var(--primary) 20%, transparent), transparent 62%),
     radial-gradient(900px 620px at 82% 88%, rgba(80, 160, 255, 0.14), transparent 60%),
     linear-gradient(160deg, #0C0A18 0%, #141026 52%, #090713 100%);
 }

@@ -109,7 +109,10 @@ SMOKE_ARGS: dict[str, list] = {
     #: 带参数的
     "switchPage": ["home"],
     "windowAction": ["minimize"],
-    "setWallpaper": [""],          #: 空 → 明确报错，不真切
+    #: ⚠ 2026-11-04 起 **不能传空串** —— 空串是「关闭壁纸」的正经操作，
+    #: 会写 ``data/wallpaper.json`` 把用户的壁纸选择清掉。
+    #: 传一个不存在的 id：扫完壁纸就 ``not_found`` 早失败，不落盘。
+    "setWallpaper": ["__smoke_missing__"],
     "runTask": ["__smoke_missing__"],   #: 不存在的工具 → 明确报错
     "runFlow": ["__smoke_missing__"],
     "setSkin": ["__smoke_missing__"],
@@ -154,6 +157,18 @@ SMOKE_ARGS: dict[str, list] = {
     "getEchoSetDetail": ["__no_such_set__"],     #: 不存在的名字 → not_found，安全
     #: ★ P13 —— 抽卡页逐条出金列表
     "getGachaPoolDetail": [],                    #: 只读缓存，安全
+    #: ★ P14 —— 任务页「按选项新增」（2026-11-03）
+    "getNewFlowOptions": [],                     #: 只读：任务类型/级别/角色清单
+    "createFlowFromOptions": ['{"character":"__no_such__"}'],
+    #:  ↑ 角色不存在 → bad_character 早失败，不落盘
+    "deleteFlow": ["__smoke_missing__"],         #: 不存在的 id → not_found
+    #: ★ P14 —— 任务页「运行报告」（2026-11-03）
+    "getRunReport": [],                          #: 只读：本轮 + 累计
+    "resetRunReport": [],                        #: ⚠ 见 SMOKE_SKIP（清用户累计统计）
+    #: ★ P15 —— 无边框窗口最大化状态（2026-11-03）
+    "getWindowState": [],                        #: 只读：问宿主 isMaximized()，安全
+    #: ★ P16 —— 库街区「退出登录」（2026-11-03）
+    "kuroLogout": [],                            #: ⚠ 见 SMOKE_SKIP（删登录令牌 + 练度缓存）
 }
 
 #: 冒烟时**跳过**的方法 —— 会真的打网络 / 拉引擎 / 覆盖用户数据。
@@ -185,6 +200,12 @@ SMOKE_SKIP: set[str] = {
     #: ★ P6 —— 会写 ``tool_settings.json`` 的 ``auto_combat`` 键
     #: （用户的定时关机设置）。虽然只动两个字段，但那是**用户设置**。
     "setShutdownTimer",
+    #: ★ P14 —— 会把 ``data/run_stats.json`` 的「所有任务累计」清零
+    #: （用户的累计统计，跑了几十轮才有）。本轮报告不动，但累计是用户数据。
+    "resetRunReport",
+    #: ★ P16 —— 会删库街区的登录令牌文件 + ``data/kuro_练度.json`` 缓存。
+    #: 等于把用户踢下线，冒烟绝对不该干这个。
+    "kuroLogout",
 }
 
 #: 这些方法会真的启动引擎 / 改用户数据 —— 早期的不完整清单，

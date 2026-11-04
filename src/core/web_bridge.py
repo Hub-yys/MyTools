@@ -793,6 +793,13 @@ class WebBridge(QObject):
         #: 壁纸缓存：id → dict
         self._wallpapers: list[dict] = []
         self._wallpaper_id = ""
+        #: ★ 壁纸主色缓存 ``(壁纸 id, primary, tint)`` —— 见 ``_apply_wallpaper_accent``
+        #:
+        #: Web 外壳从不走 Qt 那条壁纸链路（``wallpaper_dsh`` / ``wallpaper_quick``
+        #: 会调 ``skins.apply_wallpaper_palette``），所以主题色一直停在皮肤自带的
+        #: 紫色 ``#8B7CFF``。用户 2026-11-04：「守岸人主题是蓝色，所有相关的
+        #: 按钮应该是蓝色」。这里自己抽一次，结果按壁纸 id 缓存。
+        self._accent_cache: tuple = ("", "", 0.0)
         #: 进度 0~100
         self._progress = 0
         #: ★ 本轮报告（跑完一轮就换掉；内存里，和 Qt 版 ``_last_report`` 同一个角色）
@@ -4849,6 +4856,9 @@ class WebBridge(QObject):
         try:
             from ..core import skins  # noqa: PLC0415
 
+            #: ★★★ 先按壁纸抽一次主色 —— 必须在 ``active_skin()`` 之前，
+            #: 那个函数会读 ``skins._WALLPAPER_PRIMARY`` 合并进配色。
+            self._apply_wallpaper_accent()
             skin = skins.active_skin()
             payload.update({
                 "id": skin.get("id", ""),
@@ -4979,16 +4989,54 @@ class WebBridge(QObject):
         """切换壁纸 → 返回 ``{ok, id, title, url}``。
 
         页面收到之后自己换 ``<video src>``（本模块只负责解析出 URL）。
+
+        ## ★ 传空串 = 关掉壁纸（2026-11-04 修）
+
+        页面上那颗按钮在「使用中」时显示「取消使用」，点它发的是空串
+        （``pages/skin.js`` 的 ``const target = isActive ? '' : id``）。
+        这里原来对空串直接返回 ``{ok:false, reason:'empty'}``，于是
+        「取消使用」永远失败、只弹一条「切换壁纸失败：empty」——
+        而**壁纸也一直没关掉**。
         """
         wp_id = (wp_id or "").strip()
         if not wp_id:
-            return _json({"ok": False, "reason": "empty"})
+            #: 关壁纸：清存盘 + 清主色缓存 + 退回皮肤原配色 + 通知页面
+            try:
+                from ..core import wallpaper_state  # noqa: PLC0415
+
+                wallpaper_state.set_current("")
+            except Exception:  # noqa: BLE001
+                logger.warning("关壁纸：清存盘失败", exc_info=True)
+            self._wallpaper_id = ""
+            self._accent_cache = ("", "", 0.0)
+            payload = {"ok": True, "id": "", "title": "", "url": ""}
+            self.wallpaperChanged.emit(_json(payload))
+            self.emitEvent("wallpaperChanged", payload)
+            self.pushSkin()
+            logger.info("WebBridge：关闭壁纸")
+            return _json(payload)
         try:
             items = self._scan_wallpapers()
             target = next((x for x in items if x.get("id") == wp_id), None)
             if target is None:
                 return _json({"ok": False, "reason": "not_found", "id": wp_id})
             self._wallpaper_id = wp_id
+            #: ★ 2026-11-04 起壁上还要跟着换主题色 ——
+            #:
+            #: ① 把「选了哪个壁纸」连同**视频路径**存盘：``_apply_wallpaper_accent``
+            #:    要靠路径抓帧抽主色，光有 id 抽不出来（老 Qt 界面
+            #:    只存 id 那会儿就踩过，见 ``gui/skin_page.py`` 的注释）。
+            #: ② 清掉主色缓存，让下一次 ``getSkin()`` 重新抽。
+            #: ③ ``pushSkin()`` 把新配色推给页面（内部 emit ``skinChanged``）。
+            try:
+                from ..core import wallpaper_engine, wallpaper_state  # noqa: PLC0415
+
+                info = wallpaper_engine.wallpaper_by_id(wp_id) or {}
+                wallpaper_state.set_current(
+                    wp_id, str(info.get("video_path") or ""))
+            except Exception:  # noqa: BLE001
+                logger.warning("切壁纸：存盘失败", exc_info=True)
+            self._accent_cache = ("", "", 0.0)
             payload = {
                 "ok": True,
                 "id": target.get("id", ""),
@@ -4997,6 +5045,8 @@ class WebBridge(QObject):
             }
             self.wallpaperChanged.emit(_json(payload))
             self.emitEvent("wallpaperChanged", payload)
+            #: 换壁纸 = 换主题色。放最后：日志顺序才是「壁纸换了 → 配色换了」。
+            self.pushSkin()
             logger.info("WebBridge：切壁纸 → %s", target.get("title"))
             return _json(payload)
         except Exception:  # noqa: BLE001
@@ -5580,6 +5630,149 @@ class WebBridge(QObject):
         self.emitEvent("windowStateChanged", payload)
 
     # ================================================================ 内部
+    # ---------------------------------------------------------------- 壁纸主色
+    def _apply_wallpaper_accent(self) -> str:
+        """按当前壁纸抽一次主色，交给 ``skins`` 当主题色（返回主色）。
+
+        ## 为什么 Web 外壳要自己来这一趟
+
+        Qt 版的壁纸层（``gui/wallpaper_quick.py``、``gui/wallpaper_dsh.py``）
+        会在播放时抓一帧、算主色、调 ``skins.apply_wallpaper_palette()``。
+        **Web 外壳一条都不走** —— 它把 ``<video>`` 直接塞进页面，
+        于是 ``skins._WALLPAPER_PRIMARY`` 永远是空串，``active_skin()``
+        返回皮肤自带的主色，按钮就是紫的。
+
+        用户 2026-11-04：「守岸人主题是蓝色，所有相关的按钮应该是蓝色」。
+
+        ## 实现要点
+
+        * 用 ``ffmpeg`` 抓一帧（``vendor/ffmpeg/ffmpeg.exe`` 随仓库发布）。
+          **不用** ``QMediaPlayer`` —— 那套要 ``app.processEvents()`` 循环，
+          放进同步 ``@Slot`` 里会把事件循环搅乱。
+        * 结果按壁纸 id 缓存：抽一次要几百毫秒到几秒，不能每次
+          ``getSkin()`` 都抽。
+        * ``repaint=False`` —— Web 外壳没有 Qt 控件在画主题，
+          重刷纯属白跑（还可能碰到已销毁的控件）。
+        * 抽失败 / 没壁纸 / 关掉「主题随壁纸」→ 清掉覆盖，回到皮肤原配色。
+
+        :return: 生效的主色（``#RRGGBB``；没有覆盖时为空串）
+        """
+        try:
+            from ..core import skins, wallpaper_settings, wallpaper_state
+        except Exception:  # noqa: BLE001
+            logger.debug("壁纸配色：模块导入失败", exc_info=True)
+            return ""
+
+        def _clear() -> None:
+            try:
+                if skins.wallpaper_palette()[0]:
+                    skins.apply_wallpaper_palette("", 0.0, repaint=False)
+            except Exception:  # noqa: BLE001
+                logger.debug("壁纸配色：清除失败", exc_info=True)
+
+        #: ① 用户关掉「主题颜色跟随壁纸」→ 不覆盖
+        try:
+            if not bool(wallpaper_settings.get("autoAccent")):
+                _clear()
+                return ""
+        except Exception:  # noqa: BLE001
+            pass
+
+        #: ② 当前壁纸
+        try:
+            wp_id = wallpaper_state.current_id()
+            path = wallpaper_state.current_path()
+        except Exception:  # noqa: BLE001
+            wp_id, path = "", ""
+        if not wp_id or not path:
+            _clear()
+            return ""
+
+        #: ③ 缓存命中（同一个壁纸只抽一次）
+        cache_id, cache_primary, cache_tint = self._accent_cache
+        if cache_id == wp_id and cache_primary:
+            try:
+                skins.apply_wallpaper_palette(
+                    cache_primary, cache_tint, repaint=False)
+            except Exception:  # noqa: BLE001
+                pass
+            return cache_primary
+
+        #: ④ 抽色
+        got = self._extract_wallpaper_accent(path)
+        if not got:
+            _clear()
+            return ""
+        primary, tint = got
+        self._accent_cache = (wp_id, primary, tint)
+        try:
+            skins.apply_wallpaper_palette(primary, tint, repaint=False)
+        except Exception:  # noqa: BLE001
+            logger.warning("壁纸配色：应用失败", exc_info=True)
+            return ""
+        logger.info("壁纸配色：%s primary=%s tint=%.2f", wp_id, primary, tint)
+        return primary
+
+    def _extract_wallpaper_accent(self, path: str) -> tuple:
+        """从壁纸视频抓一帧 → ``(primary, tint)``；失败返回空 tuple。
+
+        抓帧走 ``ffmpeg``（``-ss 2`` 跳过片头黑场，缩到 320 宽足够统计）。
+        抽色算法全在 :mod:`src.core.color_extract` 里，这里只负责把
+        ``QImage`` 递给它 —— 和 Qt 版壁纸层用的是同一套，颜色不会分叉。
+        """
+        import subprocess  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+
+        try:
+            from PySide6.QtGui import QImage  # noqa: PLC0415
+
+            from ..core import color_extract as CE  # noqa: PLC0415
+            from ..core import wallpaper_settings, webm_transcode  # noqa: PLC0415
+        except Exception:  # noqa: BLE001
+            logger.debug("壁纸配色：依赖导入失败", exc_info=True)
+            return ()
+
+        ffmpeg = ""
+        try:
+            ffmpeg = webm_transcode.find_ffmpeg()
+        except Exception:  # noqa: BLE001
+            ffmpeg = ""
+        if not ffmpeg or not os.path.isfile(path):
+            return ()
+
+        tmp = ""
+        try:
+            fd, tmp = tempfile.mkstemp(suffix=".png", prefix="mt_accent_")
+            os.close(fd)
+            subprocess.run(  # noqa: S603,S607 - 路径来自自家 vendor
+                [ffmpeg, "-y", "-loglevel", "error",
+                 "-ss", "2", "-i", path,
+                 "-frames:v", "1", "-vf", "scale=320:-1", tmp],
+                capture_output=True, timeout=60,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            img = QImage(tmp)
+            if img.isNull():
+                return ()
+            #: 全黑（片头 / 解码失败）就别覆盖成黑按钮
+            if CE.average_luma(img) < 0.02:
+                return ()
+            primary = CE.extract_primary(img)
+            try:
+                scrim = float(wallpaper_settings.get("scrim") or 0.0)
+                tint = scrim if scrim > 0 else CE.suggest_tint(img)
+            except Exception:  # noqa: BLE001
+                tint = CE.suggest_tint(img)
+            return (primary, tint)
+        except Exception:  # noqa: BLE001
+            logger.debug("壁纸配色：抽色失败", exc_info=True)
+            return ()
+        finally:
+            if tmp:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
     def _pick_current(self, items: list[dict]) -> dict:
         """挑「当前应该播的那个」壁纸。
 

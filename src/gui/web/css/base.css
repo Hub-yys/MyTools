@@ -102,9 +102,9 @@ img, video, svg {
    ══════════════════════════════════════════════════════════════════════════ */
 :root {
   /* ── 主色（皮肤 primary）── */
-  --primary: #8B7CFF;
-  --primary-dim: rgba(139, 124, 255, 0.16);
-  --primary-glow: rgba(139, 124, 255, 0.42);
+  --primary: #4f8cff;
+  --primary-dim: rgba(79, 140, 255, 0.16);
+  --primary-glow: rgba(79, 140, 255, 0.42);
 
   /* ── 文字 ── */
   --text: #ECE9FF;

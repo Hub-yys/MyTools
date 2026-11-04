@@ -803,6 +803,54 @@
   }
 
   // ══════════════════════════════════════════════════════════════════════
+  //  只读（「查看」）
+  // ══════════════════════════════════════════════════════════════════════
+
+  /**
+   * 把已经建好的弹框整体锁成只读。
+   *
+   * ## 用户要求（2026-11-04）
+   *
+   * 「查看和编辑应该是一样的页面，只是查看不能改东西」——
+   * 所以直接用编辑那套表单，不另拼一个。
+   *
+   * ## 为什么要在**建完之后**统一扫一遍
+   *
+   * 表单里有好几处回调会**重新点亮**控件（这些都在各自的同步函数里，
+   * 改起来很容易漏一个）：
+   *
+   * * ``buildCostSection`` 的 ``syncPick()``：``scb.disabled = !cb.checked``
+   * * ``buildDialogSettingsEditor`` 的 ``syncCore()``：核心满 5 条置灰
+   * * ``buildDialogSettingsEditor`` 的 ``syncOptional()``：被核心占用置灰
+   * * 双爆开关回调：``critField.input.disabled = !on``
+   *
+   * 那些函数里已经加了 ``if (readOnly) return``，这里再兜一层
+   * ——「所有能点的都不给点」是最后一道保险。
+   *
+   * ## 例外（必须放行）
+   *
+   * * ``.coll-toggle`` —— 折叠卡展开按钮。禁了就没法看「核心属性」
+   *   那些收起来的区块，等于查看不了。
+   * * ``.dlg-close`` / ``.dlg-foot .btn`` —— 关闭按钮，得能退出。
+   *
+   * @param {HTMLElement} box ``openDialog`` 返回的 ``el``
+   */
+  function lockDialogReadOnly(box) {
+    if (!box) return;
+    const items = box.querySelectorAll('input, select, textarea, button');
+    for (const node of items) {
+      if (node.classList.contains('coll-toggle')) continue;
+      if (node.classList.contains('dlg-close')) continue;
+      if (node.closest && node.closest('.dlg-foot')) continue;
+      node.disabled = true;
+    }
+    //: 鼠标手型也去掉 —— 看起来能点、点不动最难受
+    const toggles = box.querySelectorAll('.coll-toggle');
+    for (const t of toggles) t.disabled = false;
+    box.classList.add('dlg-readonly');
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
   //  角色候选（旧界面 ``CHARACTERS``，61 个）
   // ══════════════════════════════════════════════════════════════════════
 
@@ -1470,8 +1518,11 @@
    * @param {object} app
    * @param {object|null} existing - 编辑时传原配置（含 character / echoSet / picks…）
    */
-  async function openLoadoutDialog(app, existing) {
+  async function openLoadoutDialog(app, existing, opts) {
     const creating = !existing;
+    opts = opts || {};
+    //: 只读（「查看」）—— 同一个表单，只是不能改
+    const readOnly = !!opts.readOnly;
     const body = P.el('div', { class: 'dlg-form dlg-form-wide' });
 
     // ── 角色（候选：按 kind 传，编辑时排除自己）──
@@ -1738,7 +1789,9 @@
           const picked = saved && Array.isArray(saved.stats)
             ? saved.stats.indexOf(stat) >= 0 : false;
           scb.checked = picked;
-          scb.disabled = !cb.checked;
+          //: 只读（「查看」）时属性框一律置灰 —— 别让下面那句
+          //: ``!cb.checked`` 把已勾选的那些又点亮
+          scb.disabled = readOnly ? true : !cb.checked;
           lbl.appendChild(scb);
           lbl.appendChild(P.el('span', { text: stat }));
           statsBox.appendChild(lbl);
@@ -1761,6 +1814,8 @@
           echoState.picks[key] = list;
           row.classList.toggle('is-selected', cb.checked);
           //: 取消勾选时属性框置灰（旧界面也是这样）
+          //: 只读时不要动 —— 否则一次 change 就把「查看」点亮成可编辑
+          if (readOnly) return;
           for (const s of stats) statBoxes[s].disabled = !cb.checked;
         }
 
@@ -1818,17 +1873,21 @@
     }
 
     // ── 打开对话框 ──
-    openDialog({
-      title: creating ? '新增配置' : '修改配置',
+    const dlg = openDialog({
+      title: creating ? '新增配置'
+        : (readOnly ? '查看配置' : '修改配置'),
       width: LOADOUT_DIALOG_WIDTH,
       body: body,
-      actions: [
-        { label: '取消', name: 'cancel', onClick: closeDialog },
-        {
-          label: '保存',
-          kind: 'primary',
-          name: 'save',
-          onClick: async function () {
+      actions: readOnly
+        ? [{ label: '关闭', kind: 'primary', name: 'close-detail',
+             onClick: closeDialog }]
+        : [
+          { label: '取消', name: 'cancel', onClick: closeDialog },
+          {
+            label: '保存',
+            kind: 'primary',
+            name: 'save',
+            onClick: async function () {
             const character = charPicker.get();
             const echoSet = setPicker.get() === SET_PLACEHOLDER
               ? '' : setPicker.get();
@@ -1890,6 +1949,7 @@
         }
       ]
     });
+    if (readOnly) lockDialogReadOnly(dlg.el);
     void app;
   }
 
@@ -2315,9 +2375,15 @@
    * @param {object} app
    * @param {object|null} existing - 编辑时传原配置（含 name / settings）
    */
-  async function openEchoProfileDialog(app, existing) {
+  async function openEchoProfileDialog(app, existing, opts) {
     const creating = !existing;
-    const title = creating ? '新增配置' : '编辑配置';
+    opts = opts || {};
+    //: 只读（「查看」）—— 同一个表单，只是不能改
+    //
+    //: 用户 2026-11-04：「查看和编辑应该是一样的页面，只是查看不能改东西」。
+    const readOnly = !!opts.readOnly;
+    const title = creating ? '新增配置'
+      : (readOnly ? '查看配置' : '编辑配置');
 
     const body = P.el('div', { class: 'dlg-form' });
 
@@ -2420,7 +2486,7 @@
     //:   **局部状态**，构建完立刻把值取出来，不依赖 ENHANCE_STATE。
     const settingsArea = P.el('div', { class: 'dlg-settings' });
     const settings = existing && existing.settings ? existing.settings : null;
-    const editor = buildDialogSettingsEditor(settings);
+    const editor = buildDialogSettingsEditor(settings, readOnly);
     settingsArea.appendChild(editor.el);
     body.appendChild(settingsArea);
 
@@ -2429,38 +2495,42 @@
       title: title,
       width: 720,
       body: body,
-      actions: [
-        { label: '取消', name: 'cancel', onClick: closeDialog },
-        {
-          label: creating ? '创建' : '保存',
-          kind: 'primary',
-          name: 'submit',
-          onClick: async function () {
-            const name = picker.get();
-            const error = validateProfileName(name, taken, existing);
-            if (error) {
-              showDialogError(errorEl, error);
-              return;
-            }
-            //: ★★★ 2026-11-03 用户圈图：「这里是3，但是所选属性只有2条，
-            //: 怎么创建，应该提示创建失败」—— 设置项自己也要能拦。
-            //: 理由见 ``buildDialogSettingsEditor`` 里 ``validate()`` 的注释。
-            const badSettings = editor.validate();
-            if (badSettings) {
-              showDialogError(errorEl, badSettings);
-              //: 把出事的那一行滚到视野里（弹框比 900px 高的屏幕还长）
-              const validCard = settingsArea.querySelector('.enh-valid-hint');
-              if (validCard && validCard.scrollIntoView) {
-                validCard.scrollIntoView({ block: 'center' });
+      actions: readOnly
+        ? [{ label: '关闭', kind: 'primary', name: 'close-detail',
+             onClick: closeDialog }]
+        : [
+          { label: '取消', name: 'cancel', onClick: closeDialog },
+          {
+            label: creating ? '创建' : '保存',
+            kind: 'primary',
+            name: 'submit',
+            onClick: async function () {
+              const name = picker.get();
+              const error = validateProfileName(name, taken, existing);
+              if (error) {
+                showDialogError(errorEl, error);
+                return;
               }
-              return;
+              //: ★★★ 2026-11-03 用户圈图：「这里是3，但是所选属性只有2条，
+              //: 怎么创建，应该提示创建失败」—— 设置项自己也要能拦。
+              //: 理由见 ``buildDialogSettingsEditor`` 里 ``validate()`` 的注释。
+              const badSettings = editor.validate();
+              if (badSettings) {
+                showDialogError(errorEl, badSettings);
+                //: 把出事的那一行滚到视野里（弹框比 900px 高的屏幕还长）
+                const validCard = settingsArea.querySelector('.enh-valid-hint');
+                if (validCard && validCard.scrollIntoView) {
+                  validCard.scrollIntoView({ block: 'center' });
+                }
+                return;
+              }
+              hideDialogError(errorEl);
+              await submitEchoProfile(name, editor.read(), existing, app);
             }
-            hideDialogError(errorEl);
-            await submitEchoProfile(name, editor.read(), existing, app);
           }
-        }
-      ]
+        ]
     });
+    if (readOnly) lockDialogReadOnly(dlg.el);
     DIALOG_STATE.current = dlg;
     void app;
   }
@@ -2551,7 +2621,10 @@
    * @param {object|null} saved - 已有的设置（编辑模式）
    * @returns {{el: Element, read: Function}}
    */
-  function buildDialogSettingsEditor(saved) {
+  function buildDialogSettingsEditor(saved, readOnly) {
+    //: 只读（「查看」）—— 建完由 ``lockDialogReadOnly`` 统一禁用，
+    //: 这里只在几个「会重新点亮控件」的同步函数里兜底
+    const ro = !!readOnly;
     const root = P.el('div', { class: 'enh-editor' });
     const local = {
       coreBoxes: {},
@@ -2601,7 +2674,7 @@
       const cb = P.el('input', { type: 'checkbox' });
       //: 有保存值用它，没有就出厂默认（只有暴击/爆伤）
       cb.checked = forced || (coreSaved ? coreSaved.indexOf(stat) >= 0 : false);
-      cb.disabled = forced;
+      cb.disabled = forced || ro;
       if (forced) cb.title = '必须保留，不可取消';
       cb.addEventListener('change', syncCore);
       lbl.appendChild(cb);
@@ -2633,7 +2706,9 @@
         //: 上限控制（勾满 5 条）和互斥是两件独立的事，取或。
         const optBox = local.optionalBoxes[stat];
         const takenByOptional = !!(optBox && optBox.checked);
-        cb.disabled = takenByOptional || ((custom >= limit) && !cb.checked);
+        cb.disabled = ro
+          ? true
+          : (takenByOptional || ((custom >= limit) && !cb.checked));
       }
       const names = TP.ENHANCE_ALL_STATS.filter(function (x) {
         const cb = local.coreBoxes[x];
@@ -2687,13 +2762,15 @@
     //: 把开关推到右边（和工具页保持一致）
     const critOn = s.enable_crit_check !== false;
     const critSw = P.toggle('启用', critOn, function (on) {
+      //: 只读时不要跟着开关改 —— 查看态下这两个输入框要一直是灰的
+      if (ro) return;
       local.critField.input.disabled = !on;
       local.critDmgField.input.disabled = !on;
     }, { onText: '启用', offText: '不启用' });
     critRow.appendChild(critSw);
     local.critSwitch = critSw.querySelector('input[type="checkbox"]');
-    local.critField.input.disabled = !critOn;
-    local.critDmgField.input.disabled = !critOn;
+    local.critField.input.disabled = ro ? true : !critOn;
+    local.critDmgField.input.disabled = ro ? true : !critOn;
     critCard.appendChild(critRow);
     root.appendChild(critCard);
 
@@ -2792,8 +2869,10 @@
         if (!opt) continue;
         const core = local.coreBoxes[stat];
         const takenByCore = !!(core && core.checked);
-        if (takenByCore && opt.checked) opt.checked = false;
-        opt.disabled = takenByCore;
+        //: 只读时**不要**摘掉冲突项 —— 那是「修正数据」，查看态
+        //: 不该改动正在看的东西（显示就得是磁盘上那份）
+        if (takenByCore && opt.checked && !ro) opt.checked = false;
+        opt.disabled = ro ? true : takenByCore;
       }
       const picked = TP.ENHANCE_ALL_STATS.filter(function (x) {
         const cb = local.optionalBoxes[x];
@@ -3196,14 +3275,15 @@
   }
 
   /** 打开「编辑」—— 现在两种类型都能用了（P7）*/
-  async function openEditDialog(item, app) {
+  async function openEditDialog(item, app, opts) {
     if (!item) return;
+    opts = opts || {};
     if (item.kind === 'echo_profile') {
-      await openEchoProfileDialog(app, item);
+      await openEchoProfileDialog(app, item, opts);
       return;
     }
     if (item.kind === 'loadout') {
-      await openLoadoutDialog(app, item);
+      await openLoadoutDialog(app, item, opts);
       return;
     }
     //: 角色战斗配置还没做
@@ -3843,10 +3923,15 @@
       onClick: function () { openEditDialog(item, null); }
     }));
 
-    //: ② 查看
+    //: ② 查看 —— 和「编辑」同一个表单，只是全部只读
+    //
+    //: 用户 2026-11-04：「查看和编辑应该是一样的页面，只是查看不能改东西」。
+    //: 以前另拼了一套键值网格（``showDetail``），跟编辑表单长得完全不一样，
+    //: 用户看一眼再点编辑会以为换了个东西。
     actions.appendChild(P.button('查看', {
       size: 'sm',
-      onClick: function () { showDetail(item); }
+      title: '查看这条配置（只读）',
+      onClick: function () { openEditDialog(item, null, { readOnly: true }); }
     }));
 
     //: ③ 删除
@@ -3865,175 +3950,6 @@
     return row;
   }
 
-  /**
-   * 「查看」→ **只读详情弹框**（用户 2026-11-04 反馈「查看没有效果」）。
-   *
-   * ## 之前为什么"没有效果"
-   *
-   * 旧实现把详情面板 ``insertBefore(host, listHost.nextSibling)`` ——
-   * **插在整张配置列表的下面**。列表有 11 条配置、一千多像素高，
-   * 面板出现在 ``top: 1587px``，而窗口视口只有 760px：
-   * 点完按钮**屏幕上一点变化都没有**，得往上滚两屏才看得见。
-   * 用户的原话就是「查看没有效果」—— 不是没渲染，是渲染到了看不见的地方。
-   *
-   * ## 现在
-   *
-   * 走 ``openDialog``（和「编辑」「删除确认」同一套弹框）。弹框是
-   * ``position:fixed`` 的遮罩层，不管列表多长都在屏幕正中 ——
-   * 点完立刻看得见，Esc / 点遮罩 / 右上角 × 都能关。
-   *
-   * 内容照抄旧界面：
-   *
-   * * ``loadout`` → ``LoadoutDetailDialog``（``loadout_dialog.py:532``）
-   *   —— 角色块 + 声骸套装 + 状态 + 品质 + 4C/3C/1C 三档；
-   * * ``echo_profile`` → ``EchoProfileDialog(read_only=True)``
-   *   （``config_interface.py:501`` 的 ``view_profile``）
-   *   —— 核心属性 / 双爆下限 / 有效词条 / 满值保护 / 自动停止 / 可选属性。
-   *
-   * 一个控件都点不动 —— 这是"看一眼"，不是编辑。
-   */
-  function showDetail(item) {
-    if (!item) return;
-    const raw = item.raw || {};
-
-    const body = P.el('div', { class: 'dlg-form' });
-
-    // ── 角色块（头像 + 名字 + 类型，和删除确认框同一套样式）──
-    const face = P.el('div', { class: 'del-target' });
-    const faceBox = P.el('div', { class: 'del-target-face' });
-    if (item.avatar) {
-      const img = P.el('img', { src: item.avatar, alt: '' });
-      img.addEventListener('error', function () {
-        P.fill(faceBox, null);
-        applyInitial(faceBox, item);
-      }, { once: true });
-      faceBox.appendChild(img);
-    } else {
-      applyInitial(faceBox, item);
-    }
-    face.appendChild(faceBox);
-    face.appendChild(P.el('div', { class: 'del-target-meta' }, [
-      P.el('div', { class: 'del-target-name', text: item.name || '(未命名)' }),
-      P.el('div', { class: 'del-target-kind', text: item.kindLabel || '' })
-    ]));
-    body.appendChild(face);
-
-    // ── 按类型给**结构化**字段（不是把 raw 一股脑倒出来）──
-    //
-    //: 旧实现遍历 ``item.raw`` 的每个键 —— 用户看到一堆
-    //: ``id`` / ``avatarUrl`` / ``pinyin`` / ``avatarHue`` / ``initial``，
-    //: 全是实现细节，真正要看的东西反倒混在里面找不着。
-    const rows = [];
-    if (item.kind === 'loadout') {
-      pushRow(rows, '声骸套装', raw.echoSet || '未选');
-      pushRow(rows, '状态', raw.status || '（未选）');
-      const qualities = Array.isArray(raw.qualities) ? raw.qualities : [];
-      pushRow(rows, '品质', qualities.length
-        ? qualities.join('、') : '（一个都没勾）');
-      //: 三档声骸：固定 4C → 3C → 1C（``COST_SECTIONS`` 的顺序）
-      const picks = raw.picks || {};
-      for (const cost of ['4', '3', '1']) {
-        const list = Array.isArray(picks[cost]) ? picks[cost] : [];
-        const text = list.length
-          ? list.map(function (p) {
-              const name = p.echo || '';
-              const stats = Array.isArray(p.stats) && p.stats.length
-                ? '（' + p.stats.join('、') + '）' : '（未选属性）';
-              return name + stats;
-            }).join('\n')
-          : '未选';
-        pushRow(rows, cost + 'C', text);
-      }
-    } else if (item.kind === 'echo_profile') {
-      const s = raw.settings || {};
-      const core = Array.isArray(s.core_stats) ? s.core_stats : [];
-      pushRow(rows, '核心属性', core.length ? core.join('、') : '（未设）');
-      const crit = s.crit_min != null ? s.crit_min : 7.5;
-      const critDmg = s.crit_dmg_min != null ? s.crit_dmg_min : 15.0;
-      pushRow(rows, '双爆下限',
-        '≥ ' + crit + ' / ' + critDmg
-        + (s.enable_crit_check === false ? '（未启用）' : ''));
-      //: 有效词条 + 可设范围（后端 ``valid_count_range``：下界=核心条数）
-      const valid = s.min_valid_count != null ? s.min_valid_count : 2;
-      const low = core.length;
-      const high = core.length + (Array.isArray(s.optional_stats)
-        ? s.optional_stats.length : 0);
-      pushRow(rows, '有效词条', '≥ ' + valid + ' 条'
-        + (high ? '　（可设 ' + low + ' ~ ' + high + '）' : ''));
-      pushRow(rows, '满值保护',
-        s.enable_max_roll_lock ? '开（满级上锁，不弃置）' : '关');
-      pushRow(rows, '自动停止',
-        s.enable_auto_stop ? '开（符合条件时暂停并通知）' : '关');
-      const optional = Array.isArray(s.optional_stats) ? s.optional_stats : [];
-      pushRow(rows, '可选属性', optional.length ? optional.join('、') : '（未选）');
-    }
-
-    //: 时间（两类都有，但字段名不统一：loadout 只有 ``updated_at``，
-    //: echo_profile 才有 ``created`` + ``updated_at``）。
-    //
-    //: ★ 没有的就不显示 —— 旧实现无脑塞「—」，用户看到 loadout 那一行
-    //: 「创建时间 —」会以为是坏了（其实数据里压根没记这个字段）。
-    const created = raw.created || raw.createdAt || '';
-    const updated = raw.updatedAt || raw.updated_at || '';
-    if (created) pushRow(rows, '创建时间', shortTime(created));
-    if (updated) pushRow(rows, '更新时间', shortTime(updated));
-
-    //: 配置自身的校验错误 —— 有就红字摆出来，别让人以为这条是好的
-    const errors = Array.isArray(item.errors) ? item.errors : [];
-    if (errors.length) {
-      pushRow(rows, '⚠ 校验', errors.join('\n'));
-    }
-
-    const grid = P.el('div', { class: 'detail-grid dlg-detail-grid' });
-    for (const row of rows) {
-      grid.appendChild(P.el('div', { class: 'detail-key', text: row[0] }));
-      const val = P.el('div', {
-        class: 'detail-val' + (row[2] ? ' is-warn' : ''),
-        text: row[1]
-      });
-      //: 多行（4C/3C/1C 那种「一只一行」）—— ``white-space: pre-line``
-      if (row[1].indexOf('\n') >= 0) val.style.whiteSpace = 'pre-line';
-      grid.appendChild(val);
-    }
-    body.appendChild(P.el('div', { class: 'detail-section' }, [
-      P.el('div', { class: 'detail-title', text: '配置内容' }),
-      grid
-    ]));
-
-    openDialog({
-      title: '查看配置',
-      width: 560,
-      body: body,
-      actions: [{
-        label: '关闭',
-        kind: 'primary',
-        name: 'close-detail',
-        onClick: function () { closeDialog(); }
-      }]
-    });
-  }
-
-  /**
-   * 往详情行数组里塞一行（空值也塞 —— 空着比缺一行好，用户能看出"这项没设"）。
-   *
-   * @param {Array} rows - ``[[label, text, isWarn], ...]``
-   */
-  function pushRow(rows, label, text, isWarn) {
-    const value = String(text == null ? '' : text).trim();
-    rows.push([label, value || '—', !!isWarn]);
-  }
-
-  /**
-   * 时间戳剥掉微秒（``2026-11-04 11:02:45.066092`` → ``2026-11-04 11:02:45``）。
-   *
-   * ``EchoProfile.updated_at`` 存的是 ``datetime.now().isoformat()``，
-   * 带 6 位微秒 —— 弹框里看是纯噪音。loadout 那边是 ``strftime`` 的
-   * 整秒格式，剥不到就原样返回。
-   */
-  function shortTime(text) {
-    const s = String(text || '');
-    return s.replace(/\.\d{3,}$/, '');
-  }
 
   // ────────────────────────────────────────────────────────────────────────
   //  删除（真接口，2026-11-02 接；确认方式 2026-11-03 改弹框）
@@ -4154,9 +4070,10 @@
     state.items = state.items.filter(function (it) {
       return !(it.kind === item.kind && it.id === item.id);
     });
-    //: 详情面板如果开着这条，一起关掉
-    const detail = document.getElementById('config-detail-host');
-    if (detail && detail.dataset.configId === item.id) detail.remove();
+    //: 「查看」弹框如果正看着这条，一起关掉（2026-11-04 起查看也是弹框）
+    if (DIALOG_STATE.root && DIALOG_STATE.root.dataset.configId === item.id) {
+      closeDialog();
+    }
     renderRows();
     showOk('已删除「' + (item.name || item.id) + '」');
     return true;

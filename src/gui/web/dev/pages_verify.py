@@ -867,83 +867,118 @@ def main() -> int:
         QTimer.singleShot(200, stage_view_dialog)
 
     # ══════════════════════════════════════════════════════════════════════
-    #  ★ C8.5：点「查看」必须**看得见**（2026-11-04 用户反馈「查看没有效果」）
+    #  ★ C8.5：「查看」= 编辑表单的只读版（2026-11-04 用户要求）
     #
-    #  ## 用户报的是什么
+    #  ## 用户要求（同一天两轮）
     #
-    #  红框圈住列表行右边的「查看」按钮，批注「**查看没有效果**」。
+    #  ① 「查看没有效果」—— 旧 ``showDetail()`` 把详情面板插在整张列表
+    #     下面（实测 ``top:1587`` 而视口只有 760px），点完屏幕毫无变化。
+    #  ② 「查看和编辑应该是一样的页面，只是查看不能改东西」。
     #
-    #  ## 根因不是"没渲染"
+    #  ## 现在的实现
     #
-    #  旧 ``showDetail()`` 把详情面板 ``insertBefore(host, listHost.nextSibling)``
-    #  —— 插在**整张配置列表下面**。实测：
-    #
-    #  .. code:: text
-    #
-    #    host.getBoundingClientRect()  →  {top: 1587, h: 743}
-    #    window.innerHeight            →  760
-    #
-    #  面板真的渲染了（``#config-detail-host`` 找得到、里面有 550 个字），
-    #  但它在**视口外两屏以下** —— 点完按钮屏幕上一点变化都没有。
+    #  「查看」直接复用 ``openLoadoutDialog`` / ``openEchoProfileDialog``，
+    #  传 ``{readOnly: true}``：标题变「查看配置」、底部只留「关闭」、
+    #  所有控件 ``disabled``（``lockDialogReadOnly()`` 统一扫一遍，
+    #  折叠卡的 ``.coll-toggle`` 例外放行 —— 否则收起的内容看不到）。
     #
     #  ## 这条断言钉什么
     #
-    #  不看"节点存不存在"（旧实现也过），只看 **点完立刻在不在视口里**：
+    #  * ``overlay`` / ``inViewport``  点完弹框立刻出现在视口里
+    #  * ``title``       是「查看配置」
+    #  * ``saveBtns``    **没有**「保存」/「提交」按钮
+    #  * ``enabled``     除关闭类之外，**没有还能点的控件**（本条核心）
+    #  * ``collToggles`` 折叠卡展开按钮仍然可点
+    #  * ``legacyHost``  旧的 ``#config-detail-host`` 不存在（防止改回去）
     #
-    #  * ``overlay``   弹框遮罩真的出现了
-    #  * ``inViewport`` 弹框的 ``top`` 落在 ``[0, innerHeight)``
-    #  * ``keys``      详情网格里至少有 4 行（说明内容也渲染了）
-    #  * ``legacyHost`` 旧的面板容器**不存在**（防止有人改回去）
+    #  ⚠ 「查看」是 ``async``（里面 ``await loadCharacterOptions``），
+    #  点完不会立刻有弹框 —— 所以点一下、等 900ms、再单独读一次 DOM。
     # ══════════════════════════════════════════════════════════════════════
     def stage_view_dialog() -> None:
         state["stage"] = "view_dialog"
         js("""
         (function(){
-          window.__VD__ = {done:false};
           var rows = document.querySelectorAll('#page-config .config-row');
-          if (!rows.length) { window.__VD__ = {done:true, error:'没有配置行'}; return; }
+          if (!rows.length) {
+            window.__VD_ERR__ = '没有配置行';
+            return;
+          }
           var btn = null;
           var all = rows[0].querySelectorAll('.config-actions button');
           for (var i = 0; i < all.length; i++) {
             if (all[i].textContent.trim() === '查看') { btn = all[i]; }
           }
-          if (!btn) { window.__VD__ = {done:true, error:'这一行没有「查看」按钮'}; return; }
+          if (!btn) {
+            window.__VD_ERR__ = '这一行没有「查看」按钮';
+            return;
+          }
+          window.__VD_ERR__ = '';
           btn.click();
+        })()
+        """)
+        QTimer.singleShot(900, check_view_dialog)
+
+    def check_view_dialog() -> None:
+        data = bundle("""
+        (function(){
+          if (window.__VD_ERR__) {
+            return JSON.stringify({error: window.__VD_ERR__});
+          }
           var ov = document.querySelector('.dlg-overlay');
-          if (!ov) { window.__VD__ = {done:true, error:'点了没弹框'}; return; }
+          if (!ov) { return JSON.stringify({error: '点了没弹框'}); }
           var box = ov.querySelector('.dlg-box');
           var r = box ? box.getBoundingClientRect() : null;
-          window.__VD__ = {
-            done: true, error: '',
+          var saveBtns = box ? box.querySelectorAll(
+            '[data-action="save"], [data-action="submit"]') : [];
+          //: 还有哪些控件能点（排除关闭类 + 折叠卡展开）
+          var live = [];
+          if (box) {
+            var nodes = box.querySelectorAll('input, select, textarea, button');
+            for (var k = 0; k < nodes.length; k++) {
+              var n = nodes[k];
+              if (n.disabled) continue;
+              if (n.classList.contains('coll-toggle')) continue;
+              if (n.classList.contains('dlg-close')) continue;
+              if (n.closest && n.closest('.dlg-foot')) continue;
+              live.push((n.tagName || '') + '.' + (n.className || ''));
+            }
+          }
+          var colls = box ? box.querySelectorAll('.coll-toggle') : [];
+          var collLive = 0;
+          for (var c = 0; c < colls.length; c++) {
+            if (!colls[c].disabled) collLive += 1;
+          }
+          return JSON.stringify({
+            error: '',
             overlay: true,
-            title: box ? ((box.querySelector('.dlg-title')||{}).textContent||'') : '',
-            keys: box ? Array.prototype.map.call(
-              box.querySelectorAll('.dlg-detail-grid .detail-key'),
-              function(k){ return k.textContent.trim(); }) : [],
+            title: box ? ((box.querySelector('.dlg-title')||{}).textContent||'').trim() : '',
+            saveBtns: saveBtns.length,
+            live: live,
+            enabled: live.length,
+            collToggles: colls.length,
+            collLive: collLive,
             top: r ? Math.round(r.top) : -1,
             height: r ? Math.round(r.height) : -1,
             winH: window.innerHeight,
             inViewport: !!r && r.top >= 0 && r.top < window.innerHeight,
             legacyHost: !!document.getElementById('config-detail-host')
-          };
+          });
         })()
-        """)
-        QTimer.singleShot(700, check_view_dialog)
-
-    def check_view_dialog() -> None:
-        data = bundle("JSON.stringify(window.__VD__ || {done:false})", "view_dialog")
+        """, "view_dialog")
         d = data if isinstance(data, dict) else {}
         err = str(d.get("error") or "")
-        keys = d.get("keys") or []
         ok = (
             not err
             and bool(d.get("overlay"))
             and bool(d.get("inViewport"))
-            and len(keys) >= 4
+            and str(d.get("title") or "") == "查看配置"
+            and int(d.get("saveBtns") or 0) == 0
+            and int(d.get("enabled") or 0) == 0
+            and int(d.get("collLive") or 0) > 0
             and not d.get("legacyHost")
         )
         check("C8", ok,
-              f"「查看」弹框立刻可见 = {d}"
+              f"「查看」= 只读编辑表单 = {d}"
               + (f"  ✗ {err}" if err else ""))
 
         #: 关掉弹框，别污染后面的往返测试
