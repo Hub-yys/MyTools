@@ -1,4 +1,4 @@
-<#
+﻿<#
     WutheringWavesTools（鸣潮工具箱）一键打包：PyInstaller → Inno Setup 安装包
 
         .\package.ps1                  # 版本号自动取 src\app_config.py 的 APP_VERSION
