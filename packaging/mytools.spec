@@ -31,9 +31,49 @@ from PyInstaller.utils.hooks import (
 ROOT = Path(SPECPATH).resolve().parent
 
 # ----------------------------------------------------------------- 数据文件
-datas = [
-    # 只读资源：角色头像 / 声骸图 / 工具图标（约 30MB）
-    (str(ROOT / "assets"), "assets"),
+#
+# ⚠⚠ 2026-11-04：assets/ **不能整目录收**，要按子目录收、并挡住 splash/。
+#
+# 整目录收过一次，结果安装包从 215 MB 涨到 **1.1 GB** —— 因为 ``assets/game/splash/``
+# 里躺着一个 2026-10-30 录的 ``aemis_wallpaper.mp4``（806 MB）+ 两张 1080p 抽卡图，
+# 而它**没有任何运行期读者**：
+#
+#   * 启动动画 ``src/gui/startup_splash.py`` 已于 2026-11-04 删掉（3429 行死代码那批），
+#   * 视频版抽卡动画 ``gacha_video.has_video()`` 要 ``skin["video"]`` 字段，
+#     而 ``src/core/skins.py`` 现在只剩一款 ``glass`` 主题、根本没有该字段，
+#     所以这条路**永远走不到**（``SKINS`` 实测 video/splash/avatar 全是 None），
+#   * Web 外壳的素材白名单 ``web_shell.GAME_ASSET_SUBDIRS`` 也只有
+#     ``avatars / echo_sets / echoes / weapons``，明确不挂 splash（见那里的注释）。
+#
+# 下面改成「遍历 assets 的直接子目录 + assets/game 的直接子目录」，
+# 只挡 ``game/splash``。这样以后**新加的子目录会自动进包**（不会静默漏），
+# 想再挡谁就往 _ASSET_SKIP 里加一行。
+_ASSET_ROOT = ROOT / "assets"
+
+#: 相对 ``assets/`` 的路径，**不**进安装包（省体积，且确认没有运行期读者）
+_ASSET_SKIP = {
+    "game/splash",     # 773 MB：aemis_wallpaper.mp4 806 MB —— 启动动画已删，无人读
+}
+
+
+def _asset_pairs() -> list:
+    """把 ``assets/`` 拆成一条条 datas 条目，跳过 ``_ASSET_SKIP``。"""
+    pairs = []
+    for top in sorted(_ASSET_ROOT.iterdir()):
+        if top.is_dir():
+            if top.name != "game":
+                pairs.append((str(top), f"assets/{top.name}"))
+                continue
+            for sub in sorted(top.iterdir()):
+                rel = f"game/{sub.name}"
+                if sub.is_dir() and rel not in _ASSET_SKIP:
+                    pairs.append((str(sub), f"assets/{rel}"))
+        else:
+            pairs.append((str(top), "assets"))
+    return pairs
+
+
+datas = _asset_pairs() + [
     # 图鉴 / 掉落池等游戏数据：既当种子，也是"资源库更新"的初值
     (str(ROOT / "src" / "core" / "data"), "src/core/data"),
 ]
