@@ -800,6 +800,10 @@ class WebBridge(QObject):
         #: 紫色 ``#8B7CFF``。用户 2026-11-04：「守岸人主题是蓝色，所有相关的
         #: 按钮应该是蓝色」。这里自己抽一次，结果按壁纸 id 缓存。
         self._accent_cache: tuple = ("", "", 0.0)
+        #: ★ 上一次设给 qfluentwidgets 的全局主题色（幂等用）——
+        #: 见 ``_apply_qt_theme_color``。关闭确认框那个 Qt 原生对话框
+        #: 的按钮底色只认这个，不认 CSS 变量。
+        self._qt_theme_color: str = ""
         #: 进度 0~100
         self._progress = 0
         #: ★ 本轮报告（跑完一轮就换掉；内存里，和 Qt 版 ``_last_report`` 同一个角色）
@@ -4919,6 +4923,33 @@ class WebBridge(QObject):
             #: 那个函数会读 ``skins._WALLPAPER_PRIMARY`` 合并进配色。
             self._apply_wallpaper_accent()
             skin = skins.active_skin()
+            #: ★★★ 2026-11-04 用户圈「退出」按钮：「这个怎么还是紫色的」
+            #:
+            #: ## 为什么 CSS 变蓝了这个还是紫的
+            #:
+            #: 网页里的按钮颜色来自 CSS 变量 ``--primary``
+            #: （``app.js`` 的 ``applySkin`` 写进 ``:root``），那个我们改对了。
+            #:
+            #: **但关闭确认框不是网页元素** —— 它是 ``tray.ask_close()`` 里
+            #: 现搭的 ``qfluentwidgets.MessageBox``（Qt 原生窗口，画在
+            #: QWebEngineView 之上）。它的按钮底色来自 ``setThemeColor()``
+            #: 那个**全局主题色**，和 CSS 一点关系都没有。
+            #:
+            #: 而我们 ``_apply_wallpaper_accent()`` 全程传 ``repaint=False``
+            #: （故意的：Web 外壳没有 Qt 控件在画主题），于是
+            #: ``setThemeColor`` 一次都没被调用过 → 停在 qfluentwidgets
+            #: 的出厂紫 ``#8B7CFF``。
+            #:
+            #: ## 只设色、不重刷
+            #:
+            #: 这里**只调 ``setThemeColor``**，不碰 ``invalidate_paint_cache()``
+            #: / ``refresh_windows()`` —— 那两个是给 Qt 控件重刷 QSS 用的，
+            #: Web 外壳里没有这样的控件，跑了纯属白费（还可能碰到已销毁的）。
+            #:
+            #: 而 ``setThemeColor`` 是**唯一**能让 MessageBox 变蓝的开关：
+            #: 它 ``qconfig.set(qconfig.themeColor, ...)`` + ``updateStyleSheet()``，
+            #: 后建的 MessageBox 会读这份全局样式表。
+            self._apply_qt_theme_color(skin.get("primary", ""))
             payload.update({
                 "id": skin.get("id", ""),
                 "name": skin.get("name", ""),
@@ -5689,6 +5720,53 @@ class WebBridge(QObject):
         self.emitEvent("windowStateChanged", payload)
 
     # ================================================================ 内部
+    # ---------------------------------------------------------------- Qt 主题色
+    def _apply_qt_theme_color(self, color: str) -> bool:
+        """把主色同步给 qfluentwidgets 的**全局主题色**（影响 Qt 原生对话框）。
+
+        ## 为什么 Web 外壳也要管这个（2026-11-04 用户圈图）
+
+        用户圈着关闭确认框里的「退出」按钮：「这个怎么还是紫色的」。
+
+        网页里的按钮走 CSS 变量 ``--primary``，那个已经跟着壁纸变蓝了；
+        但**关闭确认框是 Qt 原生窗口** —— ``tray.ask_close()`` 里现场
+        new 的 ``qfluentwidgets.MessageBox``，它的按钮底色来自
+        ``setThemeColor()`` 设的全局主题色。
+
+        我们 ``apply_wallpaper_palette(..., repaint=False)`` 故意跳过了那套
+        重刷（Web 外壳没有 Qt 控件在画主题），于是 ``setThemeColor``
+        从没被调过，MessageBox 就一直是 qfluentwidgets 的出厂紫。
+
+        ## 为什么只设色、不重刷
+
+        ``invalidate_paint_cache()`` / ``refresh_windows()`` 是给 Qt 控件
+        重刷 QSS 用的，Web 外壳里没有这种控件，跑了纯属白跑。
+        ``setThemeColor`` 本身就是「改全局配色 + 刷样式表」，
+        后建的 MessageBox 会读这份，够用。
+
+        ## 幂等
+
+        同一个颜色不重复设（``getSkin()`` 会被页面反复调）。
+
+        :param color: ``#RRGGBB``；空串 = 不动
+        :return: 真的设了返回 ``True``
+        """
+        color = str(color or "").strip()
+        if not color:
+            return False
+        if getattr(self, "_qt_theme_color", "") == color:
+            return False
+        try:
+            from qfluentwidgets import setThemeColor  # noqa: PLC0415
+
+            setThemeColor(color, save=False)
+        except Exception:  # noqa: BLE001 - 配色设不上也不能影响取皮肤
+            logger.warning("Qt 主题色设置失败：%s", color, exc_info=True)
+            return False
+        self._qt_theme_color = color
+        logger.info("Qt 主题色：%s（关闭确认框等原生对话框跟着变）", color)
+        return True
+
     # ---------------------------------------------------------------- 壁纸主色
     def _apply_wallpaper_accent(self) -> str:
         """按当前壁纸抽一次主色，交给 ``skins`` 当主题色（返回主色）。

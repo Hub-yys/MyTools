@@ -5030,6 +5030,9 @@
     critSwitch: null,
     maxrollSwitch: null,
     autostopSwitch: null,
+    //: ★ 2026-11-04「指定强化」开关（同款 `.enh-switch-card`，默认开）——
+    //: 开着时「运行」走 `runTaskWith` + `{designated:true}`
+    designatedSwitch: null,
     validStepper: null,
     coreSummary: null,
     optionalSummary: null,
@@ -5128,33 +5131,22 @@
       size: 'sm', disabled: true,
       onClick: function () { enhanceAction('stop'); }
     });
-    //: ★★★ 2026-11-04 用户：「删掉跳过，增加【指定声骸强化】功能，
-    //: 即实现用户鼠标选中了哪个声骸就强化哪个声骸，强化完或强化好了就停止」
+    //: ★★★ 2026-11-04 用户：「【指定强化】功能放在下面，与自动停止一样
+    //: 启用与不启用，默认启用」
     //:
-    //: 所以这里把原来的「跳过」换成了「指定强化」：
+    //: 所以「指定强化」**不是标题行按钮**，而是设置区里的一个开关卡
+    //: （和「自动停止」同款 `.enh-switch-card`），默认开着；开着时点
+    //: 「运行」就走指定强化。
     //:
-    //:   * 「跳过」= 强化途中换下一个声骸（中途干预）
-    //:   * 「指定强化」= 只强化你在背包里用鼠标点中的那个，处理完就停
-    //:
-    //: 语义差别很大，所以不是改名而是换功能。按钮初始可点（不需要先运行）。
-    //:
-    //: ⚠ 「跳过」的前端按钮、``enhanceAction('skip')`` 分支、
-    //:   后端 ``okwwSkipEcho`` Slot **全部删除**（用户明确要删掉）。
-    //:   引擎侧的跳过能力（``_consume_skip_request``）**保留** ——
-    //:   它是任务流程内部"自动跳过同名同类型"的实现，和这个按钮无关。
-    ENHANCE_STATE.btnDesignated = P.button('指定强化', {
-      size: 'sm',
-      disabled: true,
-      title: '先在背包里用鼠标点中要强化的声骸，再点这里 —— 只强化它一个，处理完就停',
-      onClick: function () { enhanceAction('designated'); }
-    });
-    const btnDesignated = ENHANCE_STATE.btnDesignated;
+    //: 历史：这里原本是「跳过」（强化途中换下一个），2026-11-04 上午按
+    //: 用户要求换成「指定强化」按钮并删掉 `enhanceAction('skip')` +
+    //: 后端 `okwwSkipEcho` Slot；现在按钮也撤了，改成开关。
     const btnReset = P.button('恢复默认', {
       size: 'sm',
       onClick: function () { enhanceResetSettings(); }
     });
     for (const b of [ENHANCE_STATE.btnRun, ENHANCE_STATE.btnResume,
-                     ENHANCE_STATE.btnStop, btnDesignated, btnReset]) {
+                     ENHANCE_STATE.btnStop, btnReset]) {
       titleRow.appendChild(b);
     }
     container.appendChild(titleRow);
@@ -5181,6 +5173,10 @@
     editor.appendChild(buildEnhanceCoreCard());
     editor.appendChild(buildEnhanceCritRow());      // ★ 裸行，没有卡片包裹
     editor.appendChild(buildEnhanceMaxrollCard());
+    //: ★★★ 2026-11-04 用户：「【指定强化】功能放在下面，与自动停止一样
+    //: 启用与不启用，默认启用」→ 排在「自动停止」上面一格（"放在下面"指的
+    //: 是从标题行挪到设置区，不是排到最后一格）。
+    editor.appendChild(buildEnhanceDesignatedCard());
     editor.appendChild(buildEnhanceAutostopCard());
     editor.appendChild(buildEnhanceOptionalCard());
     editor.appendChild(buildEnhanceValidCard());
@@ -5263,7 +5259,9 @@
       }
     }
     const toggles = [ENHANCE_STATE.critSwitch, ENHANCE_STATE.maxrollSwitch,
-                     ENHANCE_STATE.autostopSwitch];
+                     ENHANCE_STATE.autostopSwitch,
+                     //: ★ 2026-11-04 指定强化开关也要「一改就存」
+                     ENHANCE_STATE.designatedSwitch];
     for (const t of toggles) {
       if (t) t.addEventListener('change', save);
     }
@@ -5484,6 +5482,49 @@
       { onText: '启用', offText: '不启用' });
     sw.classList.add('enh-switch-top');
     ENHANCE_STATE.maxrollSwitch = sw.querySelector('input[type="checkbox"]');
+    row.appendChild(sw);
+
+    card.appendChild(row);
+    return card;
+  }
+
+  // ── 指定强化（P9：用户要求做成和「自动停止」同款的开关）──────────────
+  //
+  //  ## 用户 2026-11-04
+  //
+  //  >「【指定强化】功能放在下面，与自动停止一样启用与不启用，默认启用」
+  //
+  //  上午刚按他的要求把「跳过」按钮换成「指定强化」按钮，下午他又要求挪
+  //  到设置区做开关 —— 因为**它其实是运行模式，不是一次性动作**：
+  //
+  //    * 按钮形态：每次想指定强化都得先点一下，忘了点就按普通模式跑
+  //    * 开关形态：开着就一直按指定强化跑，直到自己关掉
+  //
+  //  对「专门强化我选中的这个」这个用法，开关更省事。
+  //
+  //  ⚠ 开关只管**「运行」按钮走哪条路**（`runTask` 还是 `runTaskWith`），
+  //    不自己发起运行。
+  function buildEnhanceDesignatedCard() {
+    const card = P.el('div', { class: 'enh-switch-card card-glass' });
+    const row = P.el('div', { class: 'enh-switch-row' });
+
+    const left = P.el('div', { class: 'enh-switch-left' });
+    left.appendChild(P.el('div', {
+      class: 'enh-switch-title',
+      text: '指定强化'
+    }));
+    //: 说明只在这张卡写（用户对别的卡要求删说明，但这是新功能，
+    //: 不说明用户不知道「先在背包里点中声骸」这个前提）。
+    left.appendChild(P.el('div', {
+      class: 'enh-switch-hint',
+      text: '先在背包里用鼠标点中要强化的声骸，再点运行 —— 只强化它一个，处理完就停'
+    }));
+    row.appendChild(left);
+
+    const sw = P.toggle('启用', true, function () { /* 状态即可 */ },
+      { onText: '启用', offText: '不启用' });
+    sw.classList.add('enh-switch-top');
+    ENHANCE_STATE.designatedSwitch = sw.querySelector('input[type="checkbox"]');
     row.appendChild(sw);
 
     card.appendChild(row);
@@ -5818,6 +5859,10 @@
     if (ENHANCE_STATE.autostopSwitch) {
       ENHANCE_STATE.autostopSwitch.checked = true;
     }
+    //: ★ 2026-11-04「指定强化」默认**启用**（用户明确要求）
+    if (ENHANCE_STATE.designatedSwitch) {
+      ENHANCE_STATE.designatedSwitch.checked = true;
+    }
     enhanceOnCoreChange();
   }
 
@@ -5847,43 +5892,6 @@
         style: 'color:#ff8f88',
         text: String(message)
       }));
-    }
-
-    if (action === 'designated') {
-      //: ★★★ 2026-11-04 指定声骸强化（替代原来的「跳过」）。
-      //:
-      //: 用户原话：「增加【指定声骸强化】功能，即实现用户鼠标选中了哪个
-      //: 声骸就强化哪个声骸，强化完或强化好了就停止（自动停止开启强化好了就停止）」
-      //:
-      //: 走 ``runTaskWith`` 而不是 ``runTask`` —— 多带一个
-      //: ``{"designated": true}``，后端一路传到引擎侧
-      //: （见 ``web_bridge.runTaskWith`` 的说明）。
-      //:
-      //: ⚠ 不用 ``runTask('echo_enhance')`` + 另一个开关接口：那需要一次
-      //: 额外的往返，中间还有"开关设了但任务没起来"的半截状态。
-      setEnhanceRunning(true, '强化');
-      //: ⚠ ``runTaskWith`` 是 ``@Slot(str, str, result=str)`` —— **两个参数**，
-      //: 必须走 ``P.callMulti``（QWebChannel 按 JS 实参个数匹配 Slot，
-      //: 用 ``P.call`` 只传一个必然 No candidates found，而且静默失败）。
-      //:
-      //: ⚠⚠ 实参**必须写在同一个物理行**：``js_sanity.py`` 的
-      //: ``check_call_arity`` 是逐行正则解析的（见它的 ``call_re``），
-      //: 换行会让它数出 0 个参数并报假失败。
-      const armed = JSON.stringify({ designated: true });
-      const result = await P.callMulti('runTaskWith', ['echo_enhance', armed]);
-      if (!result.ok) {
-        setEnhanceRunning(false, '');
-        fail('指定强化失败（接口未就绪）');
-        return;
-      }
-      const data = result.data || {};
-      if (data.ok === false) {
-        setEnhanceRunning(false, '');
-        fail('指定强化失败：' + String(data.message || data.reason || '后端拒绝'));
-        return;
-      }
-      enhanceStartWatch();
-      return;
     }
 
     if (action === 'resume') {
@@ -5916,21 +5924,42 @@
     }
 
     // ── 运行 ──
-    //: 统一走 setEnhanceRunning（它同时管 停止 / 指定强化 / 继续）
+    //: 统一走 setEnhanceRunning（它同时管 停止 / 继续）
     setEnhanceRunning(true, '强化');
 
-    const result = await P.call('runTask', 'echo_enhance');
+    //: ★★★ 2026-11-04 「指定强化」开关决定走哪条路（用户要求做成开关，
+    //: 默认启用）：
+    //:
+    //:   * 关 → `runTask`（老路，引擎自己找 0 级声骸、按白名单/成套筛）
+    //:   * 开 → `runTaskWith` + `{designated:true}`（只强化玩家鼠标选中的那个）
+    //:
+    //: ⚠ `runTaskWith` 是 `@Slot(str, str, result=str)` —— **两个参数**，
+    //: 必须走 `P.callMulti`（QWebChannel 按 JS 实参个数匹配 Slot，
+    //: 用 `P.call` 只传一个必然 No candidates found，而且静默失败）。
+    //:
+    //: ⚠⚠ 实参**必须写在同一个物理行**：`js_sanity.py` 的 `check_call_arity`
+    //: 是逐行正则解析的，换行会让它数出 0 个参数并报假失败。
+    const designatedOn = !!(ENHANCE_STATE.designatedSwitch
+      && ENHANCE_STATE.designatedSwitch.checked);
+    let result;
+    if (designatedOn) {
+      const armed = JSON.stringify({ designated: true });
+      result = await P.callMulti('runTaskWith', ['echo_enhance', armed]);
+    } else {
+      result = await P.call('runTask', 'echo_enhance');
+    }
     const revert = function () { setEnhanceRunning(false, ''); };
 
     if (!result.ok) {
       revert();
-      fail('运行失败（接口未就绪）');
+      fail(designatedOn ? '指定强化失败（接口未就绪）' : '运行失败（接口未就绪）');
       return;
     }
     const data = result.data || {};
     if (data.ok === false) {
       revert();
-      fail('运行失败：' + String(data.message || data.reason || '后端拒绝'));
+      fail((designatedOn ? '指定强化失败：' : '运行失败：')
+        + String(data.message || data.reason || '后端拒绝'));
       return;
     }
     enhanceStartWatch();
@@ -5958,7 +5987,7 @@
   }
 
   /**
-   * ★ 统一维护「运行 / 指定强化 / 停止 / 继续」四个按钮的可点状态。
+   * ★ 统一维护「运行 / 停止 / 继续」三个按钮的可点状态。
    *
    * ## 为什么要一个函数
    *
@@ -5966,17 +5995,11 @@
    * ``enhanceAction`` 里两处、``enhanceStartWatch`` 里一处、
    * 别处还有 —— 漏一个就是"某个按钮状态不对"。
    *
-   * ## 2026-11-04：``btnSkip`` → ``btnDesignated``
+   * ## 2026-11-04：「跳过」→「指定强化」→ 又改成开关
    *
-   * 用户：「删掉跳过，增加【指定声骸强化】功能，即实现用户鼠标选中了哪个
-   * 声骸就强化哪个声骸，强化完或强化好了就停止」。
-   *
-   * ⚠ 两者可点条件**正好相反**：
-   *   * 「跳过」要**正在强化途中**才有意义（``running && 强化``）
-   *   * 「指定强化」要**空闲时**才能点 —— 它本身就是一次新的运行
-   *
-   * 所以这里改成了 ``!running``。如果照抄 ``btnSkip`` 的条件，
-   * 会得到一个「永远点不了」的按钮（点它之前一定是空闲态）。
+   * 上午按用户要求把「跳过」按钮换成「指定强化」按钮；下午用户又要求
+   * 「【指定强化】功能放在下面，与自动停止一样启用与不启用，默认启用」
+   * —— 它成了设置区里的开关，标题行不再有它，所以这里也不用管它了。
    *
    * @param {boolean} running - 引擎是否在跑
    * @param {string} [taskName] - 正在跑的任务名（暂时没用，留着给将来细分）
@@ -5988,11 +6011,6 @@
     }
     if (ENHANCE_STATE.btnStop) {
       ENHANCE_STATE.btnStop.disabled = !running;
-    }
-    //: 「指定强化」是**发起一次新的运行** —— 空闲时可点，跑着时禁用。
-    //: （原来是「跳过」的 `running && 强化` 条件，那会让这个按钮永远点不了）
-    if (ENHANCE_STATE.btnDesignated) {
-      ENHANCE_STATE.btnDesignated.disabled = running;
     }
     //: 「继续」只在**暂停**时出现（引擎那边自动停止会暂停任务）——
     //: 这里没有暂停态的可靠信号，保守起见保持"运行中可点，

@@ -399,7 +399,16 @@ def main() -> int:
                 "  '.page.is-active .coll-card').length,"
                 "titleBtns: Array.from(document.querySelectorAll("
                 "  '.page.is-active .enh-title-row .btn')).map(function(b){"
-                "    return b.textContent.trim();})"
+                "    return b.textContent.trim();}),"
+                #: ★ 2026-11-04 指定强化开关（已从标题行挪到设置区）
+                "designated: (function(){var t=Array.from(document.querySelectorAll("
+                "  '.page.is-active .enh-switch-card'));"
+                "  for(var i=0;i<t.length;i++){"
+                "    var ti=t[i].querySelector('.enh-switch-title');"
+                "    if(ti&&ti.textContent.trim()==='指定强化'){"
+                "      var c=t[i].querySelector('input[type=checkbox]');"
+                "      return{exists:true,checked:!!(c&&c.checked)};}}"
+                "  return{exists:false,checked:false};})()"
                 "})",
                 "enhance_structure",
             )
@@ -432,9 +441,14 @@ def main() -> int:
                   f"（期望 column + repeat(4, …) —— 旧界面按列填 4 行）")
 
             #: ③ 满值/自动停止是普通卡 + 开关顶部对齐
+            #:
+            #: ★ 2026-11-04 用户：「【指定强化】功能放在下面，与自动停止
+            #:   一样启用与不启用，默认启用」→ 设置区从 2 张开关卡变 3 张
+            #:   （满值锁定 + 指定强化 + 自动停止）。
             align = str(s.get("switchAlign") or "")
+            cards = int(s.get("switchCards") or 0)
             check(f"{short}.P4f",
-                  int(s.get("switchCards") or 0) == 2
+                  cards == 3
                   and "flex-start" in align,
                   f"{name}：满值/自动停止卡 = {s.get('switchCards')} 张，"
                   f"开关 alignSelf={align!r}"
@@ -445,17 +459,28 @@ def main() -> int:
                   f"{name}：折叠卡 = {s.get('collCards')} 张"
                   f"（期望 2：核心属性 + 可选属性）")
 
-            #: ⑤ ★ 2026-11-04 标题行的按钮组（用户：「删掉跳过，增加
-            #:   【指定声骸强化】功能」）
+            #: ⑤ ★ 2026-11-04 标题行的按钮组
             #:
-            #: 旧界面是 [运行][继续][停止][跳过][恢复默认]；
-            #: 现在 **「跳过」必须消失**、「指定强化」必须出现。
-            #: 只断言这两件事 —— 其余按钮的位置/顺序没被要求改过。
+            #: 上午用户：「删掉跳过，增加【指定声骸强化】功能」→ 断言
+            #: 「跳过」消失、「指定强化」出现。
+            #:
+            #: **下午用户又改**：「【指定强化】功能放在下面，与自动停止一样
+            #: 启用与不启用，默认启用」→ 它变成设置区里的开关卡，
+            #: 标题行不再有它。所以现在断言：
+            #:
+            #:   * 标题行**不含**「跳过」也不含「指定强化」
+            #:   * 设置区**有**「指定强化」开关卡，且默认**启用**
             btns = [str(x) for x in (s.get("titleBtns") or [])]
             check(f"{short}.P4h",
-                  "跳过" not in btns and "指定强化" in btns,
+                  "跳过" not in btns and "指定强化" not in btns,
                   f"{name}：标题行按钮 = {btns}"
-                  f"（期望含「指定强化」、**不含**「跳过」）")
+                  f"（期望**不含**「跳过」和「指定强化」—— 后者已挪到设置区）")
+            #: ⑤b 设置区里的「指定强化」开关卡必须存在且默认启用
+            desig = s.get("designated") or {}
+            check(f"{short}.P4i",
+                  bool(desig.get("exists")) and bool(desig.get("checked")),
+                  f"{name}：指定强化开关 = {desig}"
+                  f"（期望存在且默认勾选）")
 
         # ══════════════════════════════════════════════════════════════════
         #  P5：点**主操作按钮**后有反应
