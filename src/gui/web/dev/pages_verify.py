@@ -864,6 +864,92 @@ def main() -> int:
         #: 关掉弹框，免得影响后面的页
         js("(function(){var b=document.querySelector('.dlg-close');"
            "if(b) b.click();})()")
+        QTimer.singleShot(200, stage_view_dialog)
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  ★ C8.5：点「查看」必须**看得见**（2026-11-04 用户反馈「查看没有效果」）
+    #
+    #  ## 用户报的是什么
+    #
+    #  红框圈住列表行右边的「查看」按钮，批注「**查看没有效果**」。
+    #
+    #  ## 根因不是"没渲染"
+    #
+    #  旧 ``showDetail()`` 把详情面板 ``insertBefore(host, listHost.nextSibling)``
+    #  —— 插在**整张配置列表下面**。实测：
+    #
+    #  .. code:: text
+    #
+    #    host.getBoundingClientRect()  →  {top: 1587, h: 743}
+    #    window.innerHeight            →  760
+    #
+    #  面板真的渲染了（``#config-detail-host`` 找得到、里面有 550 个字），
+    #  但它在**视口外两屏以下** —— 点完按钮屏幕上一点变化都没有。
+    #
+    #  ## 这条断言钉什么
+    #
+    #  不看"节点存不存在"（旧实现也过），只看 **点完立刻在不在视口里**：
+    #
+    #  * ``overlay``   弹框遮罩真的出现了
+    #  * ``inViewport`` 弹框的 ``top`` 落在 ``[0, innerHeight)``
+    #  * ``keys``      详情网格里至少有 4 行（说明内容也渲染了）
+    #  * ``legacyHost`` 旧的面板容器**不存在**（防止有人改回去）
+    # ══════════════════════════════════════════════════════════════════════
+    def stage_view_dialog() -> None:
+        state["stage"] = "view_dialog"
+        js("""
+        (function(){
+          window.__VD__ = {done:false};
+          var rows = document.querySelectorAll('#page-config .config-row');
+          if (!rows.length) { window.__VD__ = {done:true, error:'没有配置行'}; return; }
+          var btn = null;
+          var all = rows[0].querySelectorAll('.config-actions button');
+          for (var i = 0; i < all.length; i++) {
+            if (all[i].textContent.trim() === '查看') { btn = all[i]; }
+          }
+          if (!btn) { window.__VD__ = {done:true, error:'这一行没有「查看」按钮'}; return; }
+          btn.click();
+          var ov = document.querySelector('.dlg-overlay');
+          if (!ov) { window.__VD__ = {done:true, error:'点了没弹框'}; return; }
+          var box = ov.querySelector('.dlg-box');
+          var r = box ? box.getBoundingClientRect() : null;
+          window.__VD__ = {
+            done: true, error: '',
+            overlay: true,
+            title: box ? ((box.querySelector('.dlg-title')||{}).textContent||'') : '',
+            keys: box ? Array.prototype.map.call(
+              box.querySelectorAll('.dlg-detail-grid .detail-key'),
+              function(k){ return k.textContent.trim(); }) : [],
+            top: r ? Math.round(r.top) : -1,
+            height: r ? Math.round(r.height) : -1,
+            winH: window.innerHeight,
+            inViewport: !!r && r.top >= 0 && r.top < window.innerHeight,
+            legacyHost: !!document.getElementById('config-detail-host')
+          };
+        })()
+        """)
+        QTimer.singleShot(700, check_view_dialog)
+
+    def check_view_dialog() -> None:
+        data = bundle("JSON.stringify(window.__VD__ || {done:false})", "view_dialog")
+        d = data if isinstance(data, dict) else {}
+        err = str(d.get("error") or "")
+        keys = d.get("keys") or []
+        ok = (
+            not err
+            and bool(d.get("overlay"))
+            and bool(d.get("inViewport"))
+            and len(keys) >= 4
+            and not d.get("legacyHost")
+        )
+        check("C8", ok,
+              f"「查看」弹框立刻可见 = {d}"
+              + (f"  ✗ {err}" if err else ""))
+
+        #: 关掉弹框，别污染后面的往返测试
+        js('(function(){var b=document.querySelector('
+           '\'.dlg-overlay [data-action="close-detail"]\');'
+           'if(b) b.click();})()')
         QTimer.singleShot(200, check_roundtrip)
 
     # ══════════════════════════════════════════════════════════════════════

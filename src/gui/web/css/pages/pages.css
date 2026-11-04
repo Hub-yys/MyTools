@@ -1088,6 +1088,33 @@
   margin-top: 16px;
 }
 
+/* 「查看」弹框里的详情网格（2026-11-04）
+ *
+ * 用户反馈「查看没有效果」= 旧实现把面板插到列表**下面**（top:1587px、
+ * 视口才 760px），点完屏幕上毫无变化。改成弹框后：
+ *
+ *   * 标签列从 92px 放宽到 78px + 右对齐，和 ``.dlg-label`` 一路的观感；
+ *   * 值列 ``white-space: pre-line`` —— 4C/3C/1C 那种「一只一行」的
+ *     多行文本才折得开（否则挤成一长条，右边被弹框直接截掉）；
+ *   * 行距比列表里的抽屉大一点，弹框里空间够。
+ */
+.dlg-detail-grid {
+  grid-template-columns: 78px 1fr;
+  gap: 9px 14px;
+  font-size: 12.5px;
+  line-height: 1.68;
+}
+
+.dlg-detail-grid .detail-key {
+  padding-top: 1px;
+  text-align: right;
+}
+
+/* 校验错误那几行要红（``.detail-val.is-warn``）*/
+.dlg-detail-grid .detail-val.is-warn {
+  color: #ff8f88;
+}
+
 .detail-title {
   font-size: 11px;
   font-weight: 650;

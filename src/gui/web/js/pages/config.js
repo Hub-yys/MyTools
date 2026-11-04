@@ -3866,88 +3866,173 @@
   }
 
   /**
-   * 「查看」→ 详情面板。
+   * 「查看」→ **只读详情弹框**（用户 2026-11-04 反馈「查看没有效果」）。
    *
-   * 只读展示原始字段，不做编辑 —— 编辑要等 ``setConfig()`` 接口。
+   * ## 之前为什么"没有效果"
+   *
+   * 旧实现把详情面板 ``insertBefore(host, listHost.nextSibling)`` ——
+   * **插在整张配置列表的下面**。列表有 11 条配置、一千多像素高，
+   * 面板出现在 ``top: 1587px``，而窗口视口只有 760px：
+   * 点完按钮**屏幕上一点变化都没有**，得往上滚两屏才看得见。
+   * 用户的原话就是「查看没有效果」—— 不是没渲染，是渲染到了看不见的地方。
+   *
+   * ## 现在
+   *
+   * 走 ``openDialog``（和「编辑」「删除确认」同一套弹框）。弹框是
+   * ``position:fixed`` 的遮罩层，不管列表多长都在屏幕正中 ——
+   * 点完立刻看得见，Esc / 点遮罩 / 右上角 × 都能关。
+   *
+   * 内容照抄旧界面：
+   *
+   * * ``loadout`` → ``LoadoutDetailDialog``（``loadout_dialog.py:532``）
+   *   —— 角色块 + 声骸套装 + 状态 + 品质 + 4C/3C/1C 三档；
+   * * ``echo_profile`` → ``EchoProfileDialog(read_only=True)``
+   *   （``config_interface.py:501`` 的 ``view_profile``）
+   *   —— 核心属性 / 双爆下限 / 有效词条 / 满值保护 / 自动停止 / 可选属性。
+   *
+   * 一个控件都点不动 —— 这是"看一眼"，不是编辑。
    */
   function showDetail(item) {
-    const existing = document.getElementById('config-detail-host');
-    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
-
-    const host = P.el('div', { id: 'config-detail-host' });
-    const body = P.el('div');
-
-    //: 摘要区
-    if (item.summary) {
-      body.appendChild(P.el('div', { class: 'detail-section' }, [
-        P.el('div', { class: 'detail-title', text: '摘要' }),
-        P.el('div', { class: 'detail-val', text: item.summary })
-      ]));
-    }
-
-    //: 原始字段（只挑有值的，跳过嵌套太深的）
+    if (!item) return;
     const raw = item.raw || {};
-    const grid = P.el('div', { class: 'detail-grid' });
-    let rows = 0;
-    for (const [key, value] of Object.entries(raw)) {
-      if (value == null || value === '' || key === 'summary') continue;
-      if (typeof value === 'object' && !Array.isArray(value)) {
-        //: picks 这类嵌套 dict —— 逐档展开
-        for (const [subKey, subValue] of Object.entries(value)) {
-          const text = Array.isArray(subValue)
-            ? subValue.map(function (x) {
-                return typeof x === 'object'
-                  ? (x.echo || '') + (Array.isArray(x.stats) && x.stats.length
-                    ? '（' + x.stats.join('、') + '）' : '')
-                  : String(x);
-              }).join('、')
-            : String(subValue);
-          if (!text) continue;
-          grid.appendChild(P.el('div', { class: 'detail-key', text: subKey + 'C' }));
-          grid.appendChild(P.el('div', { class: 'detail-val', text: text }));
-          rows += 1;
-        }
-        continue;
-      }
-      const text = Array.isArray(value) ? value.join('、') : String(value);
-      grid.appendChild(P.el('div', { class: 'detail-key', text: key }));
-      grid.appendChild(P.el('div', { class: 'detail-val', text: text }));
-      rows += 1;
-    }
 
-    if (rows) {
-      body.appendChild(P.el('div', { class: 'detail-section' }, [
-        P.el('div', { class: 'detail-title', text: '字段' }),
-        grid
-      ]));
+    const body = P.el('div', { class: 'dlg-form' });
+
+    // ── 角色块（头像 + 名字 + 类型，和删除确认框同一套样式）──
+    const face = P.el('div', { class: 'del-target' });
+    const faceBox = P.el('div', { class: 'del-target-face' });
+    if (item.avatar) {
+      const img = P.el('img', { src: item.avatar, alt: '' });
+      img.addEventListener('error', function () {
+        P.fill(faceBox, null);
+        applyInitial(faceBox, item);
+      }, { once: true });
+      faceBox.appendChild(img);
     } else {
-      body.appendChild(P.el('div', {
-        class: 'detail-val',
-        text: '这条配置没有更多可展开的字段。'
-      }));
+      applyInitial(faceBox, item);
+    }
+    face.appendChild(faceBox);
+    face.appendChild(P.el('div', { class: 'del-target-meta' }, [
+      P.el('div', { class: 'del-target-name', text: item.name || '(未命名)' }),
+      P.el('div', { class: 'del-target-kind', text: item.kindLabel || '' })
+    ]));
+    body.appendChild(face);
+
+    // ── 按类型给**结构化**字段（不是把 raw 一股脑倒出来）──
+    //
+    //: 旧实现遍历 ``item.raw`` 的每个键 —— 用户看到一堆
+    //: ``id`` / ``avatarUrl`` / ``pinyin`` / ``avatarHue`` / ``initial``，
+    //: 全是实现细节，真正要看的东西反倒混在里面找不着。
+    const rows = [];
+    if (item.kind === 'loadout') {
+      pushRow(rows, '声骸套装', raw.echoSet || '未选');
+      pushRow(rows, '状态', raw.status || '（未选）');
+      const qualities = Array.isArray(raw.qualities) ? raw.qualities : [];
+      pushRow(rows, '品质', qualities.length
+        ? qualities.join('、') : '（一个都没勾）');
+      //: 三档声骸：固定 4C → 3C → 1C（``COST_SECTIONS`` 的顺序）
+      const picks = raw.picks || {};
+      for (const cost of ['4', '3', '1']) {
+        const list = Array.isArray(picks[cost]) ? picks[cost] : [];
+        const text = list.length
+          ? list.map(function (p) {
+              const name = p.echo || '';
+              const stats = Array.isArray(p.stats) && p.stats.length
+                ? '（' + p.stats.join('、') + '）' : '（未选属性）';
+              return name + stats;
+            }).join('\n')
+          : '未选';
+        pushRow(rows, cost + 'C', text);
+      }
+    } else if (item.kind === 'echo_profile') {
+      const s = raw.settings || {};
+      const core = Array.isArray(s.core_stats) ? s.core_stats : [];
+      pushRow(rows, '核心属性', core.length ? core.join('、') : '（未设）');
+      const crit = s.crit_min != null ? s.crit_min : 7.5;
+      const critDmg = s.crit_dmg_min != null ? s.crit_dmg_min : 15.0;
+      pushRow(rows, '双爆下限',
+        '≥ ' + crit + ' / ' + critDmg
+        + (s.enable_crit_check === false ? '（未启用）' : ''));
+      //: 有效词条 + 可设范围（后端 ``valid_count_range``：下界=核心条数）
+      const valid = s.min_valid_count != null ? s.min_valid_count : 2;
+      const low = core.length;
+      const high = core.length + (Array.isArray(s.optional_stats)
+        ? s.optional_stats.length : 0);
+      pushRow(rows, '有效词条', '≥ ' + valid + ' 条'
+        + (high ? '　（可设 ' + low + ' ~ ' + high + '）' : ''));
+      pushRow(rows, '满值保护',
+        s.enable_max_roll_lock ? '开（满级上锁，不弃置）' : '关');
+      pushRow(rows, '自动停止',
+        s.enable_auto_stop ? '开（符合条件时暂停并通知）' : '关');
+      const optional = Array.isArray(s.optional_stats) ? s.optional_stats : [];
+      pushRow(rows, '可选属性', optional.length ? optional.join('、') : '（未选）');
     }
 
-    host.appendChild(P.panel({
-      title: item.name || '(未命名)',
-      subtitle: item.kindLabel + (item.updatedAt
-        ? ' · 更新于 ' + P.timeAgo(item.updatedAt) : ''),
-      padding: '18px 20px',
-      actions: [
-        P.button('关闭', {
-          size: 'sm',
-          onClick: function () {
-            if (host.parentNode) host.parentNode.removeChild(host);
-          }
-        })
-      ],
-      body: body
-    }));
+    //: 时间（两类都有，但字段名不统一：loadout 只有 ``updated_at``，
+    //: echo_profile 才有 ``created`` + ``updated_at``）。
+    //
+    //: ★ 没有的就不显示 —— 旧实现无脑塞「—」，用户看到 loadout 那一行
+    //: 「创建时间 —」会以为是坏了（其实数据里压根没记这个字段）。
+    const created = raw.created || raw.createdAt || '';
+    const updated = raw.updatedAt || raw.updated_at || '';
+    if (created) pushRow(rows, '创建时间', shortTime(created));
+    if (updated) pushRow(rows, '更新时间', shortTime(updated));
 
-    //: 插在列表后面
-    const listHost = state.dom.listHost;
-    if (listHost && listHost.parentNode) {
-      listHost.parentNode.insertBefore(host, listHost.nextSibling);
+    //: 配置自身的校验错误 —— 有就红字摆出来，别让人以为这条是好的
+    const errors = Array.isArray(item.errors) ? item.errors : [];
+    if (errors.length) {
+      pushRow(rows, '⚠ 校验', errors.join('\n'));
     }
+
+    const grid = P.el('div', { class: 'detail-grid dlg-detail-grid' });
+    for (const row of rows) {
+      grid.appendChild(P.el('div', { class: 'detail-key', text: row[0] }));
+      const val = P.el('div', {
+        class: 'detail-val' + (row[2] ? ' is-warn' : ''),
+        text: row[1]
+      });
+      //: 多行（4C/3C/1C 那种「一只一行」）—— ``white-space: pre-line``
+      if (row[1].indexOf('\n') >= 0) val.style.whiteSpace = 'pre-line';
+      grid.appendChild(val);
+    }
+    body.appendChild(P.el('div', { class: 'detail-section' }, [
+      P.el('div', { class: 'detail-title', text: '配置内容' }),
+      grid
+    ]));
+
+    openDialog({
+      title: '查看配置',
+      width: 560,
+      body: body,
+      actions: [{
+        label: '关闭',
+        kind: 'primary',
+        name: 'close-detail',
+        onClick: function () { closeDialog(); }
+      }]
+    });
+  }
+
+  /**
+   * 往详情行数组里塞一行（空值也塞 —— 空着比缺一行好，用户能看出"这项没设"）。
+   *
+   * @param {Array} rows - ``[[label, text, isWarn], ...]``
+   */
+  function pushRow(rows, label, text, isWarn) {
+    const value = String(text == null ? '' : text).trim();
+    rows.push([label, value || '—', !!isWarn]);
+  }
+
+  /**
+   * 时间戳剥掉微秒（``2026-11-04 11:02:45.066092`` → ``2026-11-04 11:02:45``）。
+   *
+   * ``EchoProfile.updated_at`` 存的是 ``datetime.now().isoformat()``，
+   * 带 6 位微秒 —— 弹框里看是纯噪音。loadout 那边是 ``strftime`` 的
+   * 整秒格式，剥不到就原样返回。
+   */
+  function shortTime(text) {
+    const s = String(text || '');
+    return s.replace(/\.\d{3,}$/, '');
   }
 
   // ────────────────────────────────────────────────────────────────────────
