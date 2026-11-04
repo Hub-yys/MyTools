@@ -6018,9 +6018,19 @@ class WebBridge(QObject):
             base = media_server.start(cache) if cache else ""
             if not base:
                 return []
+            #: ★ 有没有 ffmpeg 决定「转码中」这句算不算数（2026-11-04）
+            #:
+            #: 没有 ffmpeg 时，页面拿到 ``pending=True`` 会一直显示「转码中」，
+            #: 但那个承诺永远兑现不了 —— 必须把真相告诉页面，
+            #: 它才能说「缺 ffmpeg，装一个就自动好了」。
+            try:
+                has_ffmpeg = webm_transcode.have_ffmpeg()
+            except Exception:  # noqa: BLE001
+                has_ffmpeg = False
             for item in items:
                 video = item.get("video_path") or ""
                 url = ""
+                pending = False
                 if video:
                     suffix = os.path.splitext(video)[1].lower()
                     #: webm 直接播；mp4 只认已转好的缓存
@@ -6031,6 +6041,8 @@ class WebBridge(QObject):
                         src = str(ready) if ready else ""
                     else:
                         src = ""
+                        #: 这条要转码才有 URL —— 有 ffmpeg 才叫「转码中」
+                        pending = True
                     if src:
                         #: ★ url_for 会按文件实际所在目录自动选 URL 前缀
                         #: （见 media_server.url_for 的说明），不用在这里判断
@@ -6049,11 +6061,16 @@ class WebBridge(QObject):
                     "url": url,
                     "supported": bool(url),
                     "type": item.get("type", ""),
+                    #: 这条要不要等后台转码才有 URL
+                    "pending": pending,
                     #: 精选主题（主色写死的那些）；普通壁纸是 None
                     "theme": ({k: theme.get(k) for k in
                                ("name", "primary", "tint", "desc")}
                               if theme else None),
                 })
+            #: 整页共用：这个环境到底能不能转码（页面文案据此分岔）
+            for entry in out:
+                entry["canTranscode"] = has_ffmpeg
         except Exception:  # noqa: BLE001
             logger.warning("扫壁纸失败", exc_info=True)
         return out

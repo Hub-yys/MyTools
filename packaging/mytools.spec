@@ -281,6 +281,47 @@ binaries = [
 # 静态分析同样抓不到 —— 不登记的话哪怕 dll 齐了，Python 侧 still 找不到前端模块。
 hiddenimports += ["openvino.frontend.onnx", "openvino.frontend.paddle"]
 
+# ---------------------------------------------------------------------- ffmpeg
+# ★ 2026-11-04：打包版**一个壁纸都放不出来**的根因在这里，也别删。
+#
+# 现象：装完之后主题皮肤页 7 张卡全是「不支持 / 需要 WebGL 渲染」，点了没反应。
+#
+# 为什么必须自带 ffmpeg —— 两条事实叠在一起：
+#
+# ① **QtWebEngine 6.11.2 不带 H.264**（实测 ``video.canPlayType``）::
+#
+#       'video/mp4'                  -> "maybe"      （只是说容器可能认识）
+#       'video/mp4; codecs="avc1.42E01E"' -> ""      （H.264 Baseline：不支持）
+#       'video/mp4; codecs="avc1.640028"' -> ""      （H.264 High：不支持）
+#       'video/mp4; codecs="hvc1"'        -> ""      （HEVC：不支持）
+#       'video/webm; codecs="vp9"'        -> "probably"  ← 只有 VP9 能播
+#
+#   真拿一个 mp4 喂给 ``<video>``（已确认 HTTP 200 + ``content-type: video/mp4``）::
+#
+#       readyState 0 / videoWidth 0
+#       error "4:MEDIA_ELEMENT_ERROR: Format error"
+#       NotSupportedError: Failed to load because no supported source was found.
+#
+#   而 Wallpaper Engine 创意工坊里那 7 张壁纸**全是 H.264 的 mp4**（1.87 GB）。
+#
+# ② 所以必须先把 mp4 转成 VP9 webm —— 这件事只有 ffmpeg 能做
+#   （``src/core/webm_transcode.py``，``-c:v libvpx-vp9``）。
+#   而 ``web_bridge._scan_wallpapers`` 是**只用缓存、不现场转**的，没 ffmpeg
+#   就等于缓存永远为空 → 每张壁纸 ``supported=False``。
+#
+# 试过但**不行**的替代方案，别再试：OpenCV 5.0.0 能解码 H.264，但
+# ``cv2.VideoWriter`` 写 webm 直接失败（``tag 0x30395056/'VP90' is not supported
+# with codec id 167 and format 'webm / WebM'``，VP80 / AV01 同样），
+# 30 帧 640 宽的极小样本都打不开。
+#
+# 落点 ``_internal/tools/ffmpeg.exe`` —— ``webm_transcode.find_ffmpeg()`` 第 ② 级
+# 本来就按 ``<resource_dir>/tools/ffmpeg.exe`` 找，**不需要改任何 Python 代码**。
+# 体积：原始 103.7 MB，Inno 的 lzma2/max 压到约 27 MB（实测），安装包 +27 MB 左右。
+# 不带 ffprobe.exe（代码里 ``grep -rn ffprobe src/`` 零命中，用不上）。
+_FFMPEG = ROOT / "vendor" / "ffmpeg" / "ffmpeg.exe"
+if _FFMPEG.is_file():
+    binaries.append((str(_FFMPEG), "tools"))
+
 a = Analysis(  # noqa: F821 - PyInstaller 注入
     [str(ROOT / "main.py")],
     pathex=[str(ROOT), str(OKWW)],   # OKWW：让分析器能解析 okww.* 导入

@@ -85,6 +85,14 @@ REQUIRED_DATA = [
     "src/gui/web/css/base.css",
     "src/gui/web/css/glass.css",
     "src/gui/web/css/pages/pages.css",
+    # ⚠⚠ 2026-11-04（用户问「这个才300MB？我壁纸不久很大了吗」时查到）：
+    #   ffmpeg 没进包 → 安装版**一个壁纸都放不出来**。
+    #   两条事实叠在一起：① QtWebEngine 6.11.2 不带 H.264 解码器
+    #   （``canPlayType('video/mp4; codecs="avc1.640028"')`` 返回空串），
+    #   而创意工坊那 7 张壁纸全是 H.264 的 mp4；② 必须先转成 VP9 webm，
+    #   这件事只有 ffmpeg 能做（``core/webm_transcode.py``）。
+    #   缺了它，7 张卡全显示「缺 ffmpeg」，点了没反应 —— 而且**全程不报错**。
+    "tools/ffmpeg.exe",
 ]
 
 FAILURES: list[str] = []

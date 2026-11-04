@@ -175,6 +175,7 @@
     if (!url) return;
     hit.url = url;
     hit.supported = true;
+    hit.pending = false;
 
     const old = document.querySelector(
       '.wallpaper-card[data-wp-id="' + id + '"]');
@@ -232,11 +233,20 @@
     let text = '扫到 ' + items.length + ' 个壁纸（可播放 ' + okCount +
       ' 个；取不到内嵌视频的 Scene / Web 型需要 WebGL 渲染）。';
     //: ★ 有壁纸在后台转码时说明一下，免得用户以为这张卡坏了（2026-11-04）
+    //
+    //: 「转码中」这个承诺只有在**后端找得到 ffmpeg** 时才算数 ——
+    //: ``_scan_wallpapers`` 会给每条带 ``canTranscode``。
+    //: 正式版里 ffmpeg 是随包装进来的（``_internal/tools/ffmpeg.exe``），
+    //: 但用户自己删了、或从 zip 里解出来丢了文件时就会缺，那时要如实说。
     const pending = items.filter(function (w) {
-      return w.theme && w.supported === false;
+      return w.pending === true;
     }).length;
     if (pending > 0) {
-      text += ' 有 ' + pending + ' 个正在后台转码，转好会自动出现。';
+      const can = items.some(function (w) { return w.canTranscode !== false; });
+      text += can
+        ? ' 有 ' + pending + ' 个正在后台转码（大约每张 20~60 秒），转好会自动出现。'
+        : ' 有 ' + pending + ' 个需要 ffmpeg 才能转码，但当前环境找不到 ffmpeg' +
+          '（应在程序目录的 tools\\ffmpeg.exe），所以暂时放不了。';
     }
     el.textContent = text;
   }
@@ -298,10 +308,14 @@
       });
       preview.appendChild(video);
     } else {
-      //: 不支持的（scene / web 型）—— 旧界面显示「（无缩略图）」
+      //: 暂时没 URL 的卡分两种，别一律写「（无缩略图）」：
+      //:
+      //: ① ``pending`` —— mp4 等着转 webm（QtWebEngine 只认 VP9），
+      //:    转好会推 ``wallpaperReady`` 就地重建这张卡；
+      //: ② 真不支持 —— 抠不出内嵌视频的 Scene / Web 型，需要 WebGL。
       preview.appendChild(P.el('div', {
         class: 'wallpaper-no-preview',
-        text: '（无缩略图）'
+        text: item.pending ? '转码中…' : '（无缩略图）'
       }));
     }
     card.appendChild(preview);
@@ -388,6 +402,15 @@
       });
       btn.dataset.action = 'apply';
       paintButton(btn, active);
+      actions.appendChild(btn);
+    } else if (item.pending) {
+      //: ★ 2026-11-04：mp4 还在转 webm（QtWebEngine 没有 H.264 解码器），
+      //: 转好会推 ``wallpaperReady`` 把这张卡整体重建。
+      //: 按钮置灰但**文案要说清为什么**，不然用户只会觉得这卡坏了。
+      const btn = P.button(
+        item.canTranscode === false ? '缺 ffmpeg' : '转码中…',
+        { size: 'sm', disabled: true });
+      btn.dataset.action = 'pending';
       actions.appendChild(btn);
     } else {
       //: ★ 旧界面：``supported=False`` 时按钮禁用并标注原因
