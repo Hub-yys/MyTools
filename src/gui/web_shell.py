@@ -886,6 +886,18 @@ class WebShell(QObject):
         if self._view is None and not self.build():
             return
         self._view.show()
+        #: ★★★ 居中（2026-11-04，用户：「工具运行后怎么出现在左上角，应该在中间」）
+        #:
+        #: 根因：``build()`` 里只有 ``view.resize(1150, 760)``，**从头到尾没有
+        #: 一次 ``move()``** —— Qt 新建窗口的默认位置就是 ``(0, 0)``，而
+        #: ``(0, 0)`` 正好是屏幕左上角。旧界面有
+        #: ``MainWindow.center_on_screen()``（``main_window.py:378`` 调），
+        #: Web 外壳漏了这一句。
+        #:
+        #: ⚠ 必须放在 ``show()`` **之后**：``show()`` 之前窗口还没被 Windows
+        #: 真正 CREATE 出来，``move()`` 有概率被后面的 show 重置（和上面圆角
+        #: 同一个坑）。而且 ``show()`` 之后 ``view.width()`` 才是最终尺寸。
+        self._center_on_screen()
         self._view.raise_()
         self._view.activateWindow()
         #: ★ 窗口真的显示出来了，现在设圆角才不会被冲掉
@@ -899,6 +911,76 @@ class WebShell(QObject):
         #: ★ 初始状态也推一次（2026-11-03）—— 页面加载完才知道窗口是不是
         #: 最大化启动的。见 :meth:`_push_window_state`。
         self._push_window_state()
+
+    def _center_on_screen(self) -> bool:
+        """把窗口摆到主屏可用区域的**正中**（2026-11-04）。
+
+        ## 为什么需要（用户原话）
+
+        > 工具运行后怎么出现在左上角，应该在中间
+
+        实测确认（``tmp_probe_pos.py``，2026-11-04）：
+
+        .. code:: text
+
+            view.build() 后 view.resize(1150, 760)     → window at (0, 0)
+            show() 之后 view.x()/y()                   → 0, 0
+            win32 GetWindowRect                        → [0, 0, 1438, 950]
+
+        ``(0, 0)`` 就是屏幕左上角 —— 因为 Web 外壳从建窗到显示**一次
+        ``move()`` 都没有**，而 Qt 新建窗口的默认位置就是原点。旧界面有
+        ``MainWindow.center_on_screen()``（``main_window.py:1167``，
+        ``main_frame.py:378`` 调），新外壳搬过来时漏了。
+
+        ## 和旧界面那版的区别
+
+        旧版只减 ``window`` 尺寸，这里**先减窗口外框**（``frameGeometry``）
+        再落到 ``move()`` 的客户区坐标 —— 无边框窗口两者相等，但将来要是
+        把 ``FramelessWindowHint`` 去掉，这里也不会偏出去。
+
+        ## 边界
+
+        用 ``availableGeometry()``（排除任务栏），不是 ``geometry()`` ——
+        否则居中的窗口会被任务栏盖掉一截。多屏时取主屏，和旧界面一致。
+
+        :return: 真的移动了返回 True（拿不到屏幕时 False，无害）
+        """
+        view = self._view
+        if view is None:
+            return False
+        try:
+            from PySide6.QtGui import QGuiApplication  # noqa: PLC0415
+
+            screen = QGuiApplication.primaryScreen()
+            if screen is None:
+                return False
+            avail = screen.availableGeometry()
+            frame = view.frameGeometry()
+            width = frame.width() or view.width()
+            height = frame.height() or view.height()
+            if width <= 0 or height <= 0:
+                return False
+            #: 已经是居中的就别再动 —— 用户自己拖过的位置要尊重。
+            #: （``show()`` 会调一次，``_push_window_state`` / 还原最大化
+            #: 之后也可能再走这里。）
+            if view.pos().x() == avail.x() + (avail.width() - width) // 2 and \
+                    view.pos().y() == avail.y() + (avail.height() - height) // 2:
+                return False
+            #: 外框和客户区的差（无边框窗口是 0，有标题栏时是标题栏高度）
+            dx = frame.x() - view.x()
+            dy = frame.y() - view.y()
+            view.move(
+                avail.x() + (avail.width() - width) // 2 - dx,
+                avail.y() + (avail.height() - height) // 2 - dy,
+            )
+            logger.info(
+                "web_shell：窗口居中 → (%d, %d) 尺寸 %dx%d（屏幕可用 %dx%d）",
+                view.x(), view.y(), view.width(), view.height(),
+                avail.width(), avail.height())
+            return True
+        except Exception:  # noqa: BLE001 - 居中是锦上添花，失败不该挡住显示
+            logger.warning("web_shell：窗口居中失败", exc_info=True)
+            return False
 
     def close(self) -> None:
         """主动关窗口（置了 _really_close，closeEvent 不再拦）。
