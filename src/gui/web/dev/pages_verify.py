@@ -331,13 +331,42 @@ def main() -> int:
 
     def check_tasks() -> None:
         # ── 三个区域都在 ──
+        #
+        # ⚠ 2026-11-03 改：任务页按 main 分支重做（用户「删掉，任务请按main分支那样做」）
+        # —— 顶部的提示条和「运行面板」大卡被删了，运行状态改在**每一行**的
+        # ``.task-status`` 里（对应 main 的 ``TaskRowCard.status_label``）。
+        #
+        # 所以 T1 不能再找 ``#task-progress-bar`` / ``#task-stop`` / ``#task-run-state``
+        # （这三个 id 已随面板一起消失），改成断言新的结构：
+        #   * 日志窗还在（``#task-log`` —— T3/T4/T5 还要用）
+        #   * 行卡有新头像位（``.task-avatar``）
+        #   * 行卡有状态行（``.task-status``）
+        #   * 行卡**只有**运行/停止/删除三个按钮（2026-11-04 用户圈图：
+        #     「任务改成只有运行、停止、删除」—— 详情 / 修改已删掉，
+        #     断言必须在**不存在**，这样谁加回来这里会红）
+        #   * 底部「运行报告」两块卡（``.task-report-card``）
+        #   * 页头有「＋ 新增任务流程」（main 的 ``add_button``）
         layout = bundle(
             "JSON.stringify({"
             "logBox: !!document.querySelector('#task-log'),"
-            "progress: !!document.querySelector('#task-progress-bar'),"
-            "stop: !!document.querySelector('#task-stop'),"
-            "statePill: !!document.querySelector('#task-run-state'),"
-            "runStep: !!document.querySelector('#task-run-step'),"
+            "avatars: document.querySelectorAll('#page-tasks .task-avatar').length,"
+            "status: document.querySelectorAll('#page-tasks .task-status').length,"
+            "runBtns: document.querySelectorAll("
+            "  '#page-tasks [data-action=\"run\"]').length,"
+            "stopBtns: document.querySelectorAll("
+            "  '#page-tasks [data-action=\"stop\"]').length,"
+            "editBtns: document.querySelectorAll("
+            "  '#page-tasks [data-action=\"edit\"]').length,"
+            "delBtns: document.querySelectorAll("
+            "  '#page-tasks [data-action=\"delete\"]').length,"
+            "detailBtns: document.querySelectorAll("
+            "  '#page-tasks [data-action=\"detail\"]').length,"
+            "reportCards: document.querySelectorAll("
+            "  '#page-tasks .task-report-card').length,"
+            "addBtn: !!document.querySelector("
+            "  '#page-tasks [data-action=\"add-flow\"]'),"
+            "runPanel: !!document.querySelector('#page-tasks .run-panel'),"
+            "notice: document.querySelectorAll('#page-tasks .notice').length,"
             "rows: document.querySelectorAll('#page-tasks .flow-card').length"
             "})",
             "tasks_layout",
@@ -345,11 +374,26 @@ def main() -> int:
         ok = (
             isinstance(layout, dict)
             and layout.get("logBox")
-            and layout.get("progress")
-            and layout.get("stop")
-            and layout.get("statePill")
+            and (layout.get("avatars") or 0) >= 1
+            and (layout.get("status") or 0) >= 1
+            and (layout.get("runBtns") or 0) >= 1
+            and (layout.get("stopBtns") or 0) >= 1
+            and (layout.get("delBtns") or 0) >= 1
+            #: ★ 详情 / 修改两个按钮已被用户要求删掉 —— 必须在**不存在**
+            and (layout.get("editBtns") or 0) == 0
+            and (layout.get("detailBtns") or 0) == 0
+            and (layout.get("reportCards") or 0) >= 2
+            and layout.get("addBtn")
         )
-        check("T1", ok, f"任务页三区域齐全 = {layout}")
+        check("T1", ok, f"任务页新结构齐全 = {layout}")
+
+        #: 用户明确要求删掉的两块 —— 万一有人加回来，这里会红
+        gone = (
+            isinstance(layout, dict)
+            and not layout.get("runPanel")
+            and (layout.get("notice") or 0) == 0
+        )
+        check("T1b", gone, "顶部提示条 / 运行面板已删除")
 
         rows = int(layout.get("rows") or 0) if isinstance(layout, dict) else 0
         check("T2", rows >= 1, f"任务行 {rows} 条（期望 >=1）")
@@ -474,13 +518,22 @@ def main() -> int:
         # 卡死「必须是 running」会把「这台机器没开游戏」误判成回归。
         # 真正要守的是：**状态机没有卡在中间**——要么在跑（停止按钮可用），
         # 要么已经明确结束/被拒（停止按钮不可用、状态不是 running）。
+        #
+        # ⚠ 2026-11-03 改：运行面板删掉了，状态改到每行的 ``.task-status``
+        # （``data-state`` = idle/running/failed）和每行的停止按钮上。
+        # 所以这里量的是**第一条流程行**的这两个元素。
         snapshot = bundle(
-            "JSON.stringify({"
-            "stopDisabled: document.querySelector('#task-stop')"
-            "  ? document.querySelector('#task-stop').disabled : null,"
-            "pill: (function(){var p=document.querySelector('#task-run-state');"
-            "      return p ? (p.dataset.state + '|' + p.textContent) : '';})()"
-            "})",
+            "JSON.stringify((function(){"
+            "var row = document.querySelector('#page-tasks .flow-card');"
+            "if(!row) return {stopDisabled: null, pill: '', found: false};"
+            "var pill = row.querySelector('.task-status');"
+            "var stop = row.querySelector('[data-action=\"stop\"]');"
+            "return {"
+            "  found: true,"
+            "  stopDisabled: stop ? stop.disabled : null,"
+            "  pill: pill ? ((pill.dataset.state || '') + '|' + pill.textContent) : ''"
+            "};"
+            "})())",
             "run_state",
         )
         pill = str((snapshot or {}).get("pill") or "") if isinstance(snapshot, dict) else ""
@@ -505,12 +558,17 @@ def main() -> int:
 
     def check_stop() -> None:
         snapshot = bundle(
-            "JSON.stringify({"
-            "stopDisabled: document.querySelector('#task-stop')"
-            "  ? document.querySelector('#task-stop').disabled : null,"
-            "pill: (function(){var p=document.querySelector('#task-run-state');"
-            "      return p ? (p.dataset.state + '|' + p.textContent) : '';})()"
-            "})",
+            "JSON.stringify((function(){"
+            "var row = document.querySelector('#page-tasks .flow-card');"
+            "if(!row) return {stopDisabled: null, pill: '', found: false};"
+            "var pill = row.querySelector('.task-status');"
+            "var stop = row.querySelector('[data-action=\"stop\"]');"
+            "return {"
+            "  found: true,"
+            "  stopDisabled: stop ? stop.disabled : null,"
+            "  pill: pill ? ((pill.dataset.state || '') + '|' + pill.textContent) : ''"
+            "};"
+            "})())",
             "stop_state",
         )
         ok = (

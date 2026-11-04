@@ -530,8 +530,11 @@
   function numberInput(value, opts) {
     opts = opts || {};
     const step = opts.step != null ? Number(opts.step) : 1;
-    const min = opts.min != null ? Number(opts.min) : null;
-    const max = opts.max != null ? Number(opts.max) : null;
+    //: ★★★ 2026-11-03 必须是 ``let``（原来是 ``const``）—— 见下面
+    //: ``setRange()`` 的注释：配置页的「有效词条」上下界会跟着核心/可选
+    //: 属性**动态变**，而 ``clamp()`` 读的就是这两个变量。
+    let min = opts.min != null ? Number(opts.min) : null;
+    let max = opts.max != null ? Number(opts.max) : null;
 
     const wrap = P.el('div', { class: 'numfield' });
 
@@ -586,9 +589,17 @@
     }
 
     //: 失焦时把非法内容纠正成合法值（旧界面靠 ``QDoubleValidator`` 拦在输入阶段）
-    input.addEventListener('blur', function () {
-      input.value = fmt(clamp(current()));
-    });
+    //:
+    //: ★★★ 2026-11-03 加 ``clampOnBlur`` 开关 —— 默认仍然纠错（老行为），
+    //: 但配置页的「有效词条」要**看得见自己填的值**：用户圈图那张
+    //: （填 3 / 所选属性只有 2 条）要求「应该提示创建失败」，如果这里
+    //: 失焦就悄悄夹成 2，用户点「创建」会直接成功，永远看不到提示。
+    //: 传 ``clampOnBlur: false`` 时越界值原样留着，由调用方自己校验并报错。
+    if (opts.clampOnBlur !== false) {
+      input.addEventListener('blur', function () {
+        input.value = fmt(clamp(current()));
+      });
+    }
 
     return {
       el: wrap,
@@ -599,6 +610,33 @@
       },
       set: function (v) {
         input.value = v == null ? '' : fmt(Number(v));
+      },
+      /**
+       * 换上下界 —— ★★★ 2026-11-03 新增（用户圈图「这里是3，但是所选
+       * 属性只有2条，怎么创建，应该提示创建失败」）。
+       *
+       * ## 为什么需要它（原来的坑）
+       *
+       * ``min`` / ``max`` 是**建控件时**传进来的常量，``clamp()`` 和
+       * ``blur`` 纠错读的都是这两个闭包变量。配置页的 ``syncValidRange()``
+       * 只改了 DOM 属性::
+       *
+       *     input.min = String(low);
+       *     input.max = String(high);
+       *
+       * 但 ``type="text"`` 的 ``min`` / ``max`` **根本不是约束**（那是
+       * ``type="number"`` 才认的），``clamp()`` 也读不到。
+       * 所以「核心 2 条」时上界早该是 2，输入框却还能停在 3
+       * —— 点「创建」后端才按 ``__post_init__`` 静默夹成 2，
+       * 用户看到的 3 从头到尾没生效，属于**看不见的偏差**。
+       *
+       * 现在 ``syncValidRange()`` 调它，闭包里的真上界跟着变。
+       */
+      setRange: function (lo, hi) {
+        min = lo == null ? null : Number(lo);
+        max = hi == null ? null : Number(hi);
+        if (min != null) input.min = String(min);
+        if (max != null) input.max = String(max);
       }
     };
   }

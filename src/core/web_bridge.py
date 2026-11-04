@@ -795,6 +795,13 @@ class WebBridge(QObject):
         self._wallpaper_id = ""
         #: 进度 0~100
         self._progress = 0
+        #: ★ 本轮报告（跑完一轮就换掉；内存里，和 Qt 版 ``_last_report`` 同一个角色）
+        #:
+        #: 用户 2026-11-03：「删掉（顶部提示 + 运行面板），任务请按 main 分支那样做」
+        #: —— main 分支任务页底部有「运行报告」区，要显示**本轮**跑出来的
+        #: 锁定 / 弃置明细。执行器发 ``report_ready`` 时先存在这里，
+        #: 页面通过 :meth:`getRunReport` 取。
+        self._last_report = None
         #: JS 侧注册的事件回调在页面里；Python 只需要知道页面还在不在
         self._subscribe_count = 0
         #: ★ 宿主窗口（:class:`src.gui.web_shell.WebShell` 在 build 时挂上来）。
@@ -802,6 +809,25 @@ class WebBridge(QObject):
         #: 用它回答 ``getWindowState()`` —— ``WebBridge`` 自己不持有窗口。
         #: 为 None 时 ``getWindowState`` 一律返回「未最大化」（不崩）。
         self._window_host = None
+
+        #: ★★★ 任务完成后自动关机（用户 2026-11-03：「任务完成后自动关机」）
+        #:
+        #: ## 为什么单独一套 settings key
+        #:
+        #: 4C 自动战斗页也有「定时关机」，但它存的是 ``auto_combat`` 节点，
+        #: 语义是**从点启动开始计时 N 分钟**。任务页要的是
+        #: **跑完一条流程之后才关机**，两个开关不该互相影响 ——
+        #: 复用同一个 key 的话，用户在任务页勾一下就顺手改了 4C 页的设置。
+        #:
+        #: ## 状态机复用
+        #:
+        #: ``ShutdownTimer`` 是纯逻辑（``time.monotonic`` 算剩余、``should_warn``
+        #: / ``should_fire`` 各只报一次），Qt 版的 4C 工具也是这么用的 ——
+        #: 这里只在它外面加一个 1 秒轮询的 ``QTimer``。
+        self._shutdown = None
+        self._shutdown_poll = None
+        #: 触发关机的那条流程名（给页面/日志看）
+        self._shutdown_flow = ""
 
         #: ★ 资源库更新（P4）—— snapshot/report 必须在 check 之后留着，
         #: apply 拿它写盘。check 失败要作废（否则上一轮 snapshot 配新一轮
@@ -1213,6 +1239,13 @@ class WebBridge(QObject):
 
         # ── 本轮报告（和 Qt 版同一条持久化路径）──
         def on_report(report) -> None:
+            #: ★ 2026-11-03：**先存进内存**，页面靠 ``getRunReport`` 取
+            #:
+            #: Qt 版是 ``self._page.note_report(report)`` 直接调页面的方法；
+            #: web 版页面在另一个进程侧的 JS 里，没有"直接调"这回事 ——
+            #: 所以桥接自己留一份，页面通过接口来拿。语义完全一致：
+            #: 一轮跑完就换掉，不跨轮累积。
+            self._last_report = report
             try:
                 from ..core.run_report import RunReportStore  # noqa: PLC0415
 
@@ -1258,6 +1291,8 @@ class WebBridge(QObject):
             return
         key = self._running
         kind = self._running_kind
+        #: 名字要在清空**之前**取 —— 自动关机那边日志要显示是哪条流程跑完的
+        run_name = self._running_name or key
         payload = {
             "key": key, "kind": kind, "ok": bool(ok),
             "summary": str(summary or ""),
@@ -1271,6 +1306,279 @@ class WebBridge(QObject):
         self.taskFinished.emit(_json(payload))
         self.emitEvent("taskFinished", payload)
         logger.info("WebBridge：%s 结束（ok=%s）：%s", kind, ok, summary)
+
+        #: ★ 任务完成后自动关机 —— **只在这一处挂**（见 _arm_task_shutdown 注释）
+        self._on_run_finished(ok, kind, run_name)
+
+    # ================================================================ 任务完成后自动关机
+    #
+    # 用户 2026-11-03：「任务完成后自动关机」。
+    #
+    # ## 和 4C 页「定时关机」的区别
+    #
+    # ============  ==========================================
+    # 4C 页         点「启动」开始倒计时 N 分钟
+    # 任务页        流程**跑完**之后才开始倒计时 N 分钟
+    # ============  ==========================================
+    #
+    # 所以两者是两套独立的设置与状态（settings key 也不同），
+    # 唯一的共用件是纯逻辑的 :class:`src.core.shutdown_timer.ShutdownTimer`
+    # 和 :func:`src.core.shutdown_timer.shutdown`。
+    #
+    # ## 为什么挂在 ``_finish_run`` 里
+    #
+    # ``_finish_run`` 是 FlowRunThread 三种结局（``succeeded`` / ``failed`` /
+    # ``finished`` 兜底）**唯一**的汇聚点，在这里判断就不用关心线程细节。
+    # ok-ww 那条路径（``runOkwwTask``）不走它 —— 那种任务的完成由 ok-ww
+    # 宿主自管，web 侧拿不到回调，不做自动关机（也不该假装做了）。
+
+    #: 任务页自动关机的 settings key（**不**复用 ``auto_combat``）
+    TASK_SHUTDOWN_KEY = "tasks"
+    #: 默认关机前的通知秒数（和 4C 页保持同一个口径）
+    TASK_SHUTDOWN_WARN = 60
+
+    def _task_shutdown_settings(self) -> dict:
+        """读任务页自动关机设置（``{enabled, minutes}``）。"""
+        from . import shutdown_timer, tool_settings  # noqa: PLC0415
+
+        saved = tool_settings.load(self.TASK_SHUTDOWN_KEY) or {}
+        minutes = shutdown_timer.clamp_minutes(
+            saved.get("auto_shutdown_minutes") or 0)
+        return {
+            "enabled": bool(saved.get("auto_shutdown_enabled")) and minutes > 0,
+            "minutes": minutes,
+        }
+
+    def _on_run_finished(self, ok: bool, kind: str, run_name: str) -> None:
+        """一次运行结束：按设置决定要不要安排关机。
+
+        ## 只有「跑成功了」才关
+
+        失败 / 被停止 / 前置检查没过就关机，用户第二天回来会一脸问号 ——
+        他睡前点的是一条**能跑完**的任务，跑挂了应该留着窗口让人看日志。
+
+        ## 只在跑「流程」时关，跑单个工具不关
+
+        任务页「运行」是 ``runFlow(flowId)``（``kind == "flow"``）；
+        ``runTask(toolKey)``（``kind == "tool"``）是工具面板里的单跑，
+        不属于「任务完成后」。两者混着触发会让用户在工具页点一下也关机。
+        """
+        try:
+            if str(kind or "") != "flow":
+                return
+            settings = self._task_shutdown_settings()
+            if not settings["enabled"]:
+                return
+            if not ok:
+                self.pushLog("（这条流程没有成功结束，按设置不安排关机）", "warn")
+                return
+            self._arm_task_shutdown(settings["minutes"], run_name)
+        except Exception:  # noqa: BLE001
+            logger.warning("安排任务完成后关机失败", exc_info=True)
+
+    def _arm_task_shutdown(self, minutes: int, flow_name: str) -> None:
+        """起一个 ShutdownTimer + 1 秒轮询。"""
+        from . import shutdown_timer  # noqa: PLC0415
+
+        self._cancel_task_shutdown(quiet=True)
+        timer = shutdown_timer.ShutdownTimer(minutes,
+                                             warn_seconds=self.TASK_SHUTDOWN_WARN)
+        if not timer.start():
+            return
+        self._shutdown = timer
+        self._shutdown_flow = str(flow_name or "")
+
+        from PySide6.QtCore import QTimer  # noqa: PLC0415
+        poll = QTimer(self)
+        poll.setInterval(1000)
+        #: ★★★ 必须用 lambda 包一层，**不能**直接
+        #: ``poll.timeout.connect(self._tick_task_shutdown)``。
+        #:
+        #: ## 为什么（实测踩到的坑，2026-11-04）
+        #:
+        #: 把信号接到 ``self``（就是 ``Bridge`` 本身，QWebChannel 发布出去的
+        #: 那个对象）的一个**没加 ``@Slot`` 的绑定方法**上，会**悄悄废掉
+        #: QWebChannel 往 JS 转发 ``event`` 信号的链路**：
+        #:
+        #: * Python 侧再发 ``emitEvent`` —— 本进程内的 ``bridge.event``
+        #:   监听器**照样收到**；
+        #: * 但 JS 侧 ``Bridge.subscribe`` 的回调**一次都收不到**；
+        #: * 且**不可恢复** —— JS 重新 ``subscribe`` 也没用，
+        #:   只有重开窗口才活过来。
+        #:
+        #: 交叉验证过的对照（每个变体单独起进程跑）：
+        #:
+        #: ================================  ==========
+        #: connect 目标                        结果
+        #: ================================  ==========
+        #: ``bridge._tick_task_shutdown``       ★ 通道死
+        #: ``bridge._stop_task_shutdown_poll``  ★ 通道死
+        #: ``bridge.pushLog``                    ★ 通道死
+        #: ``bridge.getTaskShutdown``（@Slot）   正常
+        #: ``lambda: bridge._tick_task_shutdown()``  正常
+        #: ``shell.close``（别的 QObject）        正常
+        #: 普通 Python 对象的方法                  正常
+        #: ================================  ==========
+        #:
+        #: 症状很隐蔽：日志不增、进度不动、页面看着「卡住」，
+        #: 而 Python 侧一切正常 —— 所以这里留长注释防止有人「顺手简化掉」。
+        poll.timeout.connect(lambda: self._tick_task_shutdown())
+        poll.start()
+        self._shutdown_poll = poll
+
+        text = timer.remaining_text()
+        self.pushLog(f"⏻ 「{self._shutdown_flow}」跑完了 —— {text}后自动关机"
+                     f"（关机前 {self.TASK_SHUTDOWN_WARN} 秒会提醒，"
+                     f"想反悔可以点「取消关机」）", "warn")
+        self.emitEvent("shutdownArmed", {
+            "flowName": self._shutdown_flow,
+            "minutes": timer.minutes,
+            "remaining": timer.remaining(),
+            "remainingText": text,
+            "warnSeconds": timer.warn_seconds,
+        })
+
+    def _tick_task_shutdown(self) -> None:
+        """每秒跑一次：该提醒就提醒，该关就关。"""
+        from . import shutdown_timer  # noqa: PLC0415
+
+        timer = self._shutdown
+        if timer is None or not timer.active:
+            self._stop_task_shutdown_poll()
+            return
+        if timer.should_warn():
+            left = int(timer.remaining() or 0)
+            self.pushLog(f"⚠ {left} 秒后自动关机！要取消就点任务页的"
+                         f"「取消关机」。", "warn")
+            self.emitEvent("shutdownWarning", {
+                "seconds": left,
+                "flowName": self._shutdown_flow,
+            })
+        if timer.should_fire():
+            ok, message = shutdown_timer.shutdown()
+            self._stop_task_shutdown_poll()
+            if ok:
+                self.pushLog("⏻ 已安排关机（系统会在几秒内关闭）", "warn")
+            else:
+                self.pushLog(f"✗ 关机失败：{message}", "error")
+            self.emitEvent("shutdownFired", {"ok": bool(ok),
+                                             "message": str(message or "")})
+            self._shutdown = None
+            self._shutdown_flow = ""
+
+    def _stop_task_shutdown_poll(self) -> None:
+        poll = self._shutdown_poll
+        self._shutdown_poll = None
+        if poll is not None:
+            try:
+                poll.stop()
+                poll.deleteLater()
+            except RuntimeError:
+                #: C++ 侧已销毁（关窗时）—— 忽略即可
+                pass
+
+    def _cancel_task_shutdown(self, quiet: bool = False) -> bool:
+        """取消还没到点的关机。返回「本来是否在倒计时」。"""
+        timer = self._shutdown
+        was_active = bool(timer is not None and timer.active)
+        if timer is not None:
+            timer.cancel()
+        self._stop_task_shutdown_poll()
+        self._shutdown = None
+        flow = self._shutdown_flow
+        self._shutdown_flow = ""
+        if was_active and not quiet:
+            self.pushLog(f"⏻ 已取消「{flow}」跑完后的自动关机", "ok")
+            self.emitEvent("shutdownCancelled", {"flowName": flow})
+        return was_active
+
+    @Slot(result=str)
+    def getTaskShutdown(self) -> str:
+        """读任务页「完成后自动关机」设置 + 当前倒计时。
+
+        :return: ``{ok, enabled, minutes, minMinutes, maxMinutes,
+                  defaultMinutes, active, remaining, remainingText, flowName}``
+        """
+        try:
+            from . import shutdown_timer  # noqa: PLC0415
+
+            settings = self._task_shutdown_settings()
+            timer = self._shutdown
+            active = bool(timer is not None and timer.active)
+            return _json({
+                "ok": True,
+                "enabled": settings["enabled"],
+                "minutes": settings["minutes"] or 30,
+                "minMinutes": shutdown_timer.MIN_MINUTES,
+                "maxMinutes": shutdown_timer.MAX_MINUTES,
+                "defaultMinutes": 30,
+                "warnSeconds": self.TASK_SHUTDOWN_WARN,
+                "active": active,
+                "remaining": timer.remaining() if active else 0,
+                "remainingText": timer.remaining_text() if active else "",
+                "flowName": self._shutdown_flow if active else "",
+            })
+        except Exception:  # noqa: BLE001
+            logger.warning("getTaskShutdown 失败", exc_info=True)
+            return _json({"ok": False, "reason": "error",
+                          "message": "读自动关机设置失败，详见日志"})
+
+    @Slot(str, result=str)
+    def setTaskShutdown(self, payload: str) -> str:
+        """存任务页「完成后自动关机」设置。
+
+        ``payload`` = ``{"enabled": bool, "minutes": int}``
+
+        ⚠ **合并写**：``tasks`` 这个 key 以后可能还有别的字段，
+        覆盖式写会把它们抹掉（Qt 版 ``_save_shutdown`` 也是合并写）。
+        """
+        try:
+            data = json.loads(payload or "{}")
+        except (TypeError, ValueError):
+            return _json({"ok": False, "reason": "bad_json",
+                          "message": "payload 不是合法 JSON"})
+        if not isinstance(data, dict):
+            return _json({"ok": False, "reason": "bad_data",
+                          "message": "payload 必须是对象"})
+
+        try:
+            from . import shutdown_timer, tool_settings  # noqa: PLC0415
+
+            enabled = bool(data.get("enabled"))
+            minutes = shutdown_timer.clamp_minutes(data.get("minutes") or 0)
+            if enabled and not minutes:
+                return _json({"ok": False, "reason": "bad_minutes",
+                              "message": "分钟数必须在 1 ~ 1440 之间"})
+
+            saved = dict(tool_settings.load(self.TASK_SHUTDOWN_KEY) or {})
+            saved["auto_shutdown_enabled"] = enabled
+            if minutes:
+                saved["auto_shutdown_minutes"] = minutes
+            tool_settings.save(self.TASK_SHUTDOWN_KEY, saved)
+
+            #: 关掉开关时，正在倒计时的那次也要停 —— 否则用户以为关掉了，
+            #: 电脑还是会在他不在的时候关。
+            if not enabled:
+                self._cancel_task_shutdown(quiet=True)
+
+            return _json({"ok": True, "enabled": enabled,
+                          "minutes": minutes or int(saved.get(
+                              "auto_shutdown_minutes") or 0)})
+        except Exception:  # noqa: BLE001
+            logger.warning("setTaskShutdown 失败", exc_info=True)
+            return _json({"ok": False, "reason": "error",
+                          "message": "保存自动关机设置失败，详见日志"})
+
+    @Slot(result=str)
+    def cancelTaskShutdown(self) -> str:
+        """取消正在倒计时的关机（页面上的「取消关机」按钮）。"""
+        try:
+            cancelled = self._cancel_task_shutdown()
+            return _json({"ok": True, "cancelled": cancelled})
+        except Exception:  # noqa: BLE001
+            logger.warning("cancelTaskShutdown 失败", exc_info=True)
+            return _json({"ok": False, "reason": "error",
+                          "message": "取消失败，详见日志"})
 
     # ================================================================ 运行
     @Slot(str, result=str)
@@ -1436,6 +1744,11 @@ class WebBridge(QObject):
         kind = getattr(self, "_running_kind", "tool")
         name = getattr(self, "_running_name", "") or key
 
+        #: ★ 手动停止 = 用户回来了，正在倒计时的关机也要撤掉
+        #: （Qt 版 ``_on_stop`` 里的 ``_cancel_shutdown("已停止任务，定时关机一并取消")``
+        #: 是同一个口径）。放在最前面：无论下面走哪条分支都要撤。
+        self._cancel_task_shutdown()
+
         thread = self._thread
         if thread is not None and thread.isRunning():
             try:
@@ -1477,9 +1790,19 @@ class WebBridge(QObject):
     #:
     #: ⚠ ``echo_profile`` 的主键是**角色名**（不是 id）——
     #: 见 :class:`~src.core.echo_profile.EchoProfile`。
+    #: 配置类型的**用户可见名称**（错误提示里拼进去）
+    #:
+    #: ★★★ 2026-11-03 改文案：``echo_profile`` 原来叫「战斗配置」——
+    #: 那是**旧代码里的历史叫法**，界面上这类配置叫「角色声骸强化」。
+    #:
+    #: 实测用户被这个文案坑过：删除失败提示写
+    #: 「没有 id=「xxx」的**战斗配置**」，而他在界面上操作的是
+    #: 「角色声骸强化」那一类 —— 两边对不上，看不懂在说什么。
+    #:
+    #: 现在和 ``config.js`` 的 ``TYPE_ECHO_PROFILE`` 保持一致。
     _CONFIG_KINDS = {
-        "loadout": "声骸配置",
-        "echo_profile": "战斗配置",
+        "loadout": "角色声骸筛选",
+        "echo_profile": "角色声骸强化",
     }
 
     # ================================================ 声骸套装（P12）
@@ -2118,7 +2441,45 @@ class WebBridge(QObject):
                 #: ★ 必须 load() —— 否则 remove 时 _items 是空的，
                 #: 找不到目标，而且 save() 会拿空列表覆盖整个文件。
                 store.load()
-                removed = store.remove(cfg_id)
+                # ══════════════════════════════════════════════════════
+                # ★★★ 2026-11-03 **修「删除失败：没有 id=「xxx」的战斗配置」**
+                #
+                # ## 症状（用户圈图）
+                #
+                # 点「删除」→ 红字：``删除失败：没有 id=「dca7ab2d3b0e」的
+                # 战斗配置``，但这条配置**明明就在列表里**、
+                # ``echo_profiles.json`` 里也确实有这个 id。
+                #
+                # ## 根因：查错了键
+                #
+                # ``EchoProfileStore`` 有两套查法：
+                #
+                # .. code:: python
+                #
+                #     get(name)      # 按**角色名**查（主键是 name）
+                #     by_id(item_id) # 按 **id** 查
+                #
+                #     remove(name)   # ← 内部调 get()，所以只认**名字**
+                #
+                # 而这里把 **id** 传给了 ``remove()`` →
+                # ``get('dca7ab2d3b0e')`` 去找名字叫「dca7ab2d3b0e」的配置
+                # → 当然找不到 → 返回 False → 报「没有这个 id」。
+                #
+                # 顺带解释了错误文案为什么带 id：那是 ``cfg_id`` 原样拼的。
+                #
+                # ## 修法
+                #
+                # 先用 ``by_id()`` 找到那条，拿它的 **name** 再 ``remove()``。
+                # 这样两套键都能用（前端传 id，store 内部按 name 删）。
+                # ══════════════════════════════════════════════════════
+                target = store.by_id(cfg_id)
+                if target is None:
+                    #: 兼容"前端传的其实是名字"的情况（老版本 / 手工调用）
+                    target = store.get(cfg_id)
+                if target is None:
+                    removed = False
+                else:
+                    removed = store.remove(target.name)
             if not removed:
                 return _json({
                     "ok": False, "reason": "not_found", "kind": kind,
@@ -2201,6 +2562,443 @@ class WebBridge(QObject):
             logger.warning("saveFlow 失败", exc_info=True)
             return _json({"ok": False, "reason": "error",
                           "message": "保存流程失败，详见日志"})
+
+    @Slot(str, result=str)
+    def deleteFlow(self, flow_id: str) -> str:
+        """删除一条任务流程。
+
+        ★ 2026-11-03 新增 —— main 分支任务页每行都有「删除」按钮
+        （``TaskRowCard._delete`` → ``TasksInterface.delete_flow``），
+        web 版之前只能新增/修改，删不掉。
+
+        ## 和 Qt 版同样的两条限制
+
+        1. **有任务在跑就不让删** —— Qt 版是
+           ``InfoBar.warning("正在运行", "先停止再删除这条流程。")``。
+           这里用 ``reason:"busy"`` 让页面显示同一句话。
+        2. **删不存在的不报错、返回 not_found** —— 页面提示一句即可，
+           不弹红字（可能只是另一处已经删了）。
+
+        :param flow_id: 流程 id（``TaskFlow.id``，不是名字）
+        :returns: ``{"ok": true, "id": ...}`` /
+                  ``{"ok": false, "reason": "busy"|"not_found"|"error", "message": ...}``
+        """
+        target = str(flow_id or "").strip()
+        if not target:
+            return _json({"ok": False, "reason": "bad_payload",
+                          "message": "没给流程 id"})
+        if self._running:
+            return _json({
+                "ok": False, "reason": "busy",
+                "message": "先停止再删除这条流程。",
+                "running": self._running,
+            })
+        try:
+            from ..core.tasks import TaskStore  # noqa: PLC0415
+
+            store = TaskStore()
+            flow = store.get(target)
+            if flow is None:
+                return _json({
+                    "ok": False, "reason": "not_found", "id": target,
+                    "message": "这条流程已经不在了（可能别处删过）",
+                })
+            if not store.remove(target):
+                return _json({
+                    "ok": False, "reason": "not_found", "id": target,
+                    "message": "删除失败：流程没找到",
+                })
+            logger.info("WebBridge：删除流程 %s「%s」", target, flow.name)
+            return _json({"ok": True, "id": target, "name": flow.name})
+        except Exception:  # noqa: BLE001
+            logger.warning("deleteFlow 失败", exc_info=True)
+            return _json({"ok": False, "reason": "error",
+                          "message": "删除流程失败，详见日志"})
+
+    @Slot(result=str)
+    def getNewFlowOptions(self) -> str:
+        """「新增任务」弹框需要的全部候选数据（★ 2026-11-03 新增）。
+
+        ## 用户圈图
+
+        任务页「＋ 新增任务流程」弹框原先是**完整编排编辑器**（左边
+        组件调色板、右边手动排步骤），用户圈住调色板标题批注：
+
+        > 增加任务类型，任务类型，目前有，声骸自动强化，
+        > 而且还有选择是否成套，44111、43311 这些都东西呢？
+
+        也就是要 main 分支 ``src/gui/new_flow_dialog.py`` 的
+        ``NewFlowDialog``：**选任务类型 + 角色 + 属性级别 + 是否成套，
+        保存后自动生成整条流程**，不用再手动挑组件。
+
+        ## 为什么不把这套逻辑抄到 JS 里
+
+        ``new_flow_dialog`` 里那几个函数是**纯逻辑**（查配置配对、算有效
+        词条上界、查重、写回级别），main 分支和单测都靠它们。抄一份到 JS
+        就有两份会漂的规则（比如"完美毕业做不到时不许静默夹成 4"）。
+
+        所以这里只把**选项和判定结果**算好交给页面，页面负责画。
+
+        :returns: ``{"ok": true, "taskTypes": [{"name","key"}],
+                   "attrLevels": [{"name","count"}], "defaultLevel": "大毕业",
+                   "setChoices": ["不成套","成套"], "setPlans": ["43311","44111"],
+                   "defaultSetBonus": "不成套",
+                   "characters": [{"name","avatarUrl","pinyin",
+                                   "loadoutId","profileId","levelCap",
+                                   "ready": bool, "missing": [..],
+                                   "levelOk": {"大毕业": true, ...}}]}``
+        """
+        try:
+            from ..core import game_data  # noqa: PLC0415
+            from ..core.echo_profile import EchoProfileStore  # noqa: PLC0415
+            from ..core.loadout import LoadoutStore  # noqa: PLC0415
+            from ..gui import new_flow_dialog as nf  # noqa: PLC0415
+            from ..core.tasks import (  # noqa: PLC0415
+                DEFAULT_SET_BONUS, SET_BONUS_CHOICES, SET_BONUS_PLANS,
+            )
+
+            #: 两类配置按角色名索引（缺一个就没法自动生成流程）
+            by_char_loadout: dict[str, object] = {}
+            try:
+                store = LoadoutStore()
+                store.load()
+                for item in store.all():
+                    who = str(getattr(item, "character", "") or "").strip()
+                    if who:
+                        by_char_loadout[who] = item
+            except Exception:  # noqa: BLE001 - 读不到就当没有，页面会提示
+                logger.warning("getNewFlowOptions：读筛选配置失败", exc_info=True)
+
+            by_char_profile: dict[str, object] = {}
+            try:
+                pstore = EchoProfileStore()
+                pstore.load()
+                for item in pstore.all():
+                    who = str(getattr(item, "name", "") or "").strip()
+                    if who:
+                        by_char_profile[who] = item
+            except Exception:  # noqa: BLE001
+                logger.warning("getNewFlowOptions：读强化配置失败", exc_info=True)
+
+            characters: list[dict] = []
+            #: 顺序照 ``game_data.CHARACTERS``（已按实装版本倒序，别重排）
+            for info in game_data.CHARACTERS:
+                who = str(getattr(info, "name", "") or "").strip()
+                if not who:
+                    continue
+                loadout = by_char_loadout.get(who)
+                profile = by_char_profile.get(who)
+                missing: list[str] = []
+                if loadout is None:
+                    missing.append("角色声骸筛选")
+                if profile is None:
+                    missing.append("角色声骸强化")
+                cap = nf.valid_count_cap(profile) if profile is not None else 0
+                level_ok: dict[str, bool] = {}
+                for level_name, need in nf.ATTR_LEVELS.items():
+                    #: 上界 0 = 读不到配置 → 谈不上"做得到"
+                    level_ok[level_name] = bool(cap) and need <= cap
+                characters.append({
+                    "name": who,
+                    "avatarUrl": _safe(
+                        lambda i=info: self._safe_icon_url(
+                            str(getattr(i, "avatar", "") or "")), ""),
+                    "pinyin": _safe(
+                        lambda n=who: list(pinyin_keys(n)), []),
+                    "loadoutId": str(getattr(loadout, "id", "") or "")
+                    if loadout is not None else "",
+                    "profileId": str(getattr(profile, "id", "") or "")
+                    if profile is not None else "",
+                    #: 有效词条上界（核心 + 可选条数）—— 页面拿它提示"做不到"
+                    "levelCap": cap,
+                    "ready": not missing,
+                    "missing": missing,
+                    "levelOk": level_ok,
+                })
+
+            return _json({
+                "ok": True,
+                "taskTypes": [{"name": k, "key": v}
+                              for k, v in nf.TASK_TYPES.items()],
+                "attrLevels": [{"name": k, "count": v}
+                               for k, v in nf.ATTR_LEVELS.items()],
+                "defaultLevel": nf.DEFAULT_ATTR_LEVEL,
+                "setChoices": list(SET_BONUS_CHOICES),
+                "setPlans": list(SET_BONUS_PLANS),
+                "defaultSetBonus": DEFAULT_SET_BONUS,
+                "characters": characters,
+            })
+        except Exception:  # noqa: BLE001
+            logger.warning("getNewFlowOptions 失败", exc_info=True)
+            return _json({"ok": False, "reason": "error",
+                          "message": "读取新增任务选项失败，详见日志"})
+
+    @Slot(str, result=str)
+    def createFlowFromOptions(self, payload: str) -> str:
+        """按「任务类型 + 角色 + 属性级别 + 是否成套」**自动生成**一条流程。
+
+        对应 main 分支 ``TasksInterface._add_flow`` 里
+        ``NewFlowDialog.result_flow()`` 干的活：
+
+        .. code:: text
+
+            开始 → <角色>-声骸筛选 → <角色>-声骸强化 → 声骸自动强化 → 结束
+
+        ``payload`` = JSON::
+
+            {"character": "绯雪", "taskType": "声骸强化",
+             "level": "大毕业", "setBonus": "成套", "setPlan": "43311"}
+
+        ## 三条硬规矩（都来自 main，别放宽）
+
+        1. **两个配置必须都已存在** —— 缺一个流程跑不起来，当场说缺什么。
+        2. **级别不能超过配置的有效词条上界** —— 上界 = 核心 + 可选条数
+           （5 个孔位每种词条只出现一次）。做不到就说做不到，
+           **绝不静默夹成上界值**（用户以为选了完美毕业、实际按大毕业跑）。
+        3. **同角色 + 同级别只能一条** —— 级别写进流程名，从流程名反推查重。
+
+        :returns: ``{"ok": true, "id", "name", "stepCount"}`` /
+                  ``{"ok": false, "reason": "busy"|"bad_payload"|
+                  "bad_character"|"missing_config"|"bad_type"|"bad_level"|
+                  "level_too_high"|"duplicate"|"error", "message": ...}``
+        """
+        if self._running:
+            return _json({
+                "ok": False, "reason": "busy",
+                "message": "有任务在跑，先停止再新增流程",
+                "running": self._running,
+            })
+        try:
+            data = json.loads(payload or "{}")
+        except (TypeError, ValueError):
+            return _json({"ok": False, "reason": "bad_json",
+                          "message": "payload 不是合法 JSON"})
+        if not isinstance(data, dict):
+            return _json({"ok": False, "reason": "bad_payload",
+                          "message": "payload 必须是对象"})
+
+        try:
+            from ..core import game_data  # noqa: PLC0415
+            from ..core.echo_profile import EchoProfileStore  # noqa: PLC0415
+            from ..core.tasks import TaskStore  # noqa: PLC0415
+            from ..gui import new_flow_dialog as nf  # noqa: PLC0415
+
+            who = str(data.get("character") or "").strip()
+            task_type = str(data.get("taskType") or "").strip()
+            level = str(data.get("level") or "").strip()
+            set_bonus = str(data.get("setBonus") or "").strip()
+            set_plan = str(data.get("setPlan") or "").strip()
+
+            #: ① 角色必须是数据集里的（不能自由输入 —— 和配置页同一条规则）
+            if not who:
+                return _json({"ok": False, "reason": "bad_character",
+                              "message": "请先选一个角色"})
+            if game_data.find_character(who) is None:
+                return _json({
+                    "ok": False, "reason": "bad_character",
+                    "message": f"「{who}」不是一个角色 —— 请从列表里选一个"
+                               "（可以打拼音筛）",
+                })
+
+            #: ② 任务类型
+            if task_type and task_type not in nf.TASK_TYPES:
+                return _json({
+                    "ok": False, "reason": "bad_type",
+                    "message": f"未知的任务类型「{task_type}」",
+                })
+            if not task_type:
+                task_type = next(iter(nf.TASK_TYPES))
+
+            #: ③ 两类配置都得有
+            try:
+                loadouts = nf.compatible_characters()
+            except Exception:  # noqa: BLE001
+                loadouts = []
+            pair = next((x for x in loadouts if x[0] == who), None)
+            if pair is None:
+                #: 说清楚缺哪一个（两个都缺就都列出来）
+                missing: list[str] = []
+                try:
+                    from ..core.loadout import LoadoutStore  # noqa: PLC0415
+
+                    lstore = LoadoutStore()
+                    lstore.load()
+                    if not any(str(getattr(x, "character", "") or "") == who
+                               for x in lstore.all()):
+                        missing.append("角色声骸筛选")
+                except Exception:  # noqa: BLE001
+                    missing.append("角色声骸筛选")
+                try:
+                    pstore = EchoProfileStore()
+                    pstore.load()
+                    if not any(str(getattr(x, "name", "") or "") == who
+                               for x in pstore.all()):
+                        missing.append("角色声骸强化")
+                except Exception:  # noqa: BLE001
+                    missing.append("角色声骸强化")
+                return _json({
+                    "ok": False, "reason": "missing_config",
+                    "missing": missing,
+                    "message": f"「{who}」还缺「{'」「'.join(missing)}」配置"
+                               " —— 请先到「配置」页建好",
+                })
+            _char, loadout_id, profile_id = pair
+
+            #: ④ 级别：必须认识，且不能超过这条强化配置的上界
+            level_count = nf.ATTR_LEVELS.get(level)
+            if level and level_count is None:
+                return _json({
+                    "ok": False, "reason": "bad_level",
+                    "message": f"未知的声骸属性级别「{level}」",
+                })
+            profile = None
+            try:
+                pstore = EchoProfileStore()
+                pstore.load()
+                profile = next(
+                    (x for x in pstore.all()
+                     if str(getattr(x, "name", "") or "") == who), None)
+            except Exception:  # noqa: BLE001
+                logger.warning("createFlowFromOptions：读强化配置失败",
+                               exc_info=True)
+            if level_count is not None and profile is not None:
+                cap = nf.valid_count_cap(profile)
+                if cap and level_count > cap:
+                    return _json({
+                        "ok": False, "reason": "level_too_high",
+                        "cap": cap,
+                        "message": f"「{level}」要求 {level_count} 条有效词条，"
+                                   f"但「{who}-声骸强化」只配了 {cap} 条可用属性"
+                                   "（核心 + 可选）—— 请先到「配置」页补属性，"
+                                   "或换低一级",
+                    })
+
+            #: ⑤ 同角色 + 同级别只能一条
+            dup = nf.existing_flow_for(who, level)
+            if dup is not None:
+                return _json({
+                    "ok": False, "reason": "duplicate",
+                    "existing": getattr(dup, "id", ""),
+                    "message": f"「{getattr(dup, 'name', who)}」已经存在了 —— "
+                               "同一角色同一级别只能有一条任务",
+                })
+
+            #: ⑥ 把级别写回强化配置（任务跑的时候读的是配置里那份）
+            if level and profile is not None:
+                if not nf.apply_attr_level(profile, level):
+                    return _json({
+                        "ok": False, "reason": "level_apply_failed",
+                        "message": "写回「有效词条」数量失败，详见日志",
+                    })
+
+            #: ⑦ 生成并保存
+            flow = nf.build_echo_enhance_flow(
+                who, loadout_id, profile_id,
+                level=level,
+                set_plan=set_plan if set_bonus == "成套" else "",
+            )
+            problems = flow.validate()
+            if problems:
+                return _json({
+                    "ok": False, "reason": "invalid",
+                    "errors": problems,
+                    "message": "；".join(problems),
+                })
+            store = TaskStore()
+            store.add(flow)
+            logger.info("WebBridge：按选项新建流程「%s」（%s）", flow.name, task_type)
+            return _json({
+                "ok": True,
+                "id": flow.id,
+                "name": flow.name,
+                "stepCount": len(flow.steps),
+            })
+        except Exception:  # noqa: BLE001
+            logger.warning("createFlowFromOptions 失败", exc_info=True)
+            return _json({"ok": False, "reason": "error",
+                          "message": "新建任务失败，详见日志"})
+
+    @Slot(result=str)
+    def getRunReport(self) -> str:
+        """任务页底部「运行报告」区的数据（★ 2026-11-03 新增）。
+
+        对应 main 分支 ``TasksInterface._refresh_report()`` 读的两样东西：
+
+        .. code:: text
+
+            {"ok": true,
+             "round": {"flowName", "summary", "lines": [...], "ok", "note",
+                       "locked", "dropped", "checked", "empty": bool} | null,
+             "total": {"locked", "dropped", "checked", "rounds", "updatedAt",
+                       "summary", "empty": bool}}
+
+        * ``round`` = **本轮**报告（``self._last_report``，只在内存里，
+          进程重启就没了 —— 和 Qt 版一致：那也只在内存）。
+        * ``total`` = **所有任务累计**（``core.run_report.RunReportStore``，
+          持久化在 ``data/echo_run_stats.json``，每次现读，不缓存 ——
+          别的入口也可能改它）。
+
+        页面拿 ``empty`` 决定显示空态文案（「还没有跑过。…」/
+        「还没有累计数据。」），不用自己判断。
+        """
+        try:
+            from ..core.run_report import RunReportStore  # noqa: PLC0415
+
+            round_data = None
+            report = self._last_report
+            if report is not None:
+                round_data = {
+                    "flowName": str(getattr(report, "flow_name", "") or ""),
+                    "summary": _safe(lambda: report.summary(), ""),
+                    "lines": _safe(lambda: list(report.lines()), []),
+                    "ok": bool(getattr(report, "ok", True)),
+                    "note": str(getattr(report, "note", "") or ""),
+                    "locked": _safe(lambda: int(report.locked), 0),
+                    "dropped": _safe(lambda: int(report.dropped), 0),
+                    "checked": _safe(lambda: int(report.checked), 0),
+                    "empty": _safe(lambda: bool(report.is_empty()), True),
+                }
+
+            stats = RunReportStore().load()
+            total_data = {
+                "locked": _safe(lambda: int(stats.locked), 0),
+                "dropped": _safe(lambda: int(stats.dropped), 0),
+                "checked": _safe(lambda: int(stats.checked), 0),
+                "rounds": _safe(lambda: int(stats.rounds), 0),
+                "updatedAt": str(getattr(stats, "updated_at", "") or ""),
+                "summary": _safe(lambda: stats.summary(), ""),
+                #: 全是 0 = 还没有任何累计（页面据此显示「还没有累计数据。」）
+                "empty": _safe(
+                    lambda: stats.rounds <= 0 and stats.locked == 0
+                    and stats.dropped == 0, True),
+            }
+            return _json({"ok": True, "round": round_data, "total": total_data})
+        except Exception:  # noqa: BLE001
+            logger.warning("getRunReport 失败", exc_info=True)
+            return _json({"ok": False, "reason": "error",
+                          "message": "读取运行报告失败，详见日志",
+                          "round": None, "total": None})
+
+    @Slot(result=str)
+    def resetRunReport(self) -> str:
+        """把「所有任务累计」清零（★ 2026-11-03 新增）。
+
+        对应 main 分支 ``TasksInterface._reset_total()`` —— 那张卡右上角的
+        「清零」按钮，tooltip「把所有任务的累计统计归零（本轮报告不受影响）」。
+
+        ⚠ **本轮报告不动** —— 这是 Qt 版明写的口径：清零只清持久化的累计，
+        刚跑完这一轮的明细还留在「本轮报告」卡里。
+        """
+        try:
+            from ..core.run_report import RunReportStore  # noqa: PLC0415
+
+            RunReportStore().reset()
+            logger.info("WebBridge：累计统计已清零")
+            return _json({"ok": True})
+        except Exception:  # noqa: BLE001
+            logger.warning("resetRunReport 失败", exc_info=True)
+            return _json({"ok": False, "reason": "error",
+                          "message": "清零失败，详见日志"})
 
     # ================================================================ ok-ww 引擎
     #
@@ -4041,6 +4839,18 @@ class WebBridge(QObject):
                 #: ★ 不达标项明细（空数组 = 达标）
                 "issues": flagged.get(rid, []),
                 "flagged": rid in flagged,
+                #: ★★★ 2026-11-03 角色搜索要**支持拼音**（用户：
+                #: 「所有的角色搜索都按照这样做」）。
+                #:
+                #: 拼音靠 ``pypinyin``（Python 包）算，**JS 侧算不出来** ——
+                #: 所以必须在这里给：``[全拼, 首字母]``，如绯雪 →
+                #: ``["feixue", "fx"]``。规则和配置页 / 弹框下拉**同一份**
+                #: （:func:`src.core.text_match.pinyin_keys`）。
+                #:
+                #: ⚠ 用户在练度页打 ``fx`` 找不到角色的原因就是这个字段
+                #:   缺失 —— 前端 ``match()`` 只能退化成中文子串。
+                "pinyin": list(pinyin_keys(
+                    str(item.get("roleName") or item.get("name") or ""))),
             })
 
         #: ★★★ 账号概览（旧界面 ②「账号概览」那行 6 项）
@@ -4508,14 +5318,37 @@ class WebBridge(QObject):
     def getFlowList(self) -> str:
         """任务流程列表（``core.tasks.TaskStore.all()``）。
 
-        返回 ``[{id, name, summary, typeText, updatedAt, steps: [...],
-        stepCount, toolCount, errors: [...]}]``。
+        返回 ``[{id, name, summary, liveSummary, avatarUrl, typeText,
+        updatedAt, steps: [...], stepCount, toolCount, errors: [...]}]``。
 
         ``steps`` 直接给 ``TaskStep.to_dict()`` —— 编排界面 P2 要用。
+
+        ## ★ 2026-11-03：补 ``avatarUrl`` / ``liveSummary``（按 main 分支重做任务页）
+
+        用户圈图：「删掉，任务请按 main 分支那样做」。main 分支
+        （``src/gui/tasks_interface.py`` 的 ``TaskRowCard``）的行卡是
+
+        .. code:: text
+
+            [角色头像 48px] 名字
+                            步骤摘要（配置那几步用**当前**名字）
+                            状态（空闲 / 运行中 / 完成 / 已停止）
+
+        这两个字段就是给那个布局准备的：
+
+        * ``avatarUrl`` ← ``config_names.live_flow_avatar(flow)``
+          （流程名 = 角色 + 后缀，剥掉后缀去 ``game_data`` 查头像）。
+          **取不到给空串**（不画占位图，和 Qt 版一个态度）。
+        * ``liveSummary`` ← ``config_names.live_flow_summary(flow)``
+          （配置步骤显示**当前**名字，不是步骤里存的那份快照 ——
+          用户 2026-09-26「每次从配置读最新名字」）。
+
+        ``summary`` 保留原样（纯逻辑版，只用步骤快照）—— 有人可能还想用。
         """
         out: list[dict] = []
         try:
             from ..core.tasks import TaskStore  # noqa: PLC0415
+            from ..gui import config_names  # noqa: PLC0415 - 只在读列表时用
 
             store = TaskStore()
             for flow in store.all():
@@ -4530,6 +5363,13 @@ class WebBridge(QObject):
                     "id": flow.id,
                     "name": flow.name,
                     "summary": _safe(lambda: flow.summary(), ""),
+                    #: ★ 配置步骤用当前名字的摘要（行卡第二行用它）
+                    "liveSummary": _safe(
+                        lambda f=flow: config_names.live_flow_summary(f), ""),
+                    #: ★ 行卡左侧的角色头像（空串 = 画不了，页面留等宽空位）
+                    "avatarUrl": _safe(
+                        lambda f=flow: self._safe_icon_url(
+                            config_names.live_flow_avatar(f)), ""),
                     "typeText": _safe(lambda: flow.type_text(), ""),
                     "updatedAt": flow.updated_at,
                     "stepCount": len(flow.steps),
@@ -4738,6 +5578,16 @@ class WebBridge(QObject):
                     "weapon": ch.weapon,
                     "releaseVersion": ch.release_version,
                     "tagline": _safe(lambda c=ch: c.tagline, ""),
+                    #: ★★★ 2026-11-03 用户：「**所有的角色搜索都按照这样做**」
+                    #: （下拉 + 名称/拼音模糊匹配）。
+                    #:
+                    #: 图鉴页的搜索框是**全局**的（角色/套装/声骸/武器共用
+                    #: 一个关键词），不是下拉列表 —— 但「角色」这块同样要
+                    #: 支持拼音：打 ``fx`` 应该能搜到「绯雪」。
+                    #:
+                    #: 拼音只能后端算（``pypinyin`` 是 Python 包），
+                    #: 规则同 :func:`src.core.text_match.pinyin_keys`。
+                    "pinyin": list(pinyin_keys(ch.name)),
                 })
 
             for st in game_data.ECHO_SETS:

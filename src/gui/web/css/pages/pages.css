@@ -429,6 +429,342 @@
   gap: 6px;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   ★★★ 2026-11-03 任务页按 main 分支重做（用户：「删掉，任务请按main分支那样做」）
+
+   main（``src/gui/tasks_interface.py`` 的 ``TaskRowCard``）一行是：
+
+   .. code:: text
+
+      (头像48) 秧秧·玄翎-声骸自动强化（小毕业 43311）
+               开始 → 配置 → 配置 → 工具 → 结束
+               空闲                          [详情][修改][删除][运行][停止]
+
+   和旧 web 版的差别：
+
+   * **没有全局运行面板** —— 状态在每一行的 ``.task-status`` 里
+     （main 的 ``status_label``）。同一时刻只跑一条，一个面板也说不清是哪条。
+   * 行首多了 **48px 角色头像**（取不到就留等宽空位 —— main 的
+     ``AVATAR_SIZE`` 空位逻辑，不然各行左缘会参差）。
+   * 按钮从 2 个变 5 个（详情/修改/删除/运行/停止）。
+   * 页面底部多两块「运行报告」卡。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── 行首头像 ── */
+.task-avatar {
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  font-size: 18px;
+  font-weight: 620;
+  color: var(--dim);
+  user-select: none;
+}
+
+.task-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/*: 图片加载失败时退回首字（JS 会加这个类）*/
+.task-avatar.is-fallback {
+  color: var(--text);
+}
+
+/* ── 中间文本列（名字 / 步骤链 / 状态）── */
+.task-main {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/*: 状态行 —— main 的 ``status_label``，比旧版的状态胶囊轻 */
+.task-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.task-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.75;
+}
+
+.task-status[data-state="running"] {
+  color: #7ee1a8;
+}
+
+.task-status[data-state="failed"] {
+  color: #fca5a5;
+}
+
+/*: 校验错误行 */
+.task-error {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: #fca5a5;
+  line-height: 1.55;
+}
+
+/*: 五个按钮在窄屏会挤 —— 允许换行，别溢出卡片 */
+.task-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ── 运行报告（main 的 _build_report_section）── */
+.task-report {
+  margin-top: 4px;
+}
+
+.task-report-card {
+  padding: 15px 20px;
+  border-radius: var(--radius-lg);
+}
+
+.task-report-card + .task-report-card {
+  margin-top: 10px;
+}
+
+.task-report-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 7px;
+}
+
+.task-report-title {
+  font-size: 12.5px;
+  font-weight: 640;
+  color: var(--text);
+}
+
+.task-report-body {
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--dim);
+  /*: 报告是多行文本（``\n`` 分隔）—— 必须保留换行 */
+  white-space: pre-line;
+  user-select: text;
+  word-break: break-word;
+}
+
+/*: 确认弹框的正文 */
+.task-confirm-text {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   任务完成后自动关机（用户 2026-11-04「任务完成后自动关机」）
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.task-shutdown-card {
+  /*: 和报告卡同一套底子，只多一点内部间距 */
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.task-shutdown-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/*: 分钟框窄一点 —— 最多四位数，给太宽反而看不出是数字 */
+.task-shutdown-minutes {
+  width: 56px;
+}
+
+.task-shutdown-unit {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.task-shutdown-hint {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--faint);
+}
+
+/*: 倒计时条：默认 ``.hidden`` 藏起来，倒计时开始才显示 */
+.task-shutdown-countdown {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(239, 68, 68, 0.10);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+}
+
+.task-shutdown-countdown-text {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fca5a5;
+}
+
+/*: 「取消关机」靠右，别和倒计时文本挤在一起 */
+.task-shutdown-countdown .btn {
+  margin-left: auto;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   任务编排弹框（main 的 ``TaskEditorDialog``）
+
+   main 是拖拽（``QListWidget`` DragOnly + 横向链条），HTML 版改成**点选**
+   —— 拖拽在 QtWebEngine 里能实现，但触摸板和窄窗口下很难对准，
+   点一下就能加进编排区、再用 ↑↓× 调整，行为等价且不会误操作。
+   ══════════════════════════════════════════════════════════════════════════ */
+.task-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.task-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.task-label {
+  flex: 0 0 auto;
+  /*: 「声骸属性级别」六个字 —— 44px 会折成两行，76px 刚好一行 */
+  width: 76px;
+  font-size: 11.5px;
+  color: #8A8F98;
+}
+
+.task-suffix-hint {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+/*: 老流程名不是「角色+后缀」格式时的红字提示（main 的 stale CaptionLabel）*/
+.task-stale-hint {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #e6b4ac;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(201, 81, 76, 0.10);
+  border: 1px solid rgba(201, 81, 76, 0.22);
+}
+
+.task-editor-subtitle {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  margin-top: 4px;
+}
+
+/* ── 角色下拉（和配置页的 candidate 面板同一套视觉）── */
+.task-char {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.task-char-input {
+  width: 240px;
+  padding-right: 26px;
+  text-align: left;
+}
+
+.task-char.is-open .search-caret {
+  transform: rotate(180deg);
+  color: var(--primary);
+}
+
+.task-char-panel {
+  left: 0;
+  right: auto;
+  z-index: 80;
+}
+
+/* ── 选项式下拉（任务类型 / 声骸属性级别 / 是否成套）──────────────────────
+   ★ 2026-11-04 用户圈图：「增加任务类型 ... 还有选择是否成套，
+   44111、43311 这些都东西呢？」—— 弹框改成 main 的 NewFlowDialog
+   那套：几个下拉选完，保存后自动生成整条流程，不再手动排组件。
+   下拉用原生 <select class="input">，所以只需把宽度和文字对齐调好。 */
+/*  只定宽 —— 居中、垂直对齐、圆角弹层、自绘箭头都由文件末尾那组
+    ``select.input`` 规则统一处理（``appearance: base-select``）。
+    ⚠ 这里**不要**再写 text-align / padding / line-height：
+    那组规则里已经踩过三个坑（text-align 对 base-select 无效、
+    垂直要 align-items、箭头别画两遍），覆盖回去只会又歪。 */
+.task-select {
+  flex: 0 0 auto;
+  width: 240px;
+}
+
+/*: 「是否成套」右边那个 43311 / 44111，比主下拉窄一点 */
+.task-select-plan {
+  width: 110px;
+}
+
+/*: 各行的说明文字（main 的 CaptionLabel / hint）*/
+.task-type-hint,
+.task-char-hint,
+.task-level-hint,
+.task-set-hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--faint);
+  margin-top: -4px;
+}
+
+/*: 角色缺配置 / 级别超上限 —— 和别的红字提示同一个色系 */
+.task-char-hint.is-bad,
+.task-level-hint.is-bad {
+  color: #e6b4ac;
+}
+
+/*: 弹框打开后、选项还没拉回来时的"正在读取…"提示 */
+.task-palette-empty {
+  font-size: 11.5px;
+  color: var(--faint);
+  padding: 6px 2px;
+}
+
+/*: 校验失败时的红字（main 是 InfoBar.error，这里是行内一条）*/
+.task-editor-error {
+  display: none;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #fca5a5;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(239, 68, 68, 0.10);
+  border: 1px solid rgba(239, 68, 68, 0.22);
+}
+
+.task-editor-error.is-visible {
+  display: block;
+}
+
 /* ── 运行中的进度区 ── */
 .run-panel .progress {
   margin-top: 10px;
@@ -746,15 +1082,12 @@
   gap: 6px;
 }
 
-/* 删除按钮的「确认态」—— 第一次点击后变实心红，提示真的要删了 */
-.config-actions .btn.is-confirming {
-  background: #dc2626;
-  border-color: #dc2626;
-  color: #fff;
-  font-weight: 620;
-  animation: confirm-pulse 1.1s var(--ease) infinite;
-}
+/* ⚠ 2026-11-03：配置页的删除确认**改成弹框**了（用户圈图
+   「删除时，要弹出一个提示确认是否删除」），所以原来的
+   ``.config-actions .btn.is-confirming`` 确认态样式已删除。
 
+   ``@keyframes confirm-pulse`` **保留** —— 抽卡记录页的
+   「清空历史」仍在用（见本文件 ``.gacha-history .btn.is-confirming``）。*/
 @keyframes confirm-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45); }
   60%      { box-shadow: 0 0 0 5px rgba(220, 38, 38, 0.00); }
@@ -1898,10 +2231,19 @@
   color: var(--faint);
 }
 
-/* 搜索框（旧界面宽 200）/ 筛选下拉（旧界面宽 120）*/
+/*: 搜索框（旧界面宽 200）/ 筛选下拉（旧界面宽 120）*/
 .build-search {
   width: 200px;
   flex: 0 0 200px;
+}
+
+/*: ★ 2026-11-03 用户：「所有设计角色搜索的，都按照这个做」
+ *   练度页的搜索框现在多了右侧 ▼ 箭头，200px 里塞「输入框 + 箭头」
+ *   会挤（placeholder 太长放不下）。和配置页一样给 280px。
+ */
+.build-char-search {
+  width: 280px;
+  flex: 0 0 280px;
 }
 
 .build-filter {
@@ -1938,7 +2280,12 @@
  *    检查其它地方的角色搜索是不是有图片吗，还有角色搜索都是这种
  *    下拉列表+输入关键词模糊搜索」
  *
- * 输入框 + 候选面板；候选带**头像**、名字、等级和属性。
+ * 输入框 + 候选面板；候选带**头像** + 名字。
+ *
+ * ★ 2026-11-03 再次对齐（用户：「所有设计角色搜索的，都按照这个做」）：
+ *   - 候选行不再有「Lv.90 湮灭」那截（配置页的类型标签已按用户要求「干掉」，
+ *     同一类"看得见但筛不到"的信息一并去掉）
+ *   - 顶部多一行 ``.build-char-hint`` 汇总（共 N 个 / 匹配 M 个）
  */
 .build-char-search {
   position: relative;
@@ -2009,7 +2356,12 @@
   font-weight: 550;
 }
 
-/*: 右侧「Lv.90　湮灭」 */
+/*: 右侧「Lv.90　湮灭」
+ *
+ * ⚠ 2026-11-03 用户：「所有设计角色搜索的，都按照这个做」——
+ *    候选行已经不再渲染这截 meta（配置页的标签被「干掉」后，这里对齐），
+ *    规则先留着，将来想加回去（比如显示等级）直接加节点即可。
+ */
 .build-char-meta {
   margin-left: auto;
   flex: 0 0 auto;
@@ -2017,7 +2369,276 @@
   color: var(--faint);
 }
 
+/*: 候选面板顶部那行汇总：「共 61 个角色 · 匹配 1 个」
+ *
+ * 和配置页的 ``.config-search-hint`` 同一个做法（sticky 钉在顶部，
+ * 面板滚的时候不跟着跑）。练度页的角色只有缓存里的那些，
+ * 所以文案说「共」，不是「全部」。
+ */
+.build-char-hint {
+  position: sticky;
+  top: -5px;
+  z-index: 1;
+  margin: -5px -5px 4px;
+  padding: 5px 10px;
+  border-radius: 9px 9px 0 0;
+  background-color: #16161f;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 10.5px;
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .build-char-empty {
+  padding: 10px 9px;
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+/*: ★ 2026-11-03 「配置」页标题行 —— 标题 + 新增按钮**同一行**
+ *
+ * 用户：「新增按钮移到配置旁边」（原来在页面最右边）。
+ *
+ * `.page-head-actions` 带 `margin-left:auto`，天生把按钮推到右缘，
+ * 所以不用它，改在标题行里自己排。
+ *
+ * ★ 2026-11-03 第二次圈图：「这个新增放的也太紧凑了吧」
+ *   原来是 `gap: 0` + 按钮自带 `margin-left:10px` —— 24px 的标题贴着一个
+ *   27px 的小按钮，缝太窄，看着像标题的一部分。改成 `gap: 14px`
+ *   （按钮不再带 margin），呼吸感够了又不会散开。
+ */
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+/*: ★★★ 2026-11-03 配置页「角色搜索」的下拉候选
+ *
+ * 用户：「首先这是一个下拉列表，选择角色，然后他还可以输入，
+ *        根据输入直接匹配到角色」「所有的角色搜索都按照这样做」
+ *
+ * 和练度页 / 弹框里那两处同一套观感：头像 + 名字 + 类型。
+ */
+/*: 搜索框所在的行 —— 单独一行、和下面的计数说明留出间距 */
+.config-search-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+/*: 清除按钮（``setClearButtonEnabled(True)`` 的 HTML 版）
+ *
+ * ⚠ 之前**一点样式都没有** —— 浏览器默认按钮会在搜索框里撑出一块
+ *   灰底方角，和整个壳子的玻璃质感完全对不上。这里收成一个小 ``×``。
+ */
+.search-clear {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: background-color 120ms var(--ease), color 120ms var(--ease);
+}
+
+.search-clear:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+/*: ★★★ 2026-11-03 搜索框右侧的**下拉箭头**（用户圈图）
+ *
+ * 「这个下拉列表的下拉按钮呢」—— 之前只有「点输入框才能展开」，
+ * 界面上没有任何「这里是个下拉」的视觉线索。
+ *
+ * 和弹框里 ``characterPicker`` 的 ``.char-arrow`` 同一观感：
+ * 无底色、弱化色、hover 提亮；展开时 ``.search.is-open`` 让它转 180°。
+ */
+.search-caret {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin-left: 2px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--faint);
+  /*: ★ 2026-11-03 用户圈图：「这个下拉箭头也太小了吧」
+   *   原来是 18×18 / 10px 的 ``▾``，在 32px 高的搜索框里几乎看不见。
+   *   放大到 24×24 + 15px 字号，箭头本身也换个更「实」的字形（▼）。 */
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 120ms var(--ease), color 120ms var(--ease),
+              transform 160ms var(--ease);
+}
+
+.search-caret:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+/*: 面板展开时箭头翻转，表示「再点就收起」
+ *
+ * ★ 2026-11-03 用户：「所有设计角色搜索的，都按照这个做」——
+ *   练度页（``.build-char-search``）现在也有同一个 ``.search-caret``，
+ *   选择器不能再写死 ``.config-char-search``。
+ */
+.config-char-search.is-open .search-caret,
+.build-char-search.is-open .search-caret,
+.lib-char-search.is-open .search-caret {
+  transform: rotate(180deg);
+  color: var(--primary);
+}
+
+/*: ⚠ ``type="search"`` 在 WebEngine 里带一个**原生**小叉 ——
+ *   和上面这个自绘的重复了，隐藏掉原生那个。
+ */
+.config-char-search input[type="search"]::-webkit-search-cancel-button,
+.config-char-search input[type="search"]::-webkit-search-decoration,
+.build-char-search input[type="search"]::-webkit-search-cancel-button,
+.build-char-search input[type="search"]::-webkit-search-decoration,
+.lib-char-search input[type="search"]::-webkit-search-cancel-button,
+.lib-char-search input[type="search"]::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.config-char-search {
+  position: relative;
+}
+
+/*: ★ 2026-11-03 用户：「所有设计角色搜索的，都按照这个做」——
+ *   图鉴页的搜索框也套上了同一套「输入框 + ▼ + 下拉候选」。
+ *   它的外层是 ``.result-bar``（``margin-left:auto`` 推到右缘），
+ *   所以要 ``position:relative`` 才能给面板定位。
+ */
+.lib-char-search {
+  position: relative;
+  width: 280px;
+  flex: 0 0 280px;
+}
+
+/*: ⚠ 下拉面板别被 ``.page`` 的滚动容器裁掉：
+ *   ``.page`` 是 ``overflow-y:auto``，绝对定位子节点**超出可视区**会被裁。
+ *   搜索框在页面顶部，340px 高够不着底边，所以不用 portal 化。
+ */
+.config-search-panel {
+  position: absolute;
+  z-index: 70;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 300px;
+  max-height: 340px;
+  overflow-y: auto;
+  padding: 5px;
+  border-radius: 10px;
+  background-color: #14141f;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+}
+
+/*: ★ 2026-11-03 用户：「所有设计角色搜索的，都按照这个做」
+ *   图鉴页的面板复用 ``.config-search-panel`` 的外观，但它是**右对齐**
+ *   的那个搜索框（``.result-bar`` 里 ``margin-left:auto``）——
+ *   ``left:0`` 会让面板往右溢出页面，改成贴右缘。
+ */
+.lib-char-panel {
+  left: auto;
+  right: 0;
+}
+
+/*: ★ 2026-11-03 用户圈图：「这个是角色搜索，包含游戏目前所有的角色」
+ *
+ *  面板只有 340px 高，一次只看到十来个 —— 61 个角色躺在一个要滚的
+ *  框里，用户看不出「是不是全的」。顶部钉一行汇总（``全部 61 个角色
+ *  （已配置 8）``），把候选池的大小**直接写出来**。
+ *
+ *  ``position:sticky`` 而不是普通行：滚动时这行一直贴顶，翻到哪都看得到。
+ */
+.config-search-hint {
+  position: sticky;
+  top: -5px;
+  z-index: 1;
+  margin: -5px -5px 4px;
+  padding: 5px 10px;
+  border-radius: 9px 9px 0 0;
+  background-color: #16161f;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.config-search-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.config-search-opt:hover {
+  background-color: rgba(255, 255, 255, 0.10);
+}
+
+/*: ★ 2026-11-03 用户圈图「干掉」：候选行右侧那枚类型标签
+ *  （「角色声骸强化 / 角色声骸筛选」/「未配置」）已经删掉了 ——
+ *  它的样式也一并删，避免以后有人看到规则又给加回去。
+ *
+ *  已配置 / 未配置现在只靠**整行的淡化**区分：没配过的头像淡一点。 */
+.config-search-opt.is-plain .config-search-face {
+  opacity: 0.86;
+}
+
+/*: 头像（圆形，和配置页弹框的候选一致） */
+.config-search-face {
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background-color: rgba(255, 255, 255, 0.08);
+  font-size: 10px;
+  color: var(--text);
+}
+
+.config-search-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.config-search-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 550;
+}
+
+.config-search-empty {
   padding: 10px 9px;
   font-size: 11.5px;
   color: var(--faint);
@@ -2041,64 +2662,214 @@
    ⚠ 用网格换行会把下面的详情区挤出屏幕 —— 这是旧界面踩过的坑。 */
 /*: 共鸣者横向滚动行
  *
- * ★★★ 2026-11-03 用户圈图：
- *   「这里应该价格左右滑动，不然我想看右边的角色怎么办」
+ * ★★★ 2026-11-03 用户圈图（**第三次提**）：
+ *   「滑动的拖动按钮呢？？这个说几次了」
  *
- * ## 症状
+ * ## 为什么前两次没修好
  *
- * 角色多的时候右边被裁掉了，但**看不出这条能横向滚动** ——
- * 没有可见的滚动条、也没有任何提示。用户以为"就是看不全"。
+ * 第一轮我只加了 ``overflow-x: auto`` —— 实测 ``scrollWidth 2136 > clientWidth 1188``，
+ * 属性上确实能滚，但**界面上一点痕迹都没有**。
  *
- * ## 根因
+ * 第二轮我给它单独写了 ``::-webkit-scrollbar { height: 9px }``，
+ * 仍然看不见。实测数据说明了原因：
  *
- * ``overflow-x: auto`` 本身是生效的（鼠标滚轮按住 Shift 也能滚），
- * 但全局滚动条是 ``::-webkit-scrollbar { height: 10px }`` +
- * ``background: var(--scrollbar)``（``rgba(0,0,0,0.16)``）——
- * **深色玻璃底上几乎透明**，肉眼看不见。
+ * .. code:: text
  *
- * ## 修法
+ *     height      : 154px
+ *     clientHeight: 154px     ← 和 height 相等，说明滚动条**没占任何布局空间**
+ *     tileHeight  : 132px
+ *     contentH    : 142px     ← 内容只有 142，还剩 12px
  *
- * 1. 给这条**单独**做一条明显的滚动条（比全局粗、颜色更亮）
- * 2. 加 ``scroll-behavior: smooth``，滚起来跟手
- * 3. 鼠标悬停时才完全显现（不滚的时候别太抢眼）
+ * 容器**高度写死 154**，内容 142，剩下的 12px 里要放 9px 滚动条 ——
+ * 但 ``overflow-y: hidden`` 把它裁掉了。Chromium 的
+ * ``::-webkit-scrollbar`` 在「overflow 被裁」时**整个不绘制**。
  *
- * ⚠ 只给 ``.build-roles-scroll`` 加，不动全局滚动条 ——
- *   内容区的纵向滚动条保持原样（那个用户没抱怨）。
+ * ## 现在的做法：**不依赖滚动条**
+ *
+ * 1. 容器高度改成 ``auto``（``min-height`` 兜住），让滚动条有地方长出来
+ * 2. ``overflow-y: hidden`` → ``visible``（只裁横向）
+ * 3. 滚动条加粗到 10px + 去掉 ``border`` 干扰
+ * 4. **另外加左右箭头按钮**（``.build-roles-nav``）——
+ *    用户要的是"能滑动的按钮"，光有滚动条太细不明显
  */
 .build-roles-scroll {
   display: flex;
   flex-wrap: nowrap;
   gap: 6px;
-  overflow-x: auto;
+  overflow-x: scroll;        /*: ★ scroll 而不是 auto —— 始终留出滚动条位置 */
   overflow-y: hidden;
-  /*: 旧界面 setFixedHeight(TILE_H + 22) = 132 + 22 = 154 */
-  height: 154px;
+  /*: ★★ 关键：容器高度要**包含**滚动条
+   *
+   * 实测踩到的坑：
+   *
+   * .. code:: text
+   *
+   *     min-height: 154px        → clientHeight 154, offsetHeight 154（相等）
+   *     内容 132 + padding 10    → 已经占满，滚动条没地方长
+   *
+   * Chromium 的 ``::-webkit-scrollbar`` **不占布局空间**（它是覆盖式的），
+   * 所以必须自己给底部留出余量，否则滚动条被画在内容下面看不见。
+   *
+   * 现在：132（卡片）+ 10（滚动条）+ 8（呼吸）= 150 → 取 158 留够。
+   */
+  padding-bottom: 12px;
+  min-height: 158px;
+  height: auto;
   align-items: flex-start;
-  /*: 滚动条占的高度算进来，否则最后一行会被裁 */
-  padding-bottom: 10px;
   scroll-behavior: smooth;
-  /*: 让触摸板/触屏也能横滑 */
   -webkit-overflow-scrolling: touch;
 }
 
-/*: ★ 这条横向滚动条必须**看得见**，否则用户不知道能滑 */
+/*: ★ 这条横向滚动条**必须看得见**（用户为它说了三次）
+ *
+ * ## 为什么前两版的样式都不生效
+ *
+ * ``base.css`` 里的全局规则是::
+ *
+ *     ::-webkit-scrollbar { width: 10px; height: 10px }
+ *     ::-webkit-scrollbar-thumb {
+ *         background: var(--scrollbar);      /* rgba(0,0,0,0.16) 黑 16%  */
+ *         border: 2px solid transparent;
+ *         background-clip: padding-box;      /* ← 关键：把边框区域挖空 */
+ *     }
+ *
+ * 那个 ``background-clip: padding-box`` + 2px 透明边框，会让 10px 高的
+ * 滚动条**实际只填中间 6px**，而且颜色是 16% 黑 —— 深色玻璃底上等于隐形。
+ *
+ * 我前两版只改了 ``background``，没动 ``border`` / ``background-clip``，
+ * 所以边框那层"挖空"还在，看起来依旧没有。
+ *
+ * ## 现在：把三项**全部**覆盖成实心
+ */
 .build-roles-scroll::-webkit-scrollbar {
-  height: 9px;
+  height: 12px;
 }
 
 .build-roles-scroll::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 5px;
-  margin: 0 2px;
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: 6px;
 }
 
 .build-roles-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.28);
-  border-radius: 5px;
+  background: rgba(190, 205, 235, 0.62);
+  border: none;                    /*: ★ 覆盖全局的 2px 透明边框 */
+  background-clip: border-box;     /*: ★ 覆盖全局的 padding-box */
+  border-radius: 6px;
+  min-width: 40px;
 }
 
 .build-roles-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.45);
+  background: rgba(210, 225, 255, 0.85);
+}
+
+/*: ★ 左右滚动按钮（用户：「滑动的拖动按钮呢」——**第三次提**）
+ *
+ * ## ⚠ 第一版做成 hover 才显现，实测截图里几乎看不见
+ *
+ * 用户已经为这件事说了三次，不能再用"鼠标移上去才有"的隐藏式设计 ——
+ * 他看着截图就是什么都没有。
+ *
+ * 现在：**常显**（半透明但不透明到 0），只在到头的方向变灰禁用。
+ */
+.build-roles-nav {
+  position: absolute;
+  top: 46%;
+  transform: translateY(-50%);
+  z-index: 5;
+  width: 28px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 9px;
+  background-color: rgba(13, 21, 36, 0.82);
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  /*: ★ 常显：opacity 0.8 已经够不抢眼，但不至于看不见 */
+  opacity: 0.8;
+  transition: opacity 140ms var(--ease),
+              background-color 140ms var(--ease);
+  backdrop-filter: blur(6px);
+}
+
+.build-roles-nav.is-left {
+  left: 2px;
+}
+
+.build-roles-nav.is-right {
+  right: 2px;
+}
+
+.build-roles-wrap:hover .build-roles-nav {
+  opacity: 1;
+}
+
+.build-roles-nav:hover:not(:disabled) {
+  background-color: rgba(40, 55, 80, 0.95);
+  border-color: rgba(255, 255, 255, 0.30);
+}
+
+/*: 到头了（或内容不能滚）→ 淡出，但**保留占位**不跳变 */
+.build-roles-nav:disabled {
+  opacity: 0.16;
+  cursor: default;
+  pointer-events: none;
+}
+
+/*: 外层定位容器（给浮动按钮一个参考系）*/
+.build-roles-wrap {
+  position: relative;
+}
+
+/*: ★★★ 2026-11-03 **自绘滚动条**（不用浏览器的 ::-webkit-scrollbar）
+ *
+ * ## 为什么必须自己画
+ *
+ * ``web_shell.py`` 给 QWebEngineSetting 设了 ``ShowScrollBars = False``
+ * （为了让内容区不出现系统滚动条）。那是**全局**开关 ——
+ * 于是 ``::-webkit-scrollbar`` 系列样式在这里**完全不绘制**，
+ * 实测 ``clientHeight === offsetHeight``、滚动条零布局空间。
+ *
+ * 用户已经为"滑动拖动按钮"说了三次，不能再用浏览器滚动条了。
+ *
+ * ## 结构（JS 里建）
+ *
+ * .. code:: text
+ *
+ *     .build-roles-bar      ← 轨道（底部 12px 高的一条）
+ *       .build-roles-thumb  ← 滑块（宽度按可视比例，可拖动）
+ */
+.build-roles-bar {
+  position: relative;
+  height: 12px;
+  margin: 2px 4px 0;
+  border-radius: 6px;
+  background-color: rgba(255, 255, 255, 0.10);
+  cursor: pointer;
+}
+
+.build-roles-thumb {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  height: 8px;
+  min-width: 36px;
+  border-radius: 4px;
+  background-color: rgba(190, 205, 235, 0.62);
+  cursor: grab;
+  transition: background-color 140ms var(--ease);
+}
+
+.build-roles-thumb:hover {
+  background-color: rgba(215, 228, 255, 0.88);
+}
+
+.build-roles-thumb:active {
+  cursor: grabbing;
+  background-color: rgba(230, 240, 255, 0.95);
 }
 
 .build-roles-empty {
@@ -3129,10 +3900,26 @@
   padding: 0;
 }
 
-/*: 开关靠右，和下面两张卡的开关纵向对齐
- *  （``P.toggle`` 产出的根元素是 ``label.sw``，见 ``_shared.js``）*/
+/*: ★★★ 2026-11-03 用户圈图：
+ *   「这个圆圈靠右太紧凑了，移过来一点」
+ *
+ * ## 症状
+ *
+ * 双爆下限那一行的「启用」开关**紧贴卡片右边缘**
+ * （``margin-left: auto`` 把它顶到最右，而卡片自身只有 15-20px padding），
+ * 视觉上和卡片圆角挤在一起。
+ *
+ * ## 修法
+ *
+ * 给一个**右侧内缩**。这样它仍然右对齐（和下面「满值锁定 / 自动停止」
+ * 两张卡的开关保持同一条竖线），但离边缘留出呼吸空间。
+ *
+ * ⚠ 三张卡的开关必须一起内缩，否则又对不齐 —— 所以下面
+ *   ``.enh-switch-top`` 也加同样的右缩。
+ */
 .enh-crit-row > label.sw {
   margin-left: auto;          /*: 吃掉中间的空白，贴右边 */
+  margin-right: 10px;         /*: ★ 离右边缘留出呼吸空间 */
   flex: 0 0 auto;
 }
 
@@ -3144,6 +3931,16 @@
 .enh-valid-hint {
   margin-left: 6px;
   color: var(--faint);
+}
+
+/*: ★★★ 2026-11-03 用户圈图：「这里是3，但是所选属性只有2条，怎么创建，
+ *  应该提示创建失败」。
+ *
+ *  核心 ∪ 可选凑不够 2 条时，提示从灰字变成**红字**
+ *  —— 这不是"提醒一下"，是"这个配置跑不出结果"。
+ */
+.enh-valid-hint.is-invalid {
+  color: #ff8f88;
 }
 
 .enh-inline-label {
@@ -3635,11 +4432,17 @@
   white-space: pre-line;
 }
 
-/*: 开关本身也靠顶（旧界面 ``AlignTop``）*/
+/*: 开关本身也靠顶（旧界面 ``AlignTop``）
+ *
+ * ★ 2026-11-03：「满值锁定」「自动停止」两张卡的开关也**右缩 10px**，
+ * 和双爆下限那行的开关保持同一条竖线（用户抱怨"靠右太紧凑"）。
+ * 三个一起挪才对齐得回来。
+ */
 .enh-switch-top {
   flex: 0 0 auto;
   align-self: flex-start;
   margin-top: 1px;
+  margin-right: 10px;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -3760,6 +4563,64 @@
   white-space: pre-line;
 }
 
+/* ── 删除确认：要删的那一行（头像 + 名字 + 类型）──
+ *
+ * 用户 2026-11-03 圈图要求「删除时要弹出提示确认」。
+ * 光问「确定删除？」用户还得回头看列表才知道删的是谁，
+ * 所以把目标条目原样摆进弹框里。
+ */
+.del-target {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.del-target-face {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.del-target-face img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.del-target-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.del-target-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.del-target-kind {
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
 .dlg-row {
   display: flex;
   align-items: center;
@@ -3821,6 +4682,73 @@
   margin-top: 4px;
 }
 
+/* ── 对话框里的「角色」整行（★ 2026-11-03 用户圈图「这里也是一个卡片」）──
+ *
+ * ## 为什么单独一个类
+ *
+ * 配置弹框里别的行（双爆下限 / 满值锁定 / 自动停止 / 有效词条）都套了
+ * ``.enh-crit-card.card-glass`` —— 有玻璃卡底、圆角、内边距。
+ * 而「角色」这一行一直是裸的 ``.dlg-row``：左边的下拉、右边的
+ * ``.char-avatar``（44px 圆形头像）**直接贴在弹框背景上**，
+ * 于是头像看着"掉在外面"，整行像少了一张卡。
+ *
+ * 这里给同样的配方（``.card-glass`` 提供底/模糊/阴影），
+ * 只补内边距 —— 不重新定义玻璃配方（``glass.css`` 里的那一份是唯一真源）。
+ */
+.dlg-card-row {
+  /*: ★★★ 2026-11-03 用户圈图「这里要对齐」——左右内边距 18px → 20px。
+   *
+   *  弹框里其它卡（``.coll-card`` 14px 20px 16px、``.enh-crit-card`` /
+   *  ``.enh-switch-card`` 15px 20px）**左右都是 20px**，只有这张卡是 18px，
+   *  于是卡片外框虽然一样宽（探针实测都是 361→1039），但**内容起点差了
+   *  2px** —— 叠加下面 ``.dlg-label`` 的 52px 右对齐，肉眼就是「角色」
+   *  比其他卡的标题右移了一截。
+   */
+  padding: 14px 20px;
+  border-radius: var(--radius-lg);
+}
+
+/* 卡里唯一一行，不需要再占满宽度外的间距 */
+.dlg-card-row > .dlg-row {
+  width: 100%;
+}
+
+/*: ★★★ 2026-11-03 用户圈图「这里要对齐」的**主因修复**。
+ *
+ * ## 症状
+ *
+ *  别的卡标题（「核心属性」「自动停止」「可选属性」…）左缘在 381，
+ *  而这张卡里的「角色」在 408 —— 差 27px。像素量测（1438 宽截图）：
+ *  「角色」x≈354，其它卡标题 x≈324。
+ *
+ * ## 为什么
+ *
+ *  ``.dlg-label`` 是**固定 52px + ``text-align: right``** —— 那是给
+ *  「声骸套装 / 状态 / 品质」这种**竖排表单行**做右对齐标签列用的
+ *  （旧界面 ``name_label.setFixedWidth(52)``）。可这张卡里只有一个标签，
+ *  右边也没有第二列需要对齐，右对齐就只剩副作用：把两个字推到框的右端。
+ *
+ * ## 现在
+ *
+ *  卡内的标签改成**宽度自适应 + 左对齐** —— 文字左缘就落在卡的
+ *  内容起点（20px padding 之后），和同弹框里其它卡的标题严格同一条线。
+ *  卡外那些 ``.dlg-row`` 的竖排右对齐标签不受影响。
+ */
+.dlg-card-row .dlg-label {
+  width: auto;
+  text-align: left;
+}
+
+/*: ⚠ 抵掉 ``glass.css`` 里 ``.card-glass:hover`` 的 ``translateY(-3px)``。
+ *
+ *  那个上浮是给**工具卡片**做的（鼠标扫过去有反馈）。弹框里的卡是
+ *  表单的一行，鼠标移过去整行跳起来既没意义、还会把下面的行挤开。
+ *  背景变亮 / 阴影加深仍然保留（那两条没有错）。
+ */
+.dlg-card-row.card-glass:hover {
+  transform: none;
+}
+
 /* ══ 角色下拉（``FilterComboBox`` 的 HTML 版）══ */
 .char-picker {
   position: relative;
@@ -3842,25 +4770,39 @@
   padding-right: 28px;
 }
 
-/* 右边小箭头（点它也能展开 —— ComboBox 的样子）*/
+/* 右边小箭头（点它也能展开 —— ComboBox 的样子）
+ *
+ * ★ 2026-11-03 用户：「这个下拉箭头也太小了吧」「所有设计角色搜索的，
+ *   都按照这个做」—— 搜索框那边已经换成 24×24 / 15px 的 ``▼``，
+ *   弹框这个原来是 22×22 / 11px 的 ``▾``，比它小一半，对齐过来。
+ */
 .char-arrow {
   position: absolute;
   right: 4px;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
   border-radius: 5px;
-  font-size: 11px;
-  color: var(--dim);
+  font-size: 15px;
+  line-height: 1;
+  color: var(--faint);
   background: transparent;
   border: none;
   cursor: pointer;
+  transition: background-color 120ms var(--ease), color 120ms var(--ease),
+              transform 160ms var(--ease);
 }
 
 .char-arrow:hover {
   background-color: rgba(255, 255, 255, 0.10);
   color: var(--text);
+}
+
+/*: 菜单展开时箭头翻转（和搜索框的 ``.search-caret`` 同一个交互语言）*/
+.char-picker.is-open .char-arrow {
+  transform: rotate(180deg);
+  color: var(--primary);
 }
 
 /* 候选列表 */

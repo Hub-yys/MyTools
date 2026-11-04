@@ -2296,19 +2296,45 @@
         //:   那个筛状态，这个定位角色。
         (function () {
           const box = P.el('div', { class: 'search build-search build-char-search' });
-          const icon = P.el('span', { class: 'nav-icon' });
-          const m = App.icon('DOCUMENT');
-          icon.style.maskImage = m;
-          icon.style.webkitMaskImage = m;
-          icon.style.backgroundColor = 'currentColor';
-          box.appendChild(icon);
+          //: ★★★ 2026-11-03 用户圈图：「这个是什么？干掉」
+          //:
+          //: 原来这里有个 ``DOCUMENT``（文件）图标 —— 一张文档轮廓，在
+          //: 搜索框里既不代表「搜索」也不代表「角色」，纯装饰还难看。
+          //: 配置页同一个毛病一起删了（见 ``config.js`` 的同名注释）。
 
           const inp = P.el('input', {
             type: 'search',
-            placeholder: '搜索角色名 / 属性 / 武器',
+            //: ★ 2026-11-03 用户：「所有设计角色搜索的，都按照这个做」
+            //:   —— 和配置页同一个 placeholder（明说支持拼音，不然没人会试）
+            placeholder: '搜索角色名（支持拼音，如 feixue / fx）',
             autocomplete: 'off'
           });
           box.appendChild(inp);
+
+          //: ★★★ 2026-11-03 用户：「所有设计角色搜索的，都按照这个做」
+          //:
+          //: 配置页那里已经补了一个右侧下拉箭头（`.search-caret`，24×24 /
+          //: 15px 的 ▼）。练度页这个搜索框是**同一个控件形态**，却没有
+          //: 任何「这里能展开」的视觉线索 —— 用户只看到一条输入框。
+          //: 这里补上，展开时也跟着翻转（`.search.is-open .search-caret`）。
+          const caretBtn = P.el('button', {
+            class: 'search-caret',
+            type: 'button',
+            title: '展开/收起候选角色',
+            text: '▼',
+            onMousedown: function (ev) {
+              //: ⚠ 用 mousedown —— click 前 input 会先 blur，面板开了又关
+              ev.preventDefault();
+              ev.stopPropagation();
+              if (panel.hidden) {
+                inp.focus();
+                open();
+              } else {
+                close();
+              }
+            }
+          });
+          box.appendChild(caretBtn);
 
           //: 候选面板
           const panel = P.el('div', { class: 'build-char-panel' });
@@ -2323,22 +2349,56 @@
             return all.slice().reverse();
           }
 
-          /** 模糊匹配（名字 / 拼音首字母 / 属性 / 武器 / 等级）*/
+          /**
+           * 候选命中判定 —— ★★★ 2026-11-03 用户：「所有设计角色搜索的，
+           * 都按照这个做」。
+           *
+           * 这里**照抄配置页** ``config.js`` 的 ``matchOption()``：
+           * 只看**角色名子串** + **纯字母走拼音**（``role.pinyin`` 是后端
+           * ``text_match.pinyin_keys`` 算的 ``[全拼, 首字母]``）。
+           *
+           * ## 之前错在哪
+           *
+           * .. code:: js
+           *
+           *     const hay = [role.name, role.attribute, role.weaponType,
+           *                  role.level, role.acronym].join(' ');
+           *
+           * ① 打「冷凝」「长刃」能筛出一堆角色 —— 但用户**看不见**这个
+           *    关键词在哪儿，只会觉得"怎么出来这些不相关的"（配置页
+           *    同一个毛病，用户已经圈过图）。
+           * ② ``role.acronym`` 后端从来不返回（恒 ``undefined``）—— 噪声。
+           *
+           * 现在唯一依据就是「用户看得见的东西」：名字 + 拼音。
+           */
           function match(role, kw) {
             if (!kw) return true;
-            const hay = [
-              role.name, role.attribute, role.weaponType,
-              role.level, role.acronym
-            ].join(' ').toLowerCase();
-            return hay.indexOf(kw) >= 0;
+            if (String(role.name || '').toLowerCase().indexOf(kw) >= 0) return true;
+            //: 只有**纯字母**才试拼音（打中文时子串已经够，硬算白费）
+            if (!/^[a-z]+$/.test(kw)) return false;
+            const keys = Array.isArray(role.pinyin) ? role.pinyin : [];
+            const full = String(keys[0] || '').toLowerCase();
+            const initial = String(keys[1] || '').toLowerCase();
+            return (!!full && full.indexOf(kw) >= 0) ||
+                   (!!initial && initial.indexOf(kw) >= 0);
           }
 
           function render() {
             P.fill(panel, null);
             const kw = inp.value.trim().toLowerCase();
-            const list = pool().filter(function (r) {
+            const all = pool();
+            const list = all.filter(function (r) {
               return match(r, kw);
-            }).slice(0, 40);
+            }).slice(0, 120);
+            //: ★ 和配置页一样，顶部钉一行汇总：候选池多大、当前筛出几个
+            //:   —— 否则用户不知道「还没打全」和「就这么多」的区别。
+            if (all.length) {
+              let hint = '共 ' + all.length + ' 个角色';
+              if (kw) hint += ' · 匹配 ' + list.length + ' 个';
+              panel.appendChild(P.el('div', {
+                class: 'build-char-hint', text: hint
+              }));
+            }
             if (!list.length) {
               panel.appendChild(P.el('div', {
                 class: 'build-char-empty', text: '没有匹配的角色'
@@ -2365,13 +2425,13 @@
                 face.textContent = String(role.name || '?').slice(0, 1);
               }
               row.appendChild(face);
+              //: ★★★ 2026-11-03 用户：「所有设计角色搜索的，都按照这个做」
+              //:
+              //: 配置页的候选行已经改成**只有头像 + 角色名**（用户圈图
+              //: 把类型标签「干掉」了）。这里原来还带着「Lv.90 冷凝」，
+              //: 属同一类"看得见但筛不到"的多余信息 —— 一并去掉。
               row.appendChild(P.el('span', {
                 class: 'build-char-name', text: String(role.name || '')
-              }));
-              row.appendChild(P.el('span', {
-                class: 'build-char-meta',
-                text: 'Lv.' + (role.level || '?') + '　' +
-                  String(role.attribute || '')
               }));
               //: ⚠ 用 mousedown —— click 会先触发 input 的 blur 把面板收掉
               row.addEventListener('mousedown', function (ev) {
@@ -2443,12 +2503,163 @@
     ]);
     rolesCard.appendChild(rolesHead);
 
-    //: ★ 单行横向滚动（旧界面 L799-815）
+    //: ★★★ 2026-11-03 用户（**第三次**）：「滑动的拖动按钮呢？？这个说几次了」
+    //:
+    //: ## 为什么前两轮都没修好
+    //:
+    //: 第一轮只加 ``overflow-x: auto`` —— 属性上能滚，界面上**毫无痕迹**。
+    //: 第二轮给滚动条加样式 —— 实测仍然看不见，因为
+    //: ``.build-roles-scroll`` 的 ``height`` 写死 154、内容只有 142，
+    //: 剩下的 12px 里塞 9px 滚动条，被 ``overflow-y: hidden`` **整个裁掉**。
+    //:
+    //: ## 现在
+    //:
+    //: 不再只依赖滚动条（太细、用户看不见），**加左右箭头按钮**：
+    //:   * 浮在左右两端，鼠标进入时显现
+    //:   * 点一下滚一屏（``scrollBy``）
+    //:   * 到头了就自动禁用（视觉上消失）
+    //:
+    //: 滚动条本身也保留了（CSS 里改粗、改亮），两条路都能用。
+    const rolesWrap = P.el('div', { class: 'build-roles-wrap' });
     BUILD_STATE.rolesHost = P.el('div', {
       class: 'build-roles-scroll',
       id: 'build-roles'
     });
-    rolesCard.appendChild(BUILD_STATE.rolesHost);
+
+    /** 造一个箭头按钮 */
+    function makeNavBtn(dir) {
+      const btn = P.el('button', {
+        class: 'build-roles-nav ' + (dir < 0 ? 'is-left' : 'is-right'),
+        type: 'button',
+        text: dir < 0 ? '‹' : '›',
+        title: dir < 0 ? '向前翻' : '向后翻',
+        onClick: function () {
+          const host = BUILD_STATE.rolesHost;
+          if (!host) return;
+          //: 一屏 = 可视宽度的 80%（留一点重叠，用户知道自己滚到哪了）
+          const step = Math.max(200, Math.round(host.clientWidth * 0.8));
+          host.scrollBy({ left: dir * step, behavior: 'smooth' });
+        }
+      });
+      return btn;
+    }
+    const navLeft = makeNavBtn(-1);
+    const navRight = makeNavBtn(1);
+    rolesWrap.appendChild(navLeft);
+    rolesWrap.appendChild(BUILD_STATE.rolesHost);
+    rolesWrap.appendChild(navRight);
+
+    //: ★★★ 2026-11-03 **自己画一条滚动指示条**（用户为"滑动按钮"说了三次）
+    //:
+    //: ## 为什么原生滚动条怎么改样式都不出现
+    //:
+    //: ``web_shell.py`` 里给 QWebEngineSetting 设了
+    //: ``ShowScrollBars = False`` —— 那是为了让**内容区**不出现系统滚动条
+    //: （页面自己用 ``.page { overflow-y: auto }`` 滚）。
+    //:
+    //: 副作用：这个开关是**全局**的，所以 ``::-webkit-scrollbar`` 系列
+    //: 样式根本不绘制 —— 实测 ``clientHeight === offsetHeight``，
+    //: 滚动条一点布局空间都没占。
+    //:
+    //: ## 现在
+    //:
+    //: 不跟浏览器的滚动条较劲了 —— **用 DOM 画一条**：
+    //:   * 轨道在最底部（12px 高）
+    //:   * 滑块宽度 = 可视宽 / 内容宽 的比例
+    //:   * 位置跟着 ``scrollLeft`` 走
+    //:   * 可以**拖动**（用户说的"拖动按钮"就是这个）
+    const bar = P.el('div', { class: 'build-roles-bar' });
+    const thumb = P.el('div', { class: 'build-roles-thumb' });
+    bar.appendChild(thumb);
+    rolesWrap.appendChild(bar);
+
+    /** 按当前滚动位置刷新滑块 */
+    function syncBar() {
+      const host = BUILD_STATE.rolesHost;
+      if (!host) return;
+      const maxLeft = host.scrollWidth - host.clientWidth;
+      if (maxLeft <= 4) {
+        bar.style.display = 'none';
+        return;
+      }
+      bar.style.display = '';
+      const ratio = host.clientWidth / host.scrollWidth;
+      const trackW = bar.clientWidth;
+      const thumbW = Math.max(36, Math.round(trackW * ratio));
+      const maxThumbLeft = trackW - thumbW;
+      const progress = maxLeft > 0 ? (host.scrollLeft / maxLeft) : 0;
+      thumb.style.width = thumbW + 'px';
+      thumb.style.transform =
+        'translateX(' + Math.round(maxThumbLeft * progress) + 'px)';
+    }
+    BUILD_STATE.syncRolesBar = syncBar;
+    BUILD_STATE.rolesHost.addEventListener('scroll', syncBar);
+    window.addEventListener('resize', syncBar);
+    setTimeout(syncBar, 80);
+
+    //: 拖动滑块 → 滚动内容
+    (function () {
+      let dragging = false;
+      let startX = 0;
+      let startLeft = 0;
+      thumb.addEventListener('mousedown', function (ev) {
+        ev.preventDefault();
+        dragging = true;
+        startX = ev.clientX;
+        startLeft = BUILD_STATE.rolesHost.scrollLeft;
+        document.body.style.userSelect = 'none';
+      });
+      document.addEventListener('mousemove', function (ev) {
+        if (!dragging) return;
+        const host = BUILD_STATE.rolesHost;
+        const trackW = bar.clientWidth;
+        const thumbW = thumb.offsetWidth;
+        const movable = trackW - thumbW;
+        if (movable <= 0) return;
+        const maxLeft = host.scrollWidth - host.clientWidth;
+        const dx = ev.clientX - startX;
+        host.scrollLeft = startLeft + (dx / movable) * maxLeft;
+      });
+      document.addEventListener('mouseup', function () {
+        if (!dragging) return;
+        dragging = false;
+        document.body.style.userSelect = '';
+      });
+      //: 点轨道空白处 → 翻页
+      bar.addEventListener('mousedown', function (ev) {
+        if (ev.target === thumb) return;
+        const host = BUILD_STATE.rolesHost;
+        const rect = bar.getBoundingClientRect();
+        const toRight = ev.clientX > (rect.left + rect.width / 2);
+        host.scrollBy({
+          left: (toRight ? 1 : -1) * host.clientWidth * 0.8,
+          behavior: 'smooth'
+        });
+      });
+    })();
+
+    rolesCard.appendChild(rolesWrap);
+
+    /** 按滚动位置刷新两个箭头的可用状态 */
+    function syncNav() {
+      const host = BUILD_STATE.rolesHost;
+      if (!host) return;
+      const maxLeft = host.scrollWidth - host.clientWidth;
+      const canScroll = maxLeft > 4;
+      navLeft.disabled = !canScroll || host.scrollLeft <= 2;
+      navRight.disabled = !canScroll || host.scrollLeft >= maxLeft - 2;
+      //: ★ 同步自绘滚动条（它定义在下面，用 typeof 守卫避免时序问题）
+      if (typeof BUILD_STATE.syncRolesBar === 'function') {
+        BUILD_STATE.syncRolesBar();
+      }
+    }
+    BUILD_STATE.syncRolesNav = syncNav;
+    BUILD_STATE.rolesHost.addEventListener('scroll', syncNav);
+    //: 窗口尺寸变了也要重算（可视宽变了，能滚的范围就变了）
+    window.addEventListener('resize', syncNav);
+    //: 初次渲染后算一次（角色卡片是异步填进来的，所以给个延迟）
+    setTimeout(syncNav, 60);
+
     container.appendChild(rolesCard);
 
     // ══════════════════════════════════════════════════════════════════════
@@ -2872,9 +3083,23 @@
       }
 
       if (keyword) {
-        const hay = [role.name, role.attribute, role.weaponType, role.level]
-          .join(' ').toLowerCase();
-        if (hay.indexOf(keyword) < 0) return false;
+        //: ★★★ 2026-11-03 用户：「所有设计角色搜索的，都按照这个做」
+        //:
+        //: 和下拉候选的 ``match()`` **同一套规则** —— 只看**角色名** +
+        //: **纯字母走拼音**。原来这里是
+        //: ``[role.name, role.attribute, role.weaponType, role.level]``
+        //: 拼起来子串匹配：打「冷凝」会把所有冷凝角色筛出来，但用户
+        //: 看不见"冷凝"这两个字在哪儿（候选行已经不显示属性了）——
+        //: 配置页就是因为这个被用户圈图抱怨的，这里对齐。
+        let ok = String(role.name || '').toLowerCase().indexOf(keyword) >= 0;
+        if (!ok && /^[a-z]+$/.test(keyword)) {
+          const keys = Array.isArray(role.pinyin) ? role.pinyin : [];
+          const full = String(keys[0] || '').toLowerCase();
+          const initial = String(keys[1] || '').toLowerCase();
+          ok = (!!full && full.indexOf(keyword) >= 0) ||
+               (!!initial && initial.indexOf(keyword) >= 0);
+        }
+        if (!ok) return false;
       }
       return true;
     });
@@ -2930,6 +3155,11 @@
 
     for (const role of shown) {
       host.appendChild(buildRoleTile(role, detailSet[String(role.roleId || '')]));
+    }
+    //: ★ 2026-11-03 卡片重建后刷新左右箭头状态
+    //: （卡片数变了 → 能滚的范围变了 → 箭头该亮还是该暗也变了）
+    if (typeof BUILD_STATE.syncRolesNav === 'function') {
+      setTimeout(BUILD_STATE.syncRolesNav, 30);
     }
   }
 
@@ -4802,6 +5032,7 @@
     autostopSwitch: null,
     validStepper: null,
     coreSummary: null,
+    optionalSummary: null,
     reportHost: null,
     historyHost: null,
     btnRun: null,
@@ -4985,6 +5216,9 @@
     //: 完全没有"存"（也错）—— 结果界面上改的判定条件**从来没生效过**，
     //: 引擎跑的是上一次存盘的值。这是会毁结果的静默 bug。
     enhanceBindSave();
+    //: ★ 2026-11-03 初始化互斥状态（核心 ↔ 可选）+ 两份摘要。
+    //: 必须在**所有卡片都建好之后**调 —— 它要同时读两组 checkbox。
+    enhanceRefresh();
     enhanceLoadSettings();
     enhanceLoadHistory();
     void app; void meta;
@@ -5075,6 +5309,56 @@
   }
 
   function enhanceOnCoreChange() {
+    enhanceRefresh();
+  }
+
+  /**
+   * 可选属性那侧任何一格变动后走这里。
+   *
+   * ★ 2026-11-03 用户圈图：「这里属性是互斥的，上面先选了，下面就不能选，
+   * 下面先选了，上面就不能选」—— 两个方向都要生效，所以两侧的
+   * ``change`` 事件最后都汇到同一个 ``enhanceRefresh()``。
+   */
+  function enhanceSyncOptional() {
+    enhanceRefresh();
+  }
+
+  /**
+   * 核心属性 ↔ 可选属性的**互斥 + 置灰 + 摘要**唯一真源。
+   *
+   * ## 两条独立规则，取或
+   *
+   * ① **互斥**（用户 2026-11-03 圈图）：除暴击 / 暴击伤害外，11 项属性
+   *    同一时间只能待在一侧 —— 可选勾了，核心同名项灰掉；核心勾了，
+   *    可选同名项灰掉。
+   * ② **核心上限**：暴击 + 爆伤已强制占 2 条，自选最多再 3 条；
+   *    勾满后其余核心自选框置灰（已勾的仍可取消）。
+   *
+   * ## 为什么拆成「一个函数」而不是两边各写一半
+   *
+   * 原来核心里那句 ``cb.disabled = (custom >= limit) && !cb.checked``
+   * 只在**核心**变动时重算 —— 可选那侧一动，核心的置灰状态就过期了。
+   * 现在两侧的 change 都调这一个函数，一次性重算**两边的** disabled
+   * 和两份摘要，不可能出现一边新一边旧。
+   *
+   * ## 冲突时以核心为准
+   *
+   * 后端 ``EchoSettings.from_dict`` **不过滤交集**（``settings.py:148-162``
+   * 只做去重保序），存盘数据里可能两侧都有同一项。走到这里一律按
+   * 「核心保留、可选摘掉」处理 —— 核心是主要求，可选是补充项。
+   */
+  function enhanceRefresh() {
+    //: ① 互斥 + 摘掉冲突项（以核心为准）
+    for (const stat of ENHANCE_ALL_STATS) {
+      if (stat === ENHANCE_CRIT || stat === ENHANCE_CRIT_DMG) continue;
+      const opt = ENHANCE_STATE.optionalBoxes[stat];
+      if (!opt) continue;
+      const core = ENHANCE_STATE.coreBoxes[stat];
+      const takenByCore = !!(core && core.checked);
+      if (takenByCore && opt.checked) opt.checked = false;
+      opt.disabled = takenByCore;
+    }
+    //: ② 核心侧置灰 = 被可选占了 或 已达自选上限（两条取或）
     let checked = 0;
     for (const stat of ENHANCE_ALL_STATS) {
       const cb = ENHANCE_STATE.coreBoxes[stat];
@@ -5086,17 +5370,28 @@
       const cb = ENHANCE_STATE.coreBoxes[stat];
       if (!cb) continue;
       if (stat === ENHANCE_CRIT || stat === ENHANCE_CRIT_DMG) continue;
-      cb.disabled = (custom >= limit) && !cb.checked;
+      const optBox = ENHANCE_STATE.optionalBoxes[stat];
+      const takenByOptional = !!(optBox && optBox.checked);
+      cb.disabled = takenByOptional || ((custom >= limit) && !cb.checked);
     }
-    //: ★ 摘要行（收起也可见）—— 旧界面 ``summary_label``
-    const names = ENHANCE_ALL_STATS.filter(function (s) {
-      const cb = ENHANCE_STATE.coreBoxes[s];
-      return cb && cb.checked;
-    });
+    //: ③ 两份摘要（收起也可见）—— 旧界面 ``summary_label``
     if (ENHANCE_STATE.coreSummary) {
+      const names = ENHANCE_ALL_STATS.filter(function (s) {
+        const cb = ENHANCE_STATE.coreBoxes[s];
+        return cb && cb.checked;
+      });
       ENHANCE_STATE.coreSummary.setSummary(
         '已勾选 ' + checked + ' / ' + ENHANCE_MAX_CORE + ' 条：' +
         (names.join('、') || '（无）'));
+    }
+    if (ENHANCE_STATE.optionalSummary) {
+      const picked = ENHANCE_ALL_STATS.filter(function (s) {
+        const box = ENHANCE_STATE.optionalBoxes[s];
+        return box && box.checked;
+      });
+      ENHANCE_STATE.optionalSummary.setSummary(picked.length
+        ? '已选 ' + picked.length + ' 条：' + picked.join('、')
+        : '未选');
     }
   }
 
@@ -5239,20 +5534,18 @@
       summary: '未选',
       expanded: false
     });
+    //: ★ 2026-11-03 互斥联动要用到摘要（``enhanceSyncOptional`` 里刷新）
+    ENHANCE_STATE.optionalSummary = coll;
     const grid = P.el('div', { class: 'enh-core-grid' });
     for (const stat of ENHANCE_ALL_STATS) {
       if (stat === ENHANCE_CRIT || stat === ENHANCE_CRIT_DMG) continue;
       const lbl = P.el('label', { class: 'enh-check' });
       const cb = P.el('input', { type: 'checkbox' });
-      cb.addEventListener('change', function () {
-        const picked = ENHANCE_ALL_STATS.filter(function (s) {
-          const box = ENHANCE_STATE.optionalBoxes[s];
-          return box && box.checked;
-        });
-        coll.setSummary(picked.length
-          ? '已选 ' + picked.length + ' 条：' + picked.join('、')
-          : '未选');
-      });
+      //: ★★★ 2026-11-03 用户圈图「上面先选了，下面就不能选，反过来也一样」
+      //: —— 这里只挂 ``enhanceSyncOptional``（刷新摘要 + 摘掉与核心冲突的
+      //: 项），核心那侧的置灰由它内部回写；**不要**在这里再写一遍摘要逻辑，
+      //: 否则两处会各算一套、摘要和实际勾选对不上。
+      cb.addEventListener('change', enhanceSyncOptional);
       lbl.appendChild(cb);
       lbl.appendChild(P.el('span', { text: stat }));
       grid.appendChild(lbl);

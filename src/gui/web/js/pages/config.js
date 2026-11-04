@@ -115,6 +115,31 @@
     dom: {}
   };
 
+  /**
+   * 角色搜索的**全量候选池**。
+   *
+   * ★★★ 2026-11-03 用户圈图（圈住整个候选面板）：
+   *   「这个是角色搜索，**包含游戏目前所有的角色**」
+   *
+   * 之前候选是从 ``state.items`` 抽的 —— 只有**已经配置过**的角色
+   * （本机 8 个），用户自然觉得「怎么才这么几个」。
+   *
+   * 现在改成先拉 ``getCharacterOptions('')``：后端读
+   * :mod:`src.core.game_data` 的 ``CHARACTERS``（本机 61 个，已按实装
+   * 版本倒序 —— 用户 2026-10-24 要求过「新角色降序」），**不要自己
+   * 重排**。和旧界面（main 分支 ``echo_profile_ui.py``）用的是同一个
+   * 清单：``set_choices([(c.name, ...) for c in self._characters])``。
+   *
+   * ``characters === null`` 表示还没拉到 / 拉失败 —— 这时候选退化成
+   * 「只有已配置的角色」（老行为），页面照常能用。
+   */
+  const SEARCH_STATE = {
+    /** ``null`` = 未加载；``[]`` = 拉失败 */
+    characters: null,
+    /** 正在拉（防重复请求）*/
+    loading: false
+  };
+
   P.ready(function () {
     App.registerPage('config', renderConfig);
   });
@@ -142,24 +167,43 @@
     //
     //  P4 我做成了「页签切换 + 右上角搜索」，和旧界面不一样。
     // ══════════════════════════════════════════════════════════════════════
-    const head = P.pageHead({ title: '配置' });
-
-    //: ★ 「+ 新增」按钮在标题右边（旧界面 L225-227）
+    // ★★★ 2026-11-03 用户圈图：
+    //    「新增按钮移到配置旁边」
+    //    「刷新 → 干掉」
+    //
+    // ## 改了什么
+    //
+    // * **新增**：原来在 ``.page-head-actions``（``margin-left:auto`` 推到
+    //   页面最右边）。用户要它**紧挨着「配置」标题**。
+    // * **刷新**：删掉。它本来就不是旧界面的东西（P4 自己加的），
+    //   而且用户手动改了数据后想刷新，切走再切回来（``reload()``）
+    //   效果一样 —— 没有它也丢不了功能。
+    //
+    // ## 怎么实现「贴着标题」
+    //
+    // ``pageHead()`` 把 ``actions`` 放在右侧（``margin-left:auto``）。
+    // 想贴标题只能**不用 actions**，自己往 ``page-head-text`` 里塞。
+    // 这里直接手工拼一个页头。
+    const head = P.el('div', { class: 'page-head' });
+    const headText = P.el('div', { class: 'page-head-text' });
+    //: 标题 + 新增按钮**同一行**（按钮垂直居中于标题）
+    const titleRow = P.el('div', { class: 'page-title-row' });
+    titleRow.appendChild(P.el('div', { class: 'page-title', text: '配置' }));
     const addBtn = P.button('新增', {
       kind: 'primary',
       size: 'sm',
+      //: ★ 2026-11-03 用户圈图：「这个新增放的也太紧凑了吧」
+      //: 原来是 ``margin-left:10px`` —— 24px 的大标题旁边贴一个 27px 的
+      //: 小按钮，只有 10px 缝，看着像标题的一部分。
+      //: 现在改由 ``.page-title-row`` 的 ``gap`` 统一给 14px，
+      //: 按钮自己不再带 margin。
       onClick: function () { openConfigTypeDialog(app); }
     });
     addBtn.dataset.action = 'add-config';
-    head.actions.appendChild(addBtn);
-
-    //: 刷新按钮（旧界面没有，但 P4 加的它不占主要位置，保留在新增右边）
-    head.actions.appendChild(P.button('刷新', {
-      icon: 'HISTORY',
-      size: 'sm',
-      onClick: function () { reload(); }
-    }));
-    section.appendChild(head.head);
+    titleRow.appendChild(addBtn);
+    headText.appendChild(titleRow);
+    head.appendChild(headText);
+    section.appendChild(head);
 
     //: 数据加载（双态）
     await load();
@@ -178,42 +222,321 @@
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    //  搜索框 —— 照抄旧界面 L231-245
+    //  角色搜索 —— ★★★ 2026-11-03 **改成「下拉列表 + 输入匹配」**
     //
-    //  .. code:: python
+    //  用户（第三次提这件事）：
+    //    「这个搜索这么难做？首先这是一个下拉列表，选择角色，
+    //      然后他还可以输入，根据输入直接匹配到角色」
+    //    「然后所有的角色搜索都按照这样做」
     //
-    //    # ---- 搜索框（用户 2026-09-30："加上搜索，和前面下拉列表搜索一样的"）----
-    //    self.search_edit = SearchLineEdit(self.view)
-    //    self.search_edit.setPlaceholderText("搜索角色名（支持拼音，如 feixue / fx）")
-    //    self.search_edit.setClearButtonEnabled(True)
-    //    self.search_edit.setFixedWidth(280)
+    //  ## 之前是什么
     //
-    //  三个要点：
-    //   ① **位置在列表上方**、左对齐 —— 不是右上角
-    //   ② 宽度**固定 280px**
-    //   ③ placeholder **逐字照抄**（含拼音示例）
+    //  一个纯 ``<input type=search>``：只能打字，**没有候选可点**，
+    //  也不能"选择角色"。用户得凭记忆把名字打对。
+    //
+    //  ## 现在（和配置页弹框里的 ``characterPicker`` 同一套交互）
+    //
+    //  * 点输入框 → 展开**候选列表**（带头像 + 名字 + 类型）
+    //  * 打字 → 实时过滤（名字 / 拼音 / 类型都算）
+    //  * 点候选 → 直接过滤到那个角色（``state.keyword = 名字``）
+    //  * ``×`` 清除
+    //
+    //  ## 候选从哪来
+    //
+    //  ``state.items`` 里已经有全部配置，每条带 ``name``（角色名）、
+    //  ``avatarUrl``、``kindLabel``。直接取，不用再打接口。
+    //
+    //  ⚠ 候选要去重（同一个角色可能同时有「声骸强化」和「声骸筛选」两条）。
     // ══════════════════════════════════════════════════════════════════════
     const searchRow = P.el('div', { class: 'config-search-row' });
     const search = P.el('div', {
-      class: 'search config-search',
+      class: 'search config-search config-char-search',
       style: 'width:280px;flex:0 0 280px'
     });
-    const searchIcon = P.el('span', { class: 'nav-icon' });
-    const searchMask = App.icon('DOCUMENT');
-    searchIcon.style.maskImage = searchMask;
-    searchIcon.style.webkitMaskImage = searchMask;
-    searchIcon.style.backgroundColor = 'currentColor';
-    search.appendChild(searchIcon);
+    //: ★★★ 2026-11-03 用户圈图：「这个是什么？干掉」
+    //:
+    //: 左侧那个**深色小方块**是 ``App.icon('DOCUMENT')`` 的 mask
+    //: （一个「文档」图标）—— 在 32px 高的搜索框里只有 14px，
+    //: 糊成一坨灰块，既不像放大镜也不说明任何事。
+    //:
+    //: 用户要的是「下拉列表」：**左边不要图标**，右边要一个能点的
+    //: **下拉箭头**（「这个下拉列表的下拉按钮呢」）。
+    //: 图标整个删掉，箭头在下面 ``caretBtn`` 那里补。
 
     const searchInput = P.el('input', {
       type: 'search',
       placeholder: '搜索角色名（支持拼音，如 feixue / fx）',
-      onInput: function () {
-        state.keyword = searchInput.value.trim();
-        renderRows();
-      }
+      autocomplete: 'off'
     });
     search.appendChild(searchInput);
+
+    //: 候选面板
+    const searchPanel = P.el('div', { class: 'config-search-panel' });
+    searchPanel.hidden = true;
+    searchPanel.classList.add('hidden');
+    search.appendChild(searchPanel);
+
+    /**
+     * 拉**全量角色**候选池（``getCharacterOptions('')``）—— 只拉一次。
+     *
+     * ★ 用户 2026-11-03：「这个是角色搜索，包含游戏目前所有的角色」
+     *
+     * 旧界面（main 分支 ``echo_profile_ui.py``）就是这么做的：
+     * ``set_choices([(c.name, ...) for c in self._characters])``，
+     * ``self._characters = list(game_data.CHARACTERS)``。
+     *
+     * ⚠ **不要传 kind**：传了后端会按「已被占用的角色」筛掉一部分，
+     *   而搜索框是要能搜到**所有角色**的（哪怕已经配过）。
+     *   ``taken`` 标记在这里不用 —— 已配置 / 未配置只影响候选行的
+     *   淡化（``is-plain``），不再是文字标签。
+     */
+    async function loadSearchCharacters() {
+      if (SEARCH_STATE.loading) return;
+      if (SEARCH_STATE.characters && SEARCH_STATE.characters.length) return;
+      SEARCH_STATE.loading = true;
+      try {
+        const result = await P.call('getCharacterOptions', '');
+        const data = (result.ok && result.data) || {};
+        const items = Array.isArray(data.items) ? data.items : [];
+        if (data.ok === false || !items.length) {
+          //: 接口不可用 → 退化成「只列已配置的角色」，页面照常能用
+          SEARCH_STATE.characters = [];
+        } else {
+          SEARCH_STATE.characters = items.map(function (item) {
+            return {
+              name: String(item.name || ''),
+              avatarUrl: String(item.avatarUrl || ''),
+              pinyin: Array.isArray(item.pinyin) ? item.pinyin : []
+            };
+          }).filter(function (item) { return item.name; });
+        }
+      } catch (err) {
+        SEARCH_STATE.characters = [];
+      } finally {
+        SEARCH_STATE.loading = false;
+        //: 面板正开着就按新池重画一次
+        if (!searchPanel.hidden) renderSearchPanel();
+      }
+    }
+
+    /**
+     * 候选池：**全部角色**（后端 ``game_data.CHARACTERS``，61 个）。
+     *
+     * ★★★ 2026-11-03 用户圈图：「这个搜索应该是下拉列表搜索，
+     * **可根据名称或拼音模糊匹配角色**」
+     *
+     * ## 第一版补了什么
+     *
+     * 上一版只把 ``{name, avatarUrl, kindLabel}`` 塞进候选 —— 于是
+     * ``renderSearchPanel`` 里只有一句 ``x.name.indexOf(kw)``，
+     * **打 ``fx`` / ``feixue`` 一个候选都出不来**（用户抱怨的就是这个）。
+     * 后端 ``getConfigList`` 每条本来都带 ``pinyin: [全拼, 首字母]``
+     * （``text_match.pinyin_keys`` 算的），``normalizeConfigs`` 也原样
+     * 保留了 —— 只是这里没接着往下传。现在带上。
+     *
+     * ## ★★★ 第二次圈图：「`这个是角色搜索，包含游戏目前所有的角色`」
+     *
+     * 候选池**不再**只从 ``state.items`` 抽（那样只有已配置的 8 个），
+     * 主池改成 ``SEARCH_STATE.characters``（后端 ``getCharacterOptions('')``
+     * 给的**全部 61 个角色**，含头像 / 拼音）。再拿 ``state.items``
+     * 按名字建索引，只为了标出**哪些是已配置的**（渲染时淡化，
+     * 文字标签已按用户「干掉」的要求去掉）。
+     *
+     * 拉不到全量候选时（``characters === null`` 或空）自动退回老行为：
+     * 只列已配置的角色 —— 页面不能因为一个接口没通就空着。
+     */
+    function searchPool() {
+      //: 名字 → {avatar, pinyin}（已配置的角色才有）
+      const byName = {};
+      for (const it of (state.items || [])) {
+        const nm = String(it.name || '').trim();
+        if (!nm) continue;
+        if (!byName[nm]) {
+          byName[nm] = {
+            avatar: String(it.avatar || it.avatarUrl || ''),
+            pinyin: Array.isArray(it.pinyin) ? it.pinyin : []
+          };
+        }
+      }
+
+      const out = [];
+      const seen = {};
+      const all = Array.isArray(SEARCH_STATE.characters) ? SEARCH_STATE.characters : null;
+
+      if (all && all.length) {
+        //: ① 全量角色池（后端已按实装版本倒序，**不要重排**）
+        for (const ch of all) {
+          const nm = String(ch.name || '').trim();
+          if (!nm || seen[nm]) continue;
+          seen[nm] = true;
+          const conf = byName[nm];
+          out.push({
+            name: nm,
+            avatarUrl: String(ch.avatarUrl || (conf && conf.avatar) || ''),
+            configured: !!conf,
+            //: ★ 拼音索引 ``[全拼, 首字母]`` —— 全量池和后端保证一致
+            pinyin: Array.isArray(ch.pinyin) && ch.pinyin.length
+              ? ch.pinyin
+              : ((conf && conf.pinyin) || [])
+          });
+        }
+        //: ② 有配置但不在 CHARACTERS 里的名字（数据比角色库新时会发生）——
+        //:    不能默默吞掉，补在最后
+        for (const nm of Object.keys(byName)) {
+          if (seen[nm]) continue;
+          seen[nm] = true;
+          const conf = byName[nm];
+          out.push({
+            name: nm,
+            avatarUrl: conf.avatar || '',
+            configured: true,
+            pinyin: conf.pinyin
+          });
+        }
+        return out;
+      }
+
+      //: ③ 降级：接口没通 → 只列已配置的角色（老行为）
+      for (const nm of Object.keys(byName)) {
+        const conf = byName[nm];
+        out.push({
+          name: nm,
+          avatarUrl: conf.avatar || '',
+          configured: true,
+          pinyin: conf.pinyin
+        });
+      }
+      return out;
+    }
+
+    /**
+     * 候选命中判定 —— **和全项目同一套规则**（``core/text_match.matches_keyword``）：
+     *
+     * 1. 空关键词 → 全命中
+     * 2. 角色名**子串**（打中文直接命中）
+     * 3. **纯字母** additionally 走拼音（全拼 ``feixue`` 或首字母 ``fx``）
+     *
+     * ⚠ 2026-11-03 用户圈图（两处）：候选行右侧那串
+     * 「角色声骸强化 / 角色声骸筛选」标签要「干掉」，紧接着又说
+     * 「我都选心了怎么还出现这些不相关的」——
+     * **看得见什么，就只能按什么筛**。所以匹配维度只剩
+     * 角色名 + 拼音，类型名 / 元素 / 武器一律不再参与
+     * （旧界面 ``config_interface._matches_search`` 也是只比名字）。
+     *
+     * @param {object} opt - ``searchPool()`` 里的一项
+     * @param {string} kw - 已 ``trim().toLowerCase()`` 的关键词
+     * @returns {boolean}
+     */
+    function matchOption(opt, kw) {
+      if (!kw) return true;
+      if (opt.name.toLowerCase().indexOf(kw) >= 0) return true;
+      //: 只有**纯字母**才试拼音 —— 打中文时子串已经够，硬算白费
+      if (!/^[a-z]+$/.test(kw)) return false;
+      const keys = opt.pinyin || [];
+      const full = String(keys[0] || '').toLowerCase();
+      const initial = String(keys[1] || '').toLowerCase();
+      return (!!full && full.indexOf(kw) >= 0) ||
+             (!!initial && initial.indexOf(kw) >= 0);
+    }
+
+    /** 渲染候选（按当前输入过滤）*/
+    function renderSearchPanel() {
+      P.fill(searchPanel, null);
+      const kw = String(searchInput.value || '').trim().toLowerCase();
+      //: 排序：**名字前缀**命中的排前面（打 ``fx`` → 绯雪 排在非雪前），
+      //: 其次是**已配置**的（同一批候选里，配过的更容易被找）
+      const pool = searchPool();
+      const list = pool.filter(function (x) {
+        return matchOption(x, kw);
+      }).sort(function (a, b) {
+        const ap = (kw && a.name.toLowerCase().indexOf(kw) === 0) ? 0 : 1;
+        const bp = (kw && b.name.toLowerCase().indexOf(kw) === 0) ? 0 : 1;
+        if (ap !== bp) return ap - bp;
+        return (b.configured ? 1 : 0) - (a.configured ? 1 : 0);
+      //: ★ 全量角色 61 个都画出来（面板自带滚动）——
+      //:   只画前 30 个会让用户以为「角色不全」
+      }).slice(0, 120);
+
+      //: ★★★ 2026-11-03 用户圈图：「这个是角色搜索，包含游戏目前所有的角色」
+      //:
+      //: 面板只有 340px 高、一次看得到十来个 —— 光把 61 个塞进去，
+      //: 用户还是会怀疑「剩下的呢」。所以顶部钉一行字，直接说清楚
+      //: **候选池有多大、当前筛出几个**。
+      if (pool.length) {
+        const total = pool.length;
+        const configured = pool.filter(function (x) { return x.configured; }).length;
+        let hint = '全部 ' + total + ' 个角色';
+        if (configured) hint += '（已配置 ' + configured + '）';
+        if (kw) hint += ' · 匹配 ' + list.length + ' 个';
+        searchPanel.appendChild(P.el('div', {
+          class: 'config-search-hint',
+          text: hint
+        }));
+      }
+
+      if (!list.length) {
+        searchPanel.appendChild(P.el('div', {
+          class: 'config-search-empty',
+          text: kw ? '没有匹配的角色' : '还没有角色数据'
+        }));
+        return;
+      }
+      for (const item of list) {
+        const row = P.el('div', {
+          class: 'config-search-opt' + (item.configured ? '' : ' is-plain')
+        });
+        //: 头像
+        const face = P.el('span', { class: 'config-search-face' });
+        if (item.avatarUrl) {
+          const img = P.el('img', {
+            src: item.avatarUrl, alt: '', loading: 'lazy'
+          });
+          img.addEventListener('error', function () {
+            P.fill(face, null);
+            face.textContent = item.name.slice(0, 1);
+          }, { once: true });
+          face.appendChild(img);
+        } else {
+          face.textContent = item.name.slice(0, 1);
+        }
+        row.appendChild(face);
+        row.appendChild(P.el('span', {
+          class: 'config-search-name', text: item.name
+        }));
+        //: ★★★ 2026-11-03 用户圈图：「干掉」
+        //:
+        //: 原来每行右边还有一枚类型标签（「角色声骸强化 / 角色声骸筛选」）——
+        //: 用户圈掉它，一是列宽被它吃掉、名字反而挤，二是**看见标签
+        //: 就会以为可以按它搜**（结果打了个「心」冒出一堆不相关的）。
+        //: 现在候选行只有「头像 + 角色名」，干净的纯角色列表。
+        //:
+        //: 已配置 / 未配置的区别用行的整体透明度暗示（``is-plain``），
+        //: 不再挂文字。
+        //: ⚠ 用 mousedown —— click 会先触发 blur 把面板收掉
+        row.addEventListener('mousedown', function (ev) {
+          ev.preventDefault();
+          searchInput.value = item.name;
+          state.keyword = item.name;
+          clearBtn.style.display = '';
+          closeSearchPanel();
+          renderRows();
+        });
+        searchPanel.appendChild(row);
+      }
+    }
+
+    function openSearchPanel() {
+      renderSearchPanel();
+      searchPanel.hidden = false;
+      searchPanel.classList.remove('hidden');
+      //: 箭头跟着翻（``.search.is-open .search-caret`` 的旋转）
+      search.classList.add('is-open');
+    }
+    function closeSearchPanel() {
+      searchPanel.hidden = true;
+      searchPanel.classList.add('hidden');
+      search.classList.remove('is-open');
+    }
 
     //: 旧界面 ``setClearButtonEnabled(True)``
     const clearBtn = P.el('button', {
@@ -226,6 +549,7 @@
         searchInput.value = '';
         state.keyword = '';
         clearBtn.style.display = 'none';
+        closeSearchPanel();
         renderRows();
         searchInput.focus();
       }
@@ -233,12 +557,74 @@
     clearBtn.style.display = 'none';
     search.appendChild(clearBtn);
 
+    /**
+     * 右侧**下拉箭头**。
+     *
+     * ★★★ 2026-11-03 用户圈图：「这个下拉列表的下拉按钮呢」
+     *
+     * 之前只有「点输入框展开」这一条路 —— 用户看不出这是个下拉，
+     * 也不知道可以点。补一个 ``▾``：点它 = 展开/收起候选面板，
+     * 面板开着时箭头**翻转**（靠 ``.search.is-open`` 的 CSS 旋转）。
+     *
+     * ⚠ 用 ``mousedown`` 而不是 ``click`` —— 和候选行同理：
+     *   ``click`` 会先让输入框 ``blur``（120ms 后关面板），
+     *   顺序上抢不过，点了会「开了又关」。
+     */
+    const caretBtn = P.el('button', {
+      class: 'search-caret',
+      type: 'button',
+      title: '展开/收起候选角色',
+      //: ★ 2026-11-03 用户圈图：「这个下拉箭头也太小了吧」——
+      //: 除了 CSS 放大（24×24 / 15px），字形也换成更实的 ``▼``
+      //: （``▾`` 是小三角，同字号下视觉上只有一半大）
+      text: '▼',
+      onMousedown: function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (searchPanel.hidden) {
+          searchInput.focus();
+          openSearchPanel();
+        } else {
+          closeSearchPanel();
+        }
+      }
+    });
+    search.appendChild(caretBtn);
+
     searchInput.addEventListener('input', function () {
       clearBtn.style.display = searchInput.value ? '' : 'none';
+      state.keyword = searchInput.value.trim();
+      renderRows();
+      //: 打字时面板要跟着过滤；没开就打开
+      if (searchPanel.hidden) openSearchPanel(); else renderSearchPanel();
+    });
+    //: 点输入框就展开候选（用户要的是"下拉列表"）
+    searchInput.addEventListener('mousedown', function () {
+      if (searchPanel.hidden) openSearchPanel();
+    });
+    searchInput.addEventListener('focus', function () {
+      if (searchPanel.hidden) openSearchPanel();
+    });
+    searchInput.addEventListener('blur', function () {
+      //: 延迟收，否则 mousedown 选不中
+      setTimeout(closeSearchPanel, 120);
+    });
+    searchInput.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape') { closeSearchPanel(); searchInput.blur(); }
+      if (ev.key === 'Enter') {
+        const first = searchPanel.querySelector('.config-search-opt');
+        if (first) {
+          ev.preventDefault();
+          first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        }
+      }
     });
 
     searchRow.appendChild(search);
     section.appendChild(searchRow);
+
+    //: ★ 全量角色候选池（61 个）—— 异步拉，拉回来之前先用已配置的角色顶着
+    void loadSearchCharacters();
 
     // ══════════════════════════════════════════════════════════════════════
     //  ★ 计数说明行（旧界面 L247-249 + ``_subtitle_text`` L347-362）
@@ -552,8 +938,12 @@
     row.appendChild(input);
 
     //: 右侧小箭头（点它也能展开 —— 旧界面那个 ComboBox 的样子）
+    //:
+    //: ★ 2026-11-03 用户：「这个下拉箭头也太小了吧」「所有设计角色搜索的，
+    //:   都按照这个做」—— 搜索框那边已经换成 24×24 / 15px 的 ``▼``，
+    //:   弹框这个 ``▾``（字号 11、22×22）比它小一半，对齐过来。
     const arrow = P.el('button', {
-      class: 'char-arrow', type: 'button', text: '▾', title: '展开候选',
+      class: 'char-arrow', type: 'button', text: '▼', title: '展开候选',
       onClick: function (ev) {
         ev.stopPropagation();
         input.focus();
@@ -584,9 +974,16 @@
       const pool = options();
       if (!keyword) return pool;
       return pool.filter(function (item) {
-        //: 复用配置页搜索同一套规则（中文子串 + 拼音）
+        //: ★ 2026-11-03 用户：「所有设计角色搜索的，都按照这个做」
+        //:
+        //: 原来这里是
+        //: ``matchesKeyword({name, summary: item.element, pinyin})`` ——
+        //: 把**元素**塞进 ``summary`` 当匹配依据。于是打「冷凝」能把所有
+        //: 冷凝角色筛出来，但候选行上并没有"冷凝"两个字，用户根本看不出
+        //: 为什么命中（配置页同一个毛病，已经被圈图「干掉」过一次）。
+        //: 现在只传名字 + 拼音，和配置页 ``matchOption()`` 完全一致。
         return matchesKeyword(
-          { name: item.name, summary: item.element, pinyin: item.pinyin },
+          { name: item.name, pinyin: item.pinyin },
           keyword
         );
       });
@@ -676,11 +1073,12 @@
         opt.appendChild(P.el('span', {
           class: 'char-option-name', text: item.name
         }));
-        if (item.element) {
-          opt.appendChild(P.el('span', {
-            class: 'char-option-meta', text: String(item.element)
-          }));
-        }
+        //: ★ 2026-11-03 用户：「所有设计角色搜索的，都按照这个做」
+        //:
+        //: 这里原来还挂一截 ``.char-option-meta``（元素，如「冷凝」）——
+        //: 配置页候选行的类型标签已经被用户要求「干掉」了，理由一样：
+        //: 候选行上多出来的那截字，用户会以为**能按它筛**，一旦按元素
+        //: 命中又看不出理由。统一成「头像 + 名字」。
         menu.appendChild(opt);
       });
     }
@@ -712,9 +1110,30 @@
         return;
       }
       avatarEl.classList.remove('is-empty');
-      const item = (DIALOG_STATE.charOptions || []).find(function (x) {
-        return x.name === name;
-      });
+      //: ★★★ 2026-11-03 用户：「加个角色头像，**选择角色的时候自动匹配**到头像」
+      //:
+      //: ## 之前的缺口
+      //:
+      //: 这里原来只做**精确匹配** ``x.name === name``。用户：
+      //:   * 从下拉里点选 → 名字完全一致 → 头像正常 ✅
+      //:   * **手打**「莉莉」但还没从下拉里点 → 也是一致，正常 ✅
+      //:   * 手打到一半（「莉」）→ 匹配不到 → 头像退化成首字色块
+      //:     ← 用户看到的就是"头像没跟上"
+      //:
+      //: ## 现在
+      //:
+      //: 三级匹配：精确 → 前缀 → 包含。手打到一半也能立刻看到对应的头像。
+      const pool = DIALOG_STATE.charOptions || [];
+      const byName = function (n) {
+        return pool.find(function (x) { return x.name === n; });
+      };
+      const item = byName(name)
+        || pool.find(function (x) {
+          return x.name && x.name.indexOf(name) === 0;
+        })
+        || pool.find(function (x) {
+          return x.name && x.name.indexOf(name) >= 0;
+        });
 
       function useInitial() {
         P.fill(avatarEl, null);
@@ -816,8 +1235,15 @@
   //  是独立一大块，下一轮做。
   // ════════════════════════════════════════════════════════════════════════
 
-  //: 旧界面 ``config_names.CONFIG_TYPES``（下拉里的三个选项）
-  const CONFIG_TYPES = ['角色声骸筛选', '角色声骸强化', '角色战斗配置'];
+  //: ★★★ 2026-11-03 用户：「角色战斗配置不是让你删掉吗，**新增里也要删除**」
+  //:
+  //: 去掉 ``'角色战斗配置'``。它本来也建不了（编辑表单没做，
+  //: 选了只会提示「下一轮做」），留着只是让用户白点一次。
+  //:
+  //: ⚠ ``TYPE_BATTLE_PROFILE`` 常量**保留** —— 它还被
+  //:   ``openEditDialog`` 用来识别"这条是战斗配置"从而给提示
+  //:   （万一用户从旧界面建过，列表里还能看到、点编辑会说清楚）。
+  const CONFIG_TYPES = ['角色声骸筛选', '角色声骸强化'];
   const TYPE_LOADOUT = '角色声骸筛选';
   const TYPE_ECHO_PROFILE = '角色声骸强化';
   const TYPE_BATTLE_PROFILE = '角色战斗配置';
@@ -828,17 +1254,6 @@
 
   function openConfigTypeDialog(app) {
     const body = P.el('div', { class: 'dlg-form' });
-
-    //: 说明（旧界面 L89-95，**逐字照抄**）
-    //: 说明（旧界面 L89-95，**逐字照抄**）
-    body.appendChild(P.el('div', {
-      class: 'dlg-hint',
-      text: '「' + TYPE_LOADOUT + '」= 角色 + 声骸套装 + 各档声骸；\n' +
-        '「' + TYPE_ECHO_PROFILE + '」= 一套强化判定条件' +
-        '（核心属性 / 双爆下限 / 有效词条数…）；\n' +
-        '「' + TYPE_BATTLE_PROFILE + '」= 一个角色的技能快捷键 / 链路 / 战斗脚本。\n' +
-        '三者互不影响：后两类只是存着，不改变各自工具自己的设置。'
-    }));
 
     //: 类型下拉（旧界面 L100-102 ``ComboBox`` + ``CONFIG_TYPES``）
     const row = P.el('div', { class: 'dlg-row' });
@@ -1075,14 +1490,14 @@
     });
     charRow.appendChild(charPicker.el);
     charRow.appendChild(P.el('div', { style: 'flex:1 1 auto' }));
-    body.appendChild(charRow);
 
-    if (taken.size) {
-      body.appendChild(P.el('div', {
-        class: 'dlg-note',
-        text: taken.size + ' 个角色已有配置，不在候选里（一个角色只能有一条）'
-      }));
-    }
+    //: ★ 2026-11-03 和「新增配置」弹框保持一致：角色行（含右侧头像）
+    //: 套玻璃卡底，并删掉「N 个角色已有配置，不在候选里」那行说明
+    //: —— 用户圈图原话「这里也是一个卡片」「删掉」。理由见
+    //: ``openEchoProfileDialog`` 里同名注释（两处是分开实现的）。
+    const charCard = P.el('div', { class: 'dlg-card-row card-glass' });
+    charCard.appendChild(charRow);
+    body.appendChild(charCard);
 
     // ── 声骸套装（37 套，**带图标**）──
     //
@@ -1906,13 +2321,18 @@
 
     const body = P.el('div', { class: 'dlg-form' });
 
-    //: hint（旧界面 L178-186，**逐字照抄**）
-    body.appendChild(P.el('div', {
-      class: 'dlg-hint',
-      text: '设置区 = **「声骸自动强化」工具页那一份**；' +
-        '**新增时的默认 = 它每次打开显示的那套（出厂默认）**。\n' +
-        '改这里**不会**动到工具页，反之亦然（两者互不影响）。'
-    }));
+    //: ★★★ 2026-11-03 用户圈图：「干掉」——删掉弹框顶部那段说明：
+    //:
+    //:   「设置区 = **「声骸自动强化」工具页那一份**；
+    //:     **新增时的默认 = 它每次打开显示的那套（出厂默认）**。
+    //:     改这里**不会**动到工具页，反之亦然（两者互不影响）。」
+    //:
+    //: 这是**实现说明**（讲代码怎么复用组件的），不是给用户看的。
+    //: 而且里面还有 ``**`` 这种 markdown 星号——旧界面 Qt 不渲染
+    //: markdown，所以原样显示成星号，看着更乱。
+    //:
+    //: ⚠ 旧界面确实有这一段（``L178-186`` 逐字照抄），但用户现在
+    //:   明确要求去掉，以最新要求为准。
 
     // ── 角色行（旧界面 L188-211）──
     //: 先拉候选（按 kind + 排除自己）；接口没就绪时降级成手动输入
@@ -1944,16 +2364,30 @@
     });
     nameRow.appendChild(picker.el);
     nameRow.appendChild(P.el('div', { style: 'flex:1 1 auto' }));
-    body.appendChild(nameRow);
 
-    //: 已占用说明（旧界面 L213-219）
-    if (taken.size) {
-      body.appendChild(P.el('div', {
-        class: 'dlg-note',
-        text: '（' + taken.size + ' 个角色已经有配置了，不在候选里 —— ' +
-          '一个角色只能有一条）'
-      }));
-    }
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★★★ 2026-11-03 用户圈图（两处，同一行）：
+    //    ① 圈住右边的圆形头像 →「这里也是一个卡片」
+    //    ② 圈住下面那行小字 →「删掉」
+    // ══════════════════════════════════════════════════════════════════════
+    //
+    //  ① 头像为什么看着"掉在外面"：``.char-picker`` 是裸的 inline-flex，
+    //     它右边的 ``.char-avatar`` 直接贴在弹框背景上。而这张弹框里
+    //     别的行（双爆下限 / 满值锁定 / 自动停止 / 有效词条）**都有玻璃卡底**
+    //     —— 于是头像和角色下拉像"少了一张卡"。
+    //     现在把整行套进 ``.dlg-card-row card-glass``，和那几张卡同一套配方。
+    //
+    //  ② 删掉的是这行：
+    //
+    ///        「（3 个角色已经有配置了，不在候选里 —— 一个角色只能有一条）」
+    //
+    //     —— 旧界面 ``echo_profile_ui.py`` 的 ``_taken`` 提示。
+    //     用户从 2026-11-02 起反复要求「说明文字全删」，这行到现在还留着；
+    //     而且它说的信息（已占用的角色不在候选里）**打开下拉就看得见**
+    //     （候选里本来就没有它们），再写一行纯属噪声。
+    const nameCard = P.el('div', { class: 'dlg-card-row card-glass' });
+    nameCard.appendChild(nameRow);
+    body.appendChild(nameCard);
 
     //: 老数据里可能存着不是角色的名字（旧界面 L221-230）
     if (existing && (DIALOG_STATE.charOptions || []).length) {
@@ -2006,6 +2440,19 @@
             const error = validateProfileName(name, taken, existing);
             if (error) {
               showDialogError(errorEl, error);
+              return;
+            }
+            //: ★★★ 2026-11-03 用户圈图：「这里是3，但是所选属性只有2条，
+            //: 怎么创建，应该提示创建失败」—— 设置项自己也要能拦。
+            //: 理由见 ``buildDialogSettingsEditor`` 里 ``validate()`` 的注释。
+            const badSettings = editor.validate();
+            if (badSettings) {
+              showDialogError(errorEl, badSettings);
+              //: 把出事的那一行滚到视野里（弹框比 900px 高的屏幕还长）
+              const validCard = settingsArea.querySelector('.enh-valid-hint');
+              if (validCard && validCard.scrollIntoView) {
+                validCard.scrollIntoView({ block: 'center' });
+              }
               return;
             }
             hideDialogError(errorEl);
@@ -2115,6 +2562,9 @@
       maxrollSwitch: null,
       autostopSwitch: null,
       validStepper: null,
+      //: ★ 2026-11-03 当前「有效词条」的合法范围 / 属性条数
+      //: （``syncValidRange()`` 每次重算后写进来，``validate()`` 读它）
+      validRange: null,
       coreSummary: null
     };
     const s = saved || {};
@@ -2169,13 +2619,21 @@
         const cb = local.coreBoxes[stat];
         if (cb && cb.checked) checked += 1;
       }
-      const custom = checked - 2;
+      const custom = checked - 2;                    //: 暴击 + 爆伤 强制占 2
       const limit = TP.ENHANCE_MAX_CORE - 2;
       for (const stat of TP.ENHANCE_ALL_STATS) {
         const cb = local.coreBoxes[stat];
         if (!cb) continue;
         if (stat === TP.ENHANCE_CRIT || stat === TP.ENHANCE_CRIT_DMG) continue;
-        cb.disabled = (custom >= limit) && !cb.checked;
+        //: ★★★ 2026-11-03 用户圈图：
+        //:   「这里属性是互斥的，上面先选了，下面就不能选，
+        //:     下面先选了，上面就不能选」
+        //:
+        //: 可选属性里已经勾了同名项 → 这边**勾不动**（灰掉）。
+        //: 上限控制（勾满 5 条）和互斥是两件独立的事，取或。
+        const optBox = local.optionalBoxes[stat];
+        const takenByOptional = !!(optBox && optBox.checked);
+        cb.disabled = takenByOptional || ((custom >= limit) && !cb.checked);
       }
       const names = TP.ENHANCE_ALL_STATS.filter(function (x) {
         const cb = local.coreBoxes[x];
@@ -2312,6 +2770,31 @@
     root.appendChild(optColl.card);
 
     function syncOptional() {
+      //: ★★★ 2026-11-03 用户圈图：「这里属性是互斥的，上面先选了，
+      //: 下面就不能选，下面先选了，上面就不能选」。
+      //:
+      //: ## 规则
+      //:
+      //: 暴击 / 暴击伤害 只在核心属性里出现（可选网格本来就跳过它们）；
+      //: 其余 11 项**同一时间只能待在一侧** —— 核心勾了，可选这一项就
+      //: 灰掉；可选勾了，核心那一项就灰掉（在 ``syncCore()`` 里）。
+      //:
+      //: ## 为什么要在这里兜一次 ``opt.checked = false``
+      //:
+      //: 后端 ``EchoSettings.from_dict`` **不过滤交集**（
+      //: ``settings.py:148-162`` 只做去重保序），所以磁盘上可能存着
+      //: 「核心有攻击百分比、可选也有攻击百分比」的老数据。打开弹框时
+      //: 以**核心属性**为准把可选那侧摘掉 —— 核心是主要求（用户先勾的
+      //: 那一侧），可选是补充项。
+      for (const stat of TP.ENHANCE_ALL_STATS) {
+        if (stat === TP.ENHANCE_CRIT || stat === TP.ENHANCE_CRIT_DMG) continue;
+        const opt = local.optionalBoxes[stat];
+        if (!opt) continue;
+        const core = local.coreBoxes[stat];
+        const takenByCore = !!(core && core.checked);
+        if (takenByCore && opt.checked) opt.checked = false;
+        opt.disabled = takenByCore;
+      }
       const picked = TP.ENHANCE_ALL_STATS.filter(function (x) {
         const cb = local.optionalBoxes[x];
         return cb && cb.checked;
@@ -2321,6 +2804,11 @@
         : '未选');
     }
     syncOptional();
+    //: ★ 2026-11-03 互斥联动：可选网格建好后**再算一次核心** ——
+    //: 磁盘上若存着「可选也有攻击百分比」的老数据，``syncOptional()``
+    //: 会先按「核心优先」把它从可选里摘掉；反过来若只剩可选那一侧
+    //: 有它，这里要把核心对应的勾选框灰掉。
+    syncCore();
 
     // ── ⑥ 有效词条 ──
     //
@@ -2355,9 +2843,21 @@
     validRow.appendChild(P.el('span', { class: 'enh-inline-label', text: '至少' }));
     local.validStepper = Panels.numberInput(
       s.min_valid_count != null ? s.min_valid_count : TP.ENHANCE_DEFAULT_VALID,
-      { min: 2, max: 5 });
+      //: ★★★ 2026-11-03 用户圈图：「这里是3，但是所选属性只有2条，怎么创建，
+      //: 应该提示创建失败」。
+      //:
+      //: ``clampOnBlur: false`` —— 越界值**不许静默纠正**。
+      //: 原因：这里（配置弹框）和工具页不一样，它是**一次性提交表单**，
+      //: 用户填完点「创建」。如果我们失焦就把 3 夹成 2，用户永远不会
+      //: 知道自己填的数没生效（后端 ``__post_init__`` 也是静默夹的）。
+      //: 保留原值 → 点创建时 ``validate()`` 报错 → 用户看得见、改得动。
+      { min: 2, max: 5, clampOnBlur: false });
     local.validStepper.el.classList.add('cfg-number');
     local.validStepper.input.classList.add('cfg-number-input');
+    //: ★ 2026-11-03 专属类 —— ``cfg-number-input`` 三个控件共用
+    //: （暴击下限 / 爆伤下限 / 有效词条），测试脚本和调试时
+    //: ``.cfg-number-input`` 抓到的可能是 7.5 那个。这里单独标一个。
+    local.validStepper.input.classList.add('enh-valid-number');
     validRow.appendChild(local.validStepper.el);
     validRow.appendChild(P.el('span', { class: 'enh-inline-label', text: '条' }));
     //: 提示位（值不足时显示「至少 N 条（核心属性 M 条）」）
@@ -2388,11 +2888,25 @@
       const total = coreN + optN;
       const low = Math.max(MINV, coreN);
       const high = Math.max(low, Math.min(MAXV, total));
+      local.validRange = { low: low, high: high, total: total, coreN: coreN, optN: optN };
 
       const input = local.validStepper.input;
       if (input) {
         input.min = String(low);
         input.max = String(high);
+        //: ★★★ 2026-11-03 关键一步：把边界**真正**交给加减框
+        //:
+        //: 上面两行只改 DOM 属性 —— 而 ``type="text"`` 的 ``min``/``max``
+        //: 不构成约束，``Panels.numberInput`` 的 ``clamp()`` 读的是建控件
+        //: 时传进去的闭包常量（``{min: 2, max: 5}``）。
+        //: 于是「核心 2 条」时上界本应是 2，输入框却还能被 ＋ 到 3 ——
+        //: 用户圈图那张截图（值 3、提示「核心属性 2 条」）就是这么来的。
+        //:
+        //: 现在 ``setRange()`` 把闭包里的 min/max 一起换掉，
+        //: ＋/− 和失焦纠错都会按新边界夹住。
+        if (typeof local.validStepper.setRange === 'function') {
+          local.validStepper.setRange(low, high);
+        }
         //: 当前值越界就抬到合法范围内（用户圈图要的就是这个自动纠正）
         const cur = parseInt(String(local.validStepper.get()), 10);
         if (!isFinite(cur) || cur < low) {
@@ -2402,10 +2916,24 @@
         }
       }
       if (local.validHint) {
-        //: 常态给一行灰字说明下界怎么来的；核心 ≥3 时更要说清楚
-        local.validHint.textContent = coreN
-          ? '（核心属性 ' + coreN + ' 条，不能少于 ' + low + '）'
-          : '';
+        //: ★★★ 2026-11-03 用户圈图：「这里是3，但是所选属性只有2条，
+        //: 怎么创建，应该提示创建失败」。
+        //:
+        //: 提示分两种：
+        //:   ① 常态 —— 说明下界怎么来的（核心几条，不能少于几条）
+        //:   ② 核心 ∪ 可选**凑不够 2 条**（``total < MINV``）——
+        //:      这时候连下界都凑不出来，是**配置本身不成立**，
+        //:      要说清楚"创建会被拒绝"，而不是继续显示一句温柔的灰字。
+        if (total < MINV) {
+          local.validHint.textContent = '（至少勾 ' + MINV +
+            ' 条属性才凑得出来，现在只有 ' + total + ' 条 —— 创建会被拒绝）';
+          local.validHint.classList.add('is-invalid');
+        } else {
+          local.validHint.textContent = coreN
+            ? '（核心属性 ' + coreN + ' 条，不能少于 ' + low + '）'
+            : '';
+          local.validHint.classList.remove('is-invalid');
+        }
       }
     }
 
@@ -2437,6 +2965,23 @@
       const cb = local.optionalBoxes[stat];
       if (cb) cb.addEventListener('change', syncValidRange);
     }
+    //: ★★★ 2026-11-03 互斥联动（用户：「上面先选了，下面就不能选，
+    //: 下面先选了，上面就不能选」）。
+    //:
+    //: ⚠ 这里**同样不能**靠"包装 syncCore / syncOptional"来加联动 ——
+    //: 见上面 2902 行那条教训：两个函数都是 function 声明，早就有
+    //: checkbox 把**原函数**绑进了 change 监听，给变量重新赋值不会
+    //: 穿过去。所以一律**补独立监听**，每个分组各挂对方那半边的同步函数。
+    for (const stat of Object.keys(local.coreBoxes)) {
+      const cb = local.coreBoxes[stat];
+      //: 核心动了 → 可选那侧的同名项要跟着灰掉/放开
+      if (cb) cb.addEventListener('change', syncOptional);
+    }
+    for (const stat of Object.keys(local.optionalBoxes)) {
+      const cb = local.optionalBoxes[stat];
+      //: 可选动了 → 核心那侧的「已勾满」置灰规则要重算，互斥要重判
+      if (cb) cb.addEventListener('change', syncCore);
+    }
     //: 初次进来也算一次
     syncValidRange();
 
@@ -2464,7 +3009,54 @@
       };
     }
 
-    return { el: root, read: read };
+    /**
+     * 保存前校验「有效词条」这一项 —— ★★★ 2026-11-03 用户圈图：
+     *   **「这里是3，但是所选属性只有2条，怎么创建，应该提示创建失败」**
+     *
+     * ## 用户为什么不接受静默处理
+     *
+     * 后端 ``EchoSettings.__post_init__`` 会把越界的 ``min_valid_count``
+     * 悄悄夹进 ``[low, high]`` —— 配置确实存下来了，但**用户填的 3 没生效**。
+     * 界面上还显示着 3，下一次打开又变成 2，用户会以为是丢数据。
+     * 所以要**在点「创建」时当场说清楚**，而不是让它悄悄过去。
+     *
+     * ## 什么时候算不成立
+     *
+     * 能凑出来的有效词条**最多**只有 ``total = 核心 ∪ 可选`` 条
+     * （声骸 5 个孔位里每种词条只出现一次，见 ``settings.py`` 的注释）。
+     * ``total < 2`` 时连下界都凑不出来 → 这个配置根本跑不出结果。
+     *
+     * ⚠ 只在 ``total < 2`` 时拒绝 —— 值只是「偏高」的情况
+     *   （``high < cur``）``syncValidRange()`` 已经当场夹回去了，
+     *   用户看得见输入框变成几，不需要再弹一次错误。
+     *
+     * @returns {string} 空串 = 通过；否则是要显示给用户的错误文案
+     */
+    function validate() {
+      const range = local.validRange;
+      if (!range) return '';
+      const MINV = 2;
+      //: ① 连下界都凑不出来 —— 这个配置根本跑不出结果
+      if (range.total < MINV) {
+        return '有效词条至少 ' + MINV + ' 条，但「核心属性 + 可选属性」只选了 ' +
+          range.total + ' 条 —— 凑不出这么多有效词条，无法创建。请至少再勾选 ' +
+          (MINV - range.total) + ' 条属性。';
+      }
+      //: ② 输入框里还留着越界值（用户直接打字、且没触发失焦纠错）
+      const cur = parseInt(String(local.validStepper.get()), 10);
+      if (isFinite(cur) && (cur < range.low || cur > range.high)) {
+        //: 上下界相等时别说「2 ~ 2 条」（那是机器话）
+        const span = range.low === range.high
+          ? '只有 ' + range.low + ' 条'
+          : range.low + ' ~ ' + range.high + ' 条';
+        return '「有效词条」填的是 ' + cur + ' 条，但所选属性' + span +
+          '（核心 ' + range.coreN + ' 条 + 可选 ' + range.optN +
+          ' 条）—— 无法创建。';
+      }
+      return '';
+    }
+
+    return { el: root, read: read, validate: validate };
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -2661,10 +3253,19 @@
     //: ① 空关键词 = 全命中（含纯空白 —— 旧界面特意兜了这点）
     if (!kw) return true;
 
-    //: ② 中文子串（先查角色名，再查摘要 —— 摘要里可能含套装名）
+    //: ② 中文子串 —— **只比角色名**
+    //:
+    //: ★★★ 2026-11-03 用户圈图：「我都选心了怎么还出现这些不相关的」
+    //:
+    //: 原来这里还比 ``summary``（那一长串「核心：暴击、暴击伤害…」），
+    //: 于是打一个「心」→ ``indexOf`` 命中所有摘要里的「**核心**」→
+    //: 赞妮 / 卡提希娅 … 全被筛出来。摘要里的字和用户要找的角色毫无
+    //: 关系，属于**看不见理由的匹配**。
+    //:
+    //: 旧界面 ``config_interface._matches_search(name)`` 本来也**只比名字**，
+    //: 这里对齐。
     const name = String(item.name || '');
-    const summary = String(item.summary || '');
-    if (name.indexOf(kw) >= 0 || summary.indexOf(kw) >= 0) return true;
+    if (name.indexOf(kw) >= 0) return true;
 
     //: ③ 只有**纯字母**才试拼音（打中文时子串已经够，硬算只会白费）
     if (!/^[A-Za-z]+$/.test(kw)) return false;
@@ -2923,10 +3524,14 @@
       return matchesKeyword(it, keyword);
     });
 
-    //: 分组（★ 顺序照抄旧界面：强化 → 战斗 → 筛选）
+    //: 分组（★ 顺序照抄旧界面：强化 → 筛选）
+    //:
+    //: ⚠ 2026-11-03：``battle_profile``（角色战斗配置）已被用户要求删掉
+    //: （页签和「新增」里都删了），这里**必须同步删** —— 否则「全部」
+    //: 页签下还会冒出一个「角色战斗配置」分组标题，用户会以为没删干净。
+    //: 真恢复时，把这一行加回来即可（``state.items`` 仍会读这类数据）。
     const groups = [
       { kind: 'echo_profile', title: '角色声骸强化' },
-      { kind: 'battle_profile', title: '角色战斗配置' },
       { kind: 'loadout', title: '角色声骸筛选' }
     ];
 
@@ -2956,17 +3561,24 @@
     //  ⚠ 页签上的数字是**全量**（不受搜索影响）—— 搜索时数字不变，
     //    这样用户能看到"总共就这么多"。
     // ══════════════════════════════════════════════════════════════════════
+    //: ★★★ 2026-11-03 **这才是真正渲染页签的那份表**
+    //:
+    //: ⚠ 踩过一次：文件里有两份「分类表」——
+    //:   ``KINDS``（第 84 行附近，给别处用）
+    //:   ``TABS``（这里，**页签真正读的是这份**）
+    //: 我上一轮只改了 ``KINDS``，页签纹丝不动，用户又圈了一次：
+    //:   「角色战斗配置不是让你删掉吗，新增里也要删除」
+    //:
+    //: 现在两边都去掉 ``battle_profile``。
     const TABS = [
       { value: 'all', label: '全部', kind: '' },
       { value: 'echo_profile', label: '角色声骸强化', kind: 'echo_profile' },
-      { value: 'loadout', label: '角色声骸筛选', kind: 'loadout' },
-      { value: 'battle_profile', label: '角色战斗配置', kind: 'battle_profile' }
+      { value: 'loadout', label: '角色声骸筛选', kind: 'loadout' }
     ];
     const counts = {
       all: state.items.length,
       echo_profile: 0,
-      loadout: 0,
-      battle_profile: 0
+      loadout: 0
     };
     for (const it of state.items) {
       if (counts[it.kind] != null) counts[it.kind] += 1;
@@ -3079,9 +3691,14 @@
     }
 
     if (!keyword) {
+      //: ⚠ 2026-11-03：**去掉「角色战斗配置」那一项**。
+      //:
+      //: 用户已经把这条类型从页签和「新增」里删掉了，但说明行还在统计
+      //: 它 —— 界面上写着「共 15 条角色声骸强化配置 · 0 条角色战斗
+      //: 配置 · 8 条角色声骸筛选配置」，用户圈图问「战斗配置不是删了吗」。
+      //: 三种数的**顺序也照旧界面**：强化 → 筛选。
       el.textContent = '共 ' + [
         typeCount(countOf('echo_profile'), '角色声骸强化'),
-        typeCount(countOf('battle_profile'), '角色战斗配置'),
         typeCount(countOf('loadout'), '角色声骸筛选')
       ].join(' · ');
     } else {
@@ -3233,10 +3850,13 @@
     }));
 
     //: ③ 删除
+    //: ★ 2026-11-03 用户圈图：「删除时，要弹出一个提示确认是否删除」
+    //: 之前是点两次（按钮就地变「确认删除？」），现在改成弹对话框确认，
+    //: 见 ``confirmDeleteConfig``。
     const delBtn = P.button('删除', {
       size: 'sm',
-      title: '删除这条配置（需要点两次确认）',
-      onClick: function () { deleteConfig(item, row); }
+      title: '删除这条配置',
+      onClick: function () { confirmDeleteConfig(item); }
     });
     delBtn.dataset.action = 'delete';
     actions.appendChild(delBtn);
@@ -3331,69 +3951,118 @@
   }
 
   // ────────────────────────────────────────────────────────────────────────
-  //  删除（真接口，2026-11-02 接）
+  //  删除（真接口，2026-11-02 接；确认方式 2026-11-03 改弹框）
   // ────────────────────────────────────────────────────────────────────────
   /**
-   * 删除一条配置。
+   * 点「删除」→ **弹框确认**（用户 2026-11-03 圈图要求）。
    *
-   * ## 为什么要二次确认
+   * ## 为什么不再用「点两次」
    *
-   * 这是**不可撤销的破坏性操作**，而且没有回收站 ——
-   * 一次误点就少一条用户辛苦配的声骸方案。
-   * Qt 版用的是 ``MessageBox``，这里用等价的「点两次」：第一次把按钮
-   * 变成「确认删除？」，3 秒内再点才真的删。
+   * 之前：第一次点，按钮就地变成「确认删除？」，3 秒内再点才真删。
+   * 用户反馈「删除时，要弹出一个提示确认是否删除」—— 就地变字不够
+   * 醒目（眼睛还在列表上，容易漏看），而且按钮宽度一变整行会抖。
+   *
+   * 现在复用项目里已有的 ``openDialog``（``新增配置`` / ``编辑`` 用的
+   * 同一套），正文写清**删的是哪个角色、哪一类配置、不可撤销**，
+   * 底部「取消」+ 红色「删除」。
    *
    * ## 为什么不用 window.confirm()
    *
    * QtWebEngine 里 ``window.confirm`` 需要宿主程序实现
    * ``QWebEnginePage.javaScriptConfirm``，没实现时**默认返回 false**
    * —— 点了确认也删不掉，而且看起来像"点了没反应"。
+   *
+   * @param {object} item - ``state.items`` 里的一项
    */
-  async function deleteConfig(item, row) {
-    const btn = row.querySelector('[data-action="delete"]');
-    if (!btn) return;
+  function confirmDeleteConfig(item) {
+    const body = P.el('div', { class: 'dlg-form' });
 
-    // ── 第一次点：进入确认态 ──
-    if (btn.dataset.confirming !== '1') {
-      btn.dataset.confirming = '1';
-      btn.textContent = '确认删除？';
-      btn.classList.add('is-confirming');
-      if (btn._confirmTimer) clearTimeout(btn._confirmTimer);
-      //: 3 秒内没再点 → 退回原状（防误触后按钮一直停在确认态）
-      btn._confirmTimer = setTimeout(function () {
-        btn.dataset.confirming = '';
-        btn.textContent = '删除';
-        btn.classList.remove('is-confirming');
-      }, 3000);
-      return;
+    //: 要删的是谁 —— 头像 + 名字 + 类型，别让用户删错角色
+    const target = P.el('div', { class: 'del-target' });
+    const face = P.el('span', { class: 'del-target-face' });
+    const avatarUrl = String(item.avatar || '');
+    if (avatarUrl) {
+      const img = P.el('img', { src: avatarUrl, alt: '' });
+      img.addEventListener('error', function () {
+        P.fill(face, null);
+        face.textContent = String(item.name || '?').slice(0, 1);
+      }, { once: true });
+      face.appendChild(img);
+    } else {
+      face.textContent = String(item.name || '?').slice(0, 1);
     }
+    target.appendChild(face);
 
-    // ── 第二次点：真删 ──
-    if (btn._confirmTimer) clearTimeout(btn._confirmTimer);
-    btn.dataset.confirming = '';
-    btn.textContent = '删除中…';
-    btn.disabled = true;
+    const meta = P.el('div', { class: 'del-target-meta' });
+    meta.appendChild(P.el('div', {
+      class: 'del-target-name', text: String(item.name || '(未命名)')
+    }));
+    meta.appendChild(P.el('div', {
+      class: 'del-target-kind',
+      text: String(item.kindLabel || item.kind || '')
+    }));
+    target.appendChild(meta);
+    body.appendChild(target);
 
+    body.appendChild(P.el('div', {
+      class: 'dlg-hint',
+      text: '删除后不可恢复 —— 这条配置会从数据文件里移除，没有回收站。'
+    }));
+
+    openDialog({
+      title: '删除配置',
+      width: 420,
+      body: body,
+      actions: [
+        { label: '取消', name: 'cancel', onClick: function () { closeDialog(); } },
+        {
+          label: '删除',
+          kind: 'danger',
+          name: 'confirm-delete',
+          onClick: async function () {
+            const btn = document.querySelector(
+              '.dlg-foot [data-action="confirm-delete"]');
+            if (btn) {
+              btn.disabled = true;
+              btn.textContent = '删除中…';
+            }
+            const ok = await deleteConfig(item);
+            if (ok) {
+              closeDialog();
+            } else if (btn) {
+              //: 失败 → 留在弹框里，让用户看到错误提示再决定
+              btn.disabled = false;
+              btn.textContent = '删除';
+            }
+          }
+        }
+      ]
+    });
+  }
+
+  /**
+   * 真删一条配置（确认之后才走到这里）。
+   *
+   * @param {object} item - ``state.items`` 里的一项
+   * @returns {Promise<boolean>} 成功 ``true``
+   */
+  async function deleteConfig(item) {
     const result = await P.callMulti('deleteConfig', [item.kind, item.id]);
 
     if (!result.ok) {
       //: 桥接层调用失败（方法不存在 / 通道断了 / 缺多参能力）
-      btn.textContent = '删除';
-      btn.disabled = false;
       showError('删除失败：' + (result.missing
         ? '桥接暂时不支持带两个参数的调用（需要 bridge.js 的 callWith）。' +
           '请在 Qt 版配置页删除。'
         : String(result.error && result.error.message || result.error)));
-      return;
+      return false;
     }
 
     const data = result.data || {};
     if (!data.ok) {
-      btn.textContent = '删除';
-      btn.disabled = false;
       //: 后端 message 是给用户看的，直接用
       showError('删除失败：' + (data.message || data.reason || '未知原因'));
-      return;
+      return false;
     }
 
     // ── 成功：从本地状态移除并重渲染 ──
@@ -3405,6 +4074,7 @@
     if (detail && detail.dataset.configId === item.id) detail.remove();
     renderRows();
     showOk('已删除「' + (item.name || item.id) + '」');
+    return true;
   }
 
   //: ★ 这两个原来都是 ``const host = ...noticeHost; if (!host) return;`` ——
