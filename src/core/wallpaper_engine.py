@@ -63,6 +63,64 @@ WE_APP_ID = "431960"
 SUPPORTED_TYPES = ("video",)
 
 
+def scene_video_dir() -> Path | None:
+    """``scene.pkg`` 抠出来的视频放哪：``<用户数据>/wallpapers_scene``。
+
+    为什么不放 ``<用户数据>/wallpapers``：那个目录是**用户自己放视频**的，
+    :func:`scan_user_videos` 会把里面每个文件都当成一条壁纸列出来 ——
+    抠出来的视频要是也塞进去，壁纸墙会多出一堆重复项。
+    """
+    try:
+        from . import paths  # noqa: PLC0415
+
+        d = paths.user_data_dir() / "wallpapers_scene"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def resolve_scene_video(info: dict) -> str:
+    """scene 型壁纸 → 从 ``scene.pkg`` 抠出内嵌 mp4 的路径。
+
+    ## 只给「精选主题」抠
+
+    抠一次要读 270MB 的 pkg（实测 0.4 秒 + 106MB 写出），
+    所以**只处理 :mod:`wallpaper_themes` 表里点名的那些**，
+    其它 scene 壁纸照样显示「不支持」。
+
+    :return: 抠出来（或已在缓存里）的 mp4 路径；不适用返回空串
+    """
+    pkg = str(info.get("pkg_path") or "")
+    if not pkg:
+        return ""
+    try:
+        from . import wallpaper_themes  # noqa: PLC0415
+
+        if wallpaper_themes.theme_for_wallpaper(info.get("id", "")) is None:
+            return ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+    d = scene_video_dir()
+    if d is None:
+        return ""
+    target = d / f"{info.get('id', 'scene')}.mp4"
+    if target.is_file() and target.stat().st_size > 4096:
+        return str(target)
+    try:
+        from . import pkg_video  # noqa: PLC0415
+
+        out = pkg_video.extract_first_video(pkg, str(target))
+        if out:
+            logger.info("壁纸：%s 是 scene 型，已从 scene.pkg 抠出视频",
+                        info.get("title", ""))
+        return out
+    except Exception:  # noqa: BLE001
+        logger.warning("壁纸：抠 scene 视频失败 %s", pkg, exc_info=True)
+        return ""
+
+
 def _candidate_roots() -> list[Path]:
     """可能存放 ``steamapps/workshop/content/431960`` 的根目录。
 
@@ -154,6 +212,15 @@ def read_project(project_dir: Path) -> dict | None:
         if cand.is_file():
             video_path = str(cand)
 
+    #: ★ 2026-11-04：scene 型也可能有**内嵌 mp4**（见 :mod:`pkg_video`）。
+    #: 这里只记下 scene.pkg 的路径，**不在读 project 时抽**（那是几百 MB
+    #: 的 IO，扫描阶段不该干）—— 由 :func:`scan_wallpapers` 决定要不要抽。
+    pkg_path = ""
+    if wp_type == "scene":
+        pkg = project_dir / "scene.pkg"
+        if pkg.is_file():
+            pkg_path = str(pkg)
+
     preview_path = ""
     if preview_name:
         cand = project_dir / preview_name
@@ -168,6 +235,7 @@ def read_project(project_dir: Path) -> dict | None:
         "dir": str(project_dir),
         "main_file": main_file,
         "video_path": video_path,
+        "pkg_path": pkg_path,
         "preview_path": preview_path,
         "supported": wp_type in SUPPORTED_TYPES and bool(video_path),
     }
@@ -272,9 +340,24 @@ def scan_wallpapers() -> list[dict]:
         logger.warning("壁纸：扫描失败", exc_info=True)
         return []
 
-    #: ★ 白名单过滤（按标题关键字匹配，Steam id 变了也不影响）
+    #: ★ 白名单过滤
+    #:
+    #: 两种口径，**精确 id 优先**：
+    #:   ① :func:`allowed_ids`（精选主题引用的 id）—— 2026-11-04 起是主口径。
+    #:      好处：创意工坊里「坎特蕾拉」有 4 个同名目录（3454096998 /
+    #:      3457201973 / 3457765536 / 3786912221），按标题关键字根本分不清
+    #:      用户要的是哪个；按 id 只认他点名的那一个。
+    #:   ② :func:`allowed_titles`（标题关键字）—— 老口径，保持兼容。
+    ids = allowed_ids()
+    if ids:
+        kept = [x for x in items if x["id"] in ids]
+        if kept:
+            logger.info("壁纸：按精选主题 id 过滤 %d → %d 个", len(items), len(kept))
+            items = kept
+        else:
+            logger.warning("壁纸：精选主题的 id 一个都没匹配到，显示全部")
     allow = allowed_titles()
-    if allow:
+    if not ids and allow:
         kept = [x for x in items
                 if any(k in x["title"] for k in allow)]
         if kept:
@@ -284,6 +367,14 @@ def scan_wallpapers() -> list[dict]:
         else:
             logger.warning("壁纸：白名单 %s 一个都没匹配到，显示全部",
                            allow)
+
+    #: ★ scene 型：包里内嵌视频的，抽出来当普通视频壁纸用
+    for info in items:
+        if not info.get("video_path"):
+            resolved = resolve_scene_video(info)
+            if resolved:
+                info["video_path"] = resolved
+                info["supported"] = True
 
     items.sort(key=lambda x: (not x["supported"], x["title"]))
     #: ★ 用户自备视频**不受白名单限制**（用户自己放的就是想用的）
@@ -311,6 +402,20 @@ _ALLOWED_TITLES: tuple[str, ...] = ("守岸人", "鸣潮坎特蕾拉")
 
 #: 即使在白名单里也要**排除**的（标题关键字）
 _EXCLUDED_TITLES: tuple[str, ...] = ("坎特雷拉02", "坎特雷拉")
+
+
+def allowed_ids() -> tuple[str, ...]:
+    """★ 精选主题引用的壁纸 id（2026-11-04 起是白名单主口径）。
+
+    创意工坊里「坎特蕾拉」有 4 个同名目录，按标题关键字分不清，
+    只能按用户点名的 id 精确匹配 —— 见 :mod:`wallpaper_themes`。
+    """
+    try:
+        from . import wallpaper_themes  # noqa: PLC0415
+
+        return wallpaper_themes.wallpaper_ids()
+    except Exception:  # noqa: BLE001
+        return ()
 
 
 def allowed_titles() -> tuple[str, ...]:

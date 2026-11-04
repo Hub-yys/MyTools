@@ -99,6 +99,10 @@ SMOKE_ARGS: dict[str, list] = {
     "getSkin": [],
     "getSkinList": [],
     "getWallpaper": [],
+    #: ★ 2026-11-04 精选主题：后台把壁纸 mp4 转 webm，转好推 ``wallpaperReady``。
+    #: 无参；不写任何 ``data/*.json``，只往转码缓存目录里塞 webm。
+    #: 仍然放进 SMOKE_SKIP —— 它会起 ffmpeg 子进程，冒烟跑几分钟不值当。
+    "warmWallpapers": [],
     "getStatus": [],
     "getFlowList": [],
     "getConfigList": [],
@@ -210,6 +214,9 @@ SMOKE_SKIP: set[str] = {
     #: ★ P16 —— 会删库街区的登录令牌文件 + ``data/kuro_练度.json`` 缓存。
     #: 等于把用户踢下线，冒烟绝对不该干这个。
     "kuroLogout",
+    #: ★ 2026-11-04 —— 后台起 ffmpeg 把 4K 壁纸转 webm（一段 20~60 秒）。
+    #: 不写用户数据，但会白烧几分钟 CPU；转码由专项测试覆盖。
+    "warmWallpapers",
 }
 
 #: 这些方法会真的启动引擎 / 改用户数据 —— 早期的不完整清单，

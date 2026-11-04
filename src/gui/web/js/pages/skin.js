@@ -67,7 +67,9 @@
 
   const state = {
     wallpapers: [],
-    currentId: ''
+    currentId: '',
+    //: 页面实例 —— 后台转码好了要就地重建卡片，buildWallpaperCard 需要它
+    app: null
   };
 
   P.ready(function () {
@@ -87,12 +89,19 @@
     const head = P.pageHead({ title: '主题皮肤' });
     section.appendChild(head.head);
 
+    //: 后台转码好了要重建卡片 —— 把页面实例存下来（见 applyWallpaperReady）
+    state.app = app;
+
     //: 两行说明（旧界面 L470-475 原话，逐字照抄）
+    //:
+    //: ★ 2026-11-04 改：Scene 型不再是「暂不支持」—— 心月狐那种 3D 场景壁纸，
+    //: 后端会从 ``scene.pkg`` 里把内嵌的 mp4 抠出来（``core/pkg_video.py``），
+    //: 再照常转 webm 播放。只有抠不出视频的 Scene / Web 型才真的不支持。
     section.appendChild(P.el('div', {
       class: 'skin-top-hint',
       html: '配色主题：点一下立刻生效，所有选择都会记住。<br>' +
             '壁纸：从本机 Wallpaper Engine 创意工坊读取' +
-            '（视频型可播放，Scene 型需要 WebGL 渲染，暂不支持）。'
+            '（视频型直接播放；Scene 型会尝试取出内嵌视频，取不到才需 WebGL）。'
     }));
 
     await loadWallpapers(app);
@@ -137,6 +146,48 @@
       }
     });
     section._offs = (section._offs || []).concat([off]);
+
+    //: ★ 订阅后台转码完成（2026-11-04）——
+    //:
+    //: QtWebEngine 没有 H.264 解码器，mp4 壁纸必须先转 webm。
+    //: 转码很慢（4K 20~60 秒），后端在 daemon 线程里一个个补，
+    //: 每好一个推一条 ``wallpaperReady`` → 这里把那张卡的
+    //: 缩略图和「使用这个壁纸」按钮点亮，**不用整页刷新**。
+    const offReady = window.Bridge.on('wallpaperReady', function (data) {
+      if (!data || !data.id) return;
+      applyWallpaperReady(String(data.id), String(data.url || ''));
+    });
+    section._offs = (section._offs || []).concat([offReady]);
+  }
+
+  /**
+   * 一张壁纸转码好了 → 就地重建那张卡（保留滚动位置和「使用中」状态）。
+   *
+   * ⚠ 只重建这一张，不重画整页：重建整页会让所有缩略图的
+   * ``<video>`` 重新加载，屏幕闪一下，而且会打断用户正在 hover 的那张。
+   */
+  function applyWallpaperReady(id, url) {
+    let hit = null;
+    for (const item of state.wallpapers) {
+      if (String(item.id) === id) { hit = item; break; }
+    }
+    if (!hit) return;
+    if (!url) return;
+    hit.url = url;
+    hit.supported = true;
+
+    const old = document.querySelector(
+      '.wallpaper-card[data-wp-id="' + id + '"]');
+    if (!old) return;   // 页面已经切走了
+    const fresh = buildWallpaperCard(hit, state.app);
+    if (old.parentNode) old.parentNode.replaceChild(fresh, old);
+    updateHint(document.querySelector('.skin-section-hint'));
+    //: 转好了，如果正好是当前壁纸也该换上新的 src
+    if (id === String(state.currentId) && state.app) {
+      state.app.setWallpaper({
+        id: id, title: hit.title, url: url, theme: hit.theme || null
+      });
+    }
   }
 
   async function loadWallpapers(app) {
@@ -164,6 +215,9 @@
    *
    * ⚠ 关键是**真实计数**，不是一句"共 N 个"——旧界面会告诉你
    * 有几个是能播的、其余为什么不能播。
+   *
+   * ★ 2026-11-04 文案改了：Scene 型（心月狐）现在会从 ``scene.pkg``
+   * 里抽内嵌视频，能播的就不该再说「不支持」。
    */
   function updateHint(el) {
     if (!el) return;
@@ -175,8 +229,16 @@
     const okCount = items.filter(function (w) {
       return w.supported !== false;
     }).length;
-    el.textContent = '扫到 ' + items.length + ' 个壁纸（可播放 ' + okCount +
-      ' 个视频型；Scene / Web 型需要 WebGL 渲染，暂不支持）。';
+    let text = '扫到 ' + items.length + ' 个壁纸（可播放 ' + okCount +
+      ' 个；取不到内嵌视频的 Scene / Web 型需要 WebGL 渲染）。';
+    //: ★ 有壁纸在后台转码时说明一下，免得用户以为这张卡坏了（2026-11-04）
+    const pending = items.filter(function (w) {
+      return w.theme && w.supported === false;
+    }).length;
+    if (pending > 0) {
+      text += ' 有 ' + pending + ' 个正在后台转码，转好会自动出现。';
+    }
+    el.textContent = text;
   }
 
   // ════════════════════════════════════════════════════════════════════════
@@ -262,12 +324,37 @@
     //
     //: ``("▶ 视频" if wp_type == "video" else f"{wp_type}") if ok``
     //: —— 只有 supported 的才显示；不支持的不显示类型（按钮那边已经说明原因）
-    const supportedType = supported;
-    if (supportedType && item.type) {
+    //
+    //: ★ 2026-11-04：Scene 型（心月狐）现在也能播了 —— 后端从 ``scene.pkg``
+    //: 里把内嵌视频抠出来交给 ``<video>``，所以对用户来说它就是视频。
+    //: 显示原始类型名 "scene" 只会让人以为「不支持」，统一按播放形态标。
+    if (supported) {
       card.appendChild(P.el('div', {
         class: 'wallpaper-type',
-        text: item.type === 'video' ? '▶ 视频' : String(item.type)
+        text: '▶ 视频'
       }));
+    }
+
+    // ── ②-c ★ 精选主题：主色角标（2026-11-04）──
+    //
+    //: 用户点名要「心月狐红色 / 爱弥斯粉红 / 千咲黑红」这几个主题。
+    //: 自动抽色给不出这些色（实测心月狐抽成橙、千咲抽成紫），
+    //: 所以主色是**人工挑好写死**在后端 ``core/wallpaper_themes.py`` 里的，
+    //: 这里只是把主题名和色块显示出来，让用户知道选这套会是什么颜色。
+    if (item.theme && item.theme.primary) {
+      const themeRow = P.el('div', { class: 'wallpaper-theme' });
+      themeRow.appendChild(P.el('span', {
+        class: 'wallpaper-theme-dot',
+        style: 'background-color:' + String(item.theme.primary)
+      }));
+      themeRow.appendChild(P.el('span', {
+        class: 'wallpaper-theme-name',
+        text: String(item.theme.name || '') + ' 主题'
+      }));
+      if (item.theme.desc) {
+        themeRow.title = String(item.theme.desc);
+      }
+      card.appendChild(themeRow);
     }
 
     // ── ③ 按钮 / 不支持说明 ──

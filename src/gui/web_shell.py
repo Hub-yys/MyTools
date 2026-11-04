@@ -1770,6 +1770,19 @@ class WebShell(QObject):
             return
         logger.info("web_shell：页面加载完成")
 
+        #: ★ 后台补转壁纸（2026-11-04）
+        #:
+        #: QtWebEngine 没有 H.264 解码器，mp4 必须先转 webm 才能给
+        #: ``<video>``。之前 Web 链路**从来不转**（只认已有缓存），
+        #: 于是新加的壁纸一直「无缩略图」。放这里而不是 build() 里：
+        #: 页面已经能接收 ``wallpaperReady`` 事件了，转好一个点亮一个。
+        #: 转码在 daemon 线程里跑，不会卡住主线程。
+        try:
+            if self._bridge is not None:
+                self._bridge.warmWallpapers()
+        except Exception:  # noqa: BLE001
+            logger.warning("web_shell：壁纸预热启动失败", exc_info=True)
+
     # ---------------------------------------------------------------- 推送
     def push_log(self, text: str, level: str = "info") -> None:
         """往页面推一行日志（任务页可见）。"""

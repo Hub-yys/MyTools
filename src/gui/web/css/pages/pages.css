@@ -1512,6 +1512,32 @@
   white-space: nowrap;
 }
 
+/* ★ 精选主题角标（2026-11-04）
+   主色是后端 ``core/wallpaper_themes.py`` 里人工挑好写死的
+   —— 自动抽色给不出用户点名的红/粉红/黑红，见那个文件的说明。 */
+.wallpaper-theme {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.4;
+}
+
+.wallpaper-theme-dot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+.wallpaper-theme-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 
 /* ── P4 遗留的皮肤选择卡样式（当前不再渲染，保留备用）── */
 .skin-grid {

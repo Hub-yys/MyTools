@@ -57,6 +57,7 @@ import ast
 import json
 import logging
 import os
+import threading
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -800,6 +801,13 @@ class WebBridge(QObject):
         #: 紫色 ``#8B7CFF``。用户 2026-11-04：「守岸人主题是蓝色，所有相关的
         #: 按钮应该是蓝色」。这里自己抽一次，结果按壁纸 id 缓存。
         self._accent_cache: tuple = ("", "", 0.0)
+        #: ★ 壁纸转码线程（2026-11-04）—— 见 ``_warm_wallpaper_cache``
+        #:
+        #: QtWebEngine 没有 H.264 解码器，mp4 必须先转成 webm 才能给
+        #: ``<video>``。之前 Web 链路**从来不转**（只认已有缓存），
+        #: 于是新加的壁纸一直显示「（无缩略图）」。现在后台补转，
+        #: 转好一个就推一条 ``wallpaperReady`` 让页面重画。
+        self._wallpaper_warm_thread = None
         #: ★ 上一次设给 qfluentwidgets 的全局主题色（幂等用）——
         #: 见 ``_apply_qt_theme_color``。关闭确认框那个 Qt 原生对话框
         #: 的按钮底色只认这个，不认 CSS 变量。
@@ -5058,7 +5066,8 @@ class WebBridge(QObject):
         ⚠ ``url`` 是 **HTTP URL**（``media_server``），不是文件路径 ——
         见 :mod:`src.core.media_server` 模块文档：``file://`` 会被同源策略拦。
         """
-        payload = {"id": "", "title": "", "url": "", "items": []}
+        payload = {"id": "", "title": "", "url": "", "items": [],
+                   "theme": None}
         try:
             items = self._scan_wallpapers()
             payload["items"] = items
@@ -5068,6 +5077,7 @@ class WebBridge(QObject):
                     "id": current.get("id", ""),
                     "title": current.get("title", ""),
                     "url": current.get("url", ""),
+                    "theme": current.get("theme"),
                 })
                 self._wallpaper_id = payload["id"]
         except Exception:  # noqa: BLE001
@@ -5825,6 +5835,31 @@ class WebBridge(QObject):
             _clear()
             return ""
 
+        #: ②b 精选主题：主色是**写死的**，不抽色
+        #:
+        #: 用户 2026-11-04 点名要「心月狐红色 / 爱弥斯粉红 / 千咲黑红」，
+        #: 但实测自动抽色给出来的是橙（#F2A574）、粉红（#DE6B86）、
+        #: 紫（#8569DB）—— 跟用户说的完全不是一回事。人的审美判断
+        #: 机器抽不出来，只能人工挑好写进 :mod:`wallpaper_themes`。
+        try:
+            from ..core import wallpaper_themes  # noqa: PLC0415
+
+            theme = wallpaper_themes.theme_for_wallpaper(wp_id)
+        except Exception:  # noqa: BLE001
+            theme = None
+        if theme:
+            primary = str(theme.get("primary") or "")
+            tint = float(theme.get("tint") or 0.0)
+            self._accent_cache = (wp_id, primary, tint)
+            try:
+                skins.apply_wallpaper_palette(primary, tint, repaint=False)
+            except Exception:  # noqa: BLE001
+                logger.warning("壁纸配色：精选主题应用失败", exc_info=True)
+                return ""
+            logger.info("壁纸配色：%s 用精选主题「%s」primary=%s tint=%.2f",
+                        wp_id, theme.get("name", ""), primary, tint)
+            return primary
+
         #: ③ 缓存命中（同一个壁纸只抽一次）
         cache_id, cache_primary, cache_tint = self._accent_cache
         if cache_id == wp_id and cache_primary:
@@ -5972,16 +6007,103 @@ class WebBridge(QObject):
                         #: ★ url_for 会按文件实际所在目录自动选 URL 前缀
                         #: （见 media_server.url_for 的说明），不用在这里判断
                         url = media_server.url_for(src)
+                theme = None
+                try:
+                    from ..core import wallpaper_themes  # noqa: PLC0415
+
+                    theme = wallpaper_themes.theme_for_wallpaper(
+                        item.get("id", ""))
+                except Exception:  # noqa: BLE001
+                    theme = None
                 out.append({
                     "id": item.get("id", ""),
                     "title": item.get("title", ""),
                     "url": url,
                     "supported": bool(url),
                     "type": item.get("type", ""),
+                    #: 精选主题（主色写死的那些）；普通壁纸是 None
+                    "theme": ({k: theme.get(k) for k in
+                               ("name", "primary", "tint", "desc")}
+                              if theme else None),
                 })
         except Exception:  # noqa: BLE001
             logger.warning("扫壁纸失败", exc_info=True)
         return out
+
+    def warmWallpapers(self) -> None:
+        """★ 后台把白名单壁纸的 mp4 转成 webm（2026-11-04 加）。
+
+        ## 为什么需要它
+
+        :meth:`_scan_wallpapers` 只说「缓存里有的才给 URL」——
+        转码很慢（4K 一段 20~60 秒），不能在 ``@Slot`` 里同步跑。
+        结果就是：**新加的壁纸永远显示「（无缩略图）」「不支持」**，
+        用户会以为功能坏了。之前只有 Qt 版界面调
+        :func:`webm_transcode.prepare`，Web 外壳一次都没调过。
+
+        ## 做法
+
+        * 起一个 daemon 线程，按白名单顺序一个一个转（**串行** ——
+          ffmpeg 自己就吃满多核，并发只会互相抢 CPU 反而更慢）。
+        * 每转好一个就 :meth:`emitEvent` 一条 ``wallpaperReady``，
+          页面收到后把那张卡的缩略图/按钮点亮，不用整页刷新。
+        * 已经有缓存 / 已经是 webm 的直接跳过。
+        * 幂等：线程还活着就不重复起。
+
+        被 :class:`~src.gui.web_shell.WebShell` 在页面加载完后调一次。
+        """
+        thread = getattr(self, "_wallpaper_warm_thread", None)
+        if thread is not None and thread.is_alive():
+            return
+
+        def _worker() -> None:
+            try:
+                from ..core import wallpaper_engine, webm_transcode  # noqa: PLC0415
+
+                if not webm_transcode.find_ffmpeg():
+                    logger.info("壁纸预热：没找到 ffmpeg，跳过转码")
+                    return
+                for item in wallpaper_engine.scan_wallpapers():
+                    video = item.get("video_path") or ""
+                    if not video:
+                        continue
+                    suffix = os.path.splitext(video)[1].lower()
+                    if suffix in (".webm", ".ogv", ".ogg"):
+                        continue
+                    if webm_transcode.is_ready(video):
+                        continue
+                    logger.info("壁纸预热：开始转码 %s", item.get("title", ""))
+                    out = webm_transcode.prepare(video)
+                    if not out:
+                        logger.warning("壁纸预热：转码失败 %s",
+                                       item.get("title", ""))
+                        continue
+                    #: 转好了 → 让页面把这张卡点亮
+                    try:
+                        from ..core import media_server  # noqa: PLC0415
+
+                        url = media_server.url_for(out)
+                    except Exception:  # noqa: BLE001
+                        url = ""
+                    if url:
+                        self.emitEvent("wallpaperReady", {
+                            "id": item.get("id", ""),
+                            "title": item.get("title", ""),
+                            "url": url,
+                        })
+                        logger.info("壁纸预热：%s 就绪", item.get("title", ""))
+                logger.info("壁纸预热：全部处理完")
+            except Exception:  # noqa: BLE001
+                logger.warning("壁纸预热失败", exc_info=True)
+
+        try:
+            #: daemon=True —— 关程序时不用等转码跑完（可能还剩几十秒）
+            thread = threading.Thread(
+                target=_worker, name="mytools-wallpaper-warm", daemon=True)
+            thread.start()
+            self._wallpaper_warm_thread = thread
+        except Exception:  # noqa: BLE001
+            logger.warning("壁纸预热线程启动失败", exc_info=True)
 
 
 # ---------------------------------------------------------------- 小工具
