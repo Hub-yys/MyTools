@@ -58,6 +58,11 @@ vendor/okww/assets/echo_model/
 # 占位图可以用 tools/make_placeholders.py 重新生成。
 assets/game/
 
+# 安装包自带的壁纸（7 段转好的 VP9 webm，共约 78 MB）
+#   同 assets/game/ 的理由：第三方画面衍生物，版权不归我们，不进仓库。
+#   打包前跑 tools/prepare_bundled_wallpapers.py 生成（幂等，已存在的会跳过）。
+assets/wallpapers/
+
 # 离线依赖缓存与测试截图（本地有用，不进仓库）
 wheels/
 tests/_shots/

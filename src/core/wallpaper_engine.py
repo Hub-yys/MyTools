@@ -266,6 +266,85 @@ def user_video_dir() -> Path | None:
 USER_VIDEO_EXTS = (".mp4", ".webm", ".mov", ".mkv", ".m4v", ".avi")
 
 
+#: ★ 安装包自带壁纸的子目录（相对程序资源目录）
+#:
+#: ``<程序目录>/assets/wallpapers/<创意工坊 id>.webm``
+#: —— 打包时由 ``packaging/mytools.spec`` 从 ``assets/wallpapers/`` 收进去。
+BUNDLED_SUBDIR = ("assets", "wallpapers")
+
+
+def bundled_video_dir() -> Path | None:
+    """★ 安装包**自带**的壁纸目录（2026-11-04 加）。
+
+    用户：
+
+        > 视频单独打包放在一个文件夹，安装完后，壁纸就读这个路径下的，不行吗
+
+    可以，而且比读创意工坊更稳 —— 装完就有，不依赖 Wallpaper Engine
+    有没有装、有没有订阅、订阅还在不在。
+
+    ⚠ 目录里放的是**已经转好的 VP9 webm**，不是源 mp4：
+    QtWebEngine 不带 H.264 解码器（见 ``packaging/mytools.spec`` 里
+    ffmpeg 那一大段注释），源 mp4 放进去也只是摆着。
+    文件名 = 创意工坊 id（``3340494990.webm``），这样和精选主题对得上。
+    """
+    try:
+        from . import paths  # noqa: PLC0415
+
+        d = paths.resource_dir().joinpath(*BUNDLED_SUBDIR)
+    except Exception:  # noqa: BLE001
+        return None
+    return d if d.is_dir() else None
+
+
+def bundled_video_path(wp_id: str) -> str:
+    """这张壁纸有没有自带的 webm？有就返回路径，没有返回空串。"""
+    d = bundled_video_dir()
+    key = str(wp_id or "").strip()
+    if d is None or not key:
+        return ""
+    p = d / f"{key}.webm"
+    try:
+        if p.is_file() and p.stat().st_size > 4096:
+            return str(p)
+    except OSError:
+        return ""
+    return ""
+
+
+def _items_from_themes() -> list[dict]:
+    """没装 Wallpaper Engine 时，用「自带 webm + 精选主题表」拼出列表。
+
+    有创意工坊目录时不会走这里（那边标题是上游给的真名）。
+    """
+    out: list[dict] = []
+    try:
+        from . import wallpaper_themes  # noqa: PLC0415
+
+        themes = wallpaper_themes.all_themes()
+    except Exception:  # noqa: BLE001
+        return out
+    for t in themes:
+        wp_id = str(t.get("wallpaper_id") or "")
+        video = bundled_video_path(wp_id)
+        if not video:
+            continue
+        out.append({
+            "id": wp_id,
+            "title": str(t.get("name") or wp_id),
+            "type": "video",
+            "dir": "",
+            "main_file": "",
+            "video_path": video,
+            "pkg_path": "",
+            "preview_path": "",
+            "supported": True,
+            #: 这条是从安装包自带的，不是创意工坊扫出来的
+            "is_bundled": True,
+        })
+    return out
+
+
 def scan_user_videos() -> list[dict]:
     """扫 ``<用户数据>/wallpapers/`` 下的视频（用户自备）。
 
@@ -326,6 +405,14 @@ def scan_wallpapers() -> list[dict]:
     """
     root = find_workshop_dir()
     if root is None:
+        #: ★ 2026-11-04：没装 Wallpaper Engine（或者创意工坊里一个都没有）
+        #: 时**不能返回空列表** —— 安装包自带了 7 段转好的 webm，
+        #: 装完就该能直接用。见 :func:`_items_from_themes`。
+        bundled = _items_from_themes()
+        if bundled:
+            logger.info("壁纸：没找到创意工坊，用安装包自带的 %d 个", len(bundled))
+            bundled.extend(scan_user_videos())
+            return bundled
         logger.info("壁纸：没找到 Wallpaper Engine 创意工坊目录")
         return []
     items: list[dict] = []
@@ -367,6 +454,21 @@ def scan_wallpapers() -> list[dict]:
         else:
             logger.warning("壁纸：白名单 %s 一个都没匹配到，显示全部",
                            allow)
+
+    #: ★ 安装包自带的 webm **优先于源 mp4**（2026-11-04）
+    #:
+    #: 7 个精选主题都随包带了一段转好的 VP9 webm（``assets/wallpapers/<id>.webm``）。
+    #: 它比读创意工坊的源 mp4 好三点：
+    #:   ① 不用现场转码（每张 20~60 秒，第一次进壁纸页要等好几分钟）；
+    #:   ② 用户退订 / 删了创意工坊目录也照样能播；
+    #:   ③ 缓存目录被清掉也不用重转。
+    #: 所以命中自带件时直接把 ``video_path`` 换过去。
+    for info in items:
+        bundled = bundled_video_path(info.get("id", ""))
+        if bundled:
+            info["video_path"] = bundled
+            info["supported"] = True
+            info["is_bundled"] = True
 
     #: ★ scene 型：包里内嵌视频的，抽出来当普通视频壁纸用
     for info in items:
@@ -429,20 +531,84 @@ def set_allowed_titles(titles) -> None:
     _ALLOWED_TITLES = tuple(str(t) for t in (titles or ()) if str(t).strip())
 
 
-def wallpaper_by_id(wp_id: str) -> dict | None:
+def wallpaper_by_id(wp_id: str, *, prefer_bundled: bool = True) -> dict | None:
     """按目录名（Steam 创意工坊 id）找壁纸。
 
     ⚠ 白名单外的壁纸也**查得到** —— 白名单只影响列表展示，
     不影响"当前选中的那个"（否则取消/恢复时会找不到）。
+
+    :param prefer_bundled: 有安装包自带的 webm 时，``video_path`` 用它
+        （不用转码、不怕用户退订）。**打包脚本要传 False** ——
+        它需要的是创意工坊里的**源文件**，不是已经转好的自己。
     """
+    key = str(wp_id)
     root = find_workshop_dir()
     if root is not None:
-        p = root / str(wp_id)
+        p = root / key
         if p.is_dir():
             info = read_project(p)
             if info is not None:
+                if prefer_bundled:
+                    #: 有自带 webm 就用自带的（不用转码，也不怕用户退订）
+                    bundled = bundled_video_path(key)
+                    if bundled:
+                        info["video_path"] = bundled
+                        info["supported"] = True
+                        info["is_bundled"] = True
+                elif not info.get("video_path"):
+                    #: 调用方要**源文件**（打包脚本），scene 型得现抠
+                    resolved = resolve_scene_video(info)
+                    if resolved:
+                        info["video_path"] = resolved
+                        info["supported"] = True
                 return info
     for it in scan_wallpapers():
-        if it["id"] == str(wp_id):
+        if it["id"] == key:
+            if not prefer_bundled:
+                original = _original_video_path(key)
+                if original:
+                    it = dict(it)
+                    it["video_path"] = original
+                    it.pop("is_bundled", None)
             return it
+    if not prefer_bundled:
+        #: 只要源文件就不要兜底（兜底全是自带件）
+        return None
+    #: ★ 2026-11-04：创意工坊里没有、但安装包自带这段 webm
+    #: （用户没装 Wallpaper Engine 的机器上就是这条路）
+    bundled = bundled_video_path(key)
+    if bundled:
+        for it in _items_from_themes():
+            if it["id"] == key:
+                return it
+        return {
+            "id": key,
+            "title": key,
+            "type": "video",
+            "dir": "",
+            "main_file": "",
+            "video_path": bundled,
+            "pkg_path": "",
+            "preview_path": "",
+            "supported": True,
+            "is_bundled": True,
+        }
     return None
+
+
+def _original_video_path(wp_id: str) -> str:
+    """创意工坊里的**源**视频（无视安装包自带的 webm）。"""
+    root = find_workshop_dir()
+    key = str(wp_id)
+    if root is None:
+        return ""
+    p = root / key
+    if not p.is_dir():
+        return ""
+    info = read_project(p)
+    if info is None:
+        return ""
+    video = info.get("video_path") or ""
+    if video:
+        return video
+    return resolve_scene_video(info)

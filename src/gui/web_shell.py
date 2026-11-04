@@ -267,6 +267,18 @@ def web_base_url(*, start_media: bool = True) -> str:
         except Exception:  # noqa: BLE001
             pass
 
+        #: ★ 安装包自带的壁纸（转好的 VP9 webm，见 core/wallpaper_engine.py
+        #: 的 bundled_video_dir）。**必须挂出去** —— 那些文件在程序目录里，
+        #: 不在转码缓存目录下，不挂的话 ``url_for`` 只能按文件名兜底，
+        #: 拼出来的 URL 404，装完还是「（无缩略图）」。
+        try:
+            bundled_dir = paths.resource_dir("assets", "wallpapers")
+            if bundled_dir.is_dir():
+                media_server.mount("/bundled/", bundled_dir)
+                logger.info("web_shell：自带壁纸已挂载 %s", bundled_dir)
+        except Exception:  # noqa: BLE001
+            logger.warning("web_shell：挂载自带壁纸失败", exc_info=True)
+
         #: ★ 游戏素材（资源库要的头像 / 声骸 / 套装 / 武器）
         #: 只挂白名单里的子目录 —— 见 GAME_ASSET_SUBDIRS 的说明
         mounted = []

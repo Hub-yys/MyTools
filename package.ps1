@@ -1,4 +1,4 @@
-﻿<#
+<#
     WutheringWavesTools（鸣潮工具箱）一键打包：PyInstaller → Inno Setup 安装包
 
         .\package.ps1                  # 版本号自动取 src\app_config.py 的 APP_VERSION
@@ -81,6 +81,17 @@ if (-not (Test-Path $Icon)) {
 }
 
 # ---------------------------------------------------------------- 2. PyInstaller
+# 打包前先把 7 段精选主题壁纸转成 webm 放到 assets\wallpapers\，随包发出去。
+# 用户 2026-11-04：「视频单独打包放在一个文件夹，安装完后，壁纸就读这个路径下的」
+#   —— 装完就有壁纸，不用等转码，也不依赖 Wallpaper Engine 订阅。
+# 幂等：已存在的会跳过，所以日常打包只多花一两秒（第一次约 2 分钟）。
+Step '准备自带壁纸（转 webm，已存在的跳过）'
+& $Python (Join-Path $Root 'tools\\prepare_bundled_wallpapers.py')
+if ($LASTEXITCODE -ne 0) { Fail '准备自带壁纸失败（见上面的输出）' }
+Write-Host ('   assets\wallpapers: {0:N1} MB' -f
+    ((Get-ChildItem (Join-Path $Root 'assets\\wallpapers') -File -ErrorAction SilentlyContinue |
+        Measure-Object Length -Sum).Sum / 1MB))
+
 # 交给 PyInstaller 自己删旧产物（--noconfirm）：它用 Python 删，
 # 比在这个脚本里 Remove-Item -Recurse 上千个文件稳（那会触发批量删除确认）
 Step 'PyInstaller 打包（onedir，约 1 分钟）'

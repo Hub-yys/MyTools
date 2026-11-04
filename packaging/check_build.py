@@ -93,6 +93,17 @@ REQUIRED_DATA = [
     #   这件事只有 ffmpeg 能做（``core/webm_transcode.py``）。
     #   缺了它，7 张卡全显示「缺 ffmpeg」，点了没反应 —— 而且**全程不报错**。
     "tools/ffmpeg.exe",
+    # ★ 2026-11-04（用户：「视频单独打包放在一个文件夹，安装完后，壁纸就读这个
+    #   路径下的」）：安装包自带 7 段转好的 VP9 webm，装完就有壁纸，
+    #   不用等转码、也不依赖 Wallpaper Engine。
+    #   文件名是创意工坊 id，和 ``core/wallpaper_themes.py`` 对得上。
+    "assets/wallpapers/3340494990.webm",       # 守岸人（默认壁纸）
+    "assets/wallpapers/3494867116.webm",       # 坎特蕾拉
+    "assets/wallpapers/3816877839.webm",       # 心月狐（原 scene 型，从 pkg 抠的）
+    "assets/wallpapers/3719212255.webm",       # 爱弥斯
+    "assets/wallpapers/3609013499.webm",       # 千咲
+    "assets/wallpapers/3322544922.webm",       # 长离
+    "assets/wallpapers/3570276722.webm",       # 尤诺
 ]
 
 FAILURES: list[str] = []
