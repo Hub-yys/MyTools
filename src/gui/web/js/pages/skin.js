@@ -370,18 +370,24 @@
     const actions = P.el('div', { class: 'wallpaper-actions' });
 
     if (supported) {
-      //: ★ 2026-11-04（用户圈图）：**没有「取消使用」** —— 「取消使用之后用什么的？
-      //: 原生的吗」这句是对的：关掉壁纸只会退回一片深色底，对用户没有任何价值，
-      //: 只会让人误以为能"卸载壁纸"。所以每张卡（含当前这张）按钮恒为
-      //: 「使用这个壁纸」，点当前那张 = 幂等重设一次。
-      //: 后端 ``setWallpaper("")``（空串 = 关壁纸）**保留不动** —— 它不是死代码，
-      //: ``_apply_wallpaper_accent()`` 靠「没有当前壁纸」退回默认精选主题色。
+      //: ★ 2026-11-04（用户圈图）：「取消使用」删掉，只能换不能关 ——
+      //: 「取消使用之后用什么的？原生的吗」这句是对的：关掉壁纸只会退回
+      //: 一片深色底，对用户没有任何价值。后端 ``setWallpaper("")``
+      //: （空串 = 关壁纸）保留不动 —— ``_apply_wallpaper_accent()``
+      //: 靠「没有当前壁纸」退回默认精选主题色。
+      //:
+      //: ★ 2026-11-04（第二次反馈）：「使用中应该占用着使用这个壁纸，
+      //: 已经在使用中了，怎么还能使用？」—— 当前那张的按钮**置灰 + 改文案**，
+      //: 否则整排 7 个一模一样的实心按钮，看着像哪张都能点。
+      //: 文案用「正在使用」而不是「使用中」，是为了跟旁边那个绿色角标
+      //: （也是「使用中」）区分开，不然一行里出现两个同样的词。
       const btn = P.button('使用这个壁纸', {
         kind: 'primary',
         size: 'sm',
         onClick: function () { applyWallpaper(item, app, btn); }
       });
       btn.dataset.action = 'apply';
+      paintButton(btn, active);
       actions.appendChild(btn);
     } else {
       //: ★ 旧界面：``supported=False`` 时按钮禁用并标注原因
@@ -401,22 +407,35 @@
   // ════════════════════════════════════════════════════════════════════════
   //  切换壁纸
   // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 按「是否当前壁纸」给按钮上色 / 改文案。
+   *
+   * 当前那张：文案「正在使用」+ ``disabled``（点了也没有任何意义的东西，
+   * 就不该是可点的样子）；其余：主色实心「使用这个壁纸」。
+   *
+   * ⚠ 单独抽成函数是因为有**四处**要调它（建卡、切换成功、切换失败回滚、
+   * ``refreshActive()`` 重算角标），散着写必然出现「点完永久停在切换中…」
+   * 那种漏复原的 bug（2026-11-04 截到过一次）。
+   */
+  function paintButton(btn, active) {
+    if (!btn) return;
+    btn.disabled = !!active;
+    btn.textContent = active ? '正在使用' : '使用这个壁纸';
+  }
+
   async function applyWallpaper(item, app, btn) {
     const id = String(item.id || '');
 
     btn.disabled = true;
     btn.textContent = '切换中…';
 
-    //: ★ 2026-11-04：原来当前那张会传空串关掉壁纸（旧界面 L328 ``chosen.emit("")``）。
-    //: 用户要求去掉「取消使用」后，这里恒传真实 id —— 点当前那张就是重设一次，
-    //: 用来把「壁纸/主题色被我调乱了」一键拉回正轨。
+    //: 恒传真实 id —— 「取消使用」已删，不再有"传空串关壁纸"这条路。
     const target = id;
     const result = await P.call('setWallpaper', target);
 
-    btn.disabled = false;
-
     if (!result.ok) {
-      btn.textContent = '使用这个壁纸';
+      paintButton(btn, false);
       app.appendLog('切换壁纸失败：' + (result.missing
         ? '桥接缺少 setWallpaper'
         : String(result.error && result.error.message || result.error)), 'error');
@@ -425,24 +444,23 @@
 
     const data = result.data || {};
     if (data.ok === false) {
-      btn.textContent = '使用这个壁纸';
+      paintButton(btn, false);
       app.appendLog('切换壁纸失败：' + (data.message || data.reason || '未知原因'),
         'warn');
       return;
     }
 
-    //: 更新本地状态 + 界面
-    //: ★ 按钮文案要自己复原 —— refreshActive() 现在**不管按钮**了
-    //: （「取消使用」删掉后文案恒为一句，见那边注释）。漏了这行，
-    //: 点完就永久停在「切换中…」（2026-11-04 截图实测抓到）。
-    btn.textContent = '使用这个壁纸';
+    //: 更新本地状态 + 界面。按钮自己这行**必须**在 refreshActive() 之前复原
+    //: 一次 —— 切换成功后这张就从"可点"变成"正在使用"，由 refreshActive()
+    //: 统一重算；这里先复位是为了防止 refreshActive() 因为找不到卡片而漏掉它。
     state.currentId = target;
+    paintButton(btn, true);
     app.setWallpaper(data);
     refreshActive();
     updateHint(document.querySelector('.skin-section-hint'));
   }
 
-  /** 重新标「使用中」角标（不重建卡片，避免视频重新加载）*/
+  /** 重新标「使用中」角标 + 重算按钮状态（不重建卡片，避免视频重新加载）*/
   function refreshActive() {
     const cards = document.querySelectorAll('.wallpaper-card');
     for (const card of cards) {
@@ -464,9 +482,8 @@
         badge.remove();
       }
 
-      //: ★ 2026-11-04：「取消使用」已删，按钮文案不再随激活态变化 ——
-      //: 当前这张靠「使用中」角标（上面那段）标出来就够了。
-      //: 这里**故意不动按钮**：动它就要写回一句文案，等于把文案又散成两处。
+      //: 按钮跟着一起重算：当前那张置灰「正在使用」，其余恢复可点。
+      paintButton(card.querySelector('[data-action="apply"]'), active);
     }
   }
 })();
