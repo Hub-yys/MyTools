@@ -1075,24 +1075,6 @@ class MainWindow(FluentWindow):
         #: 无条件重刷会白花那 1.4 秒。
         self._repaint_skin_if_needed()
 
-        #: ★★★ 2026-10-30 动态壁纸兜底（参照 dsh-plugin-wallpaper-engine）。
-        #:
-        #: 壁纸正常由 ``skins._paint`` 在换肤时铺上；但 ``__init__`` 那次
-        #: 窗口还不可见，``_paint`` 的 targets 是空的 —— 壁纸那时铺不上。
-        #:
-        #: 所以这里**再补一次**：窗口真显示了，几何也定了，这时候铺才对。
-        #: ``apply_wallpaper`` 内部有"已经在播同一个就直接返回"的判断，
-        #: 重复调用不会重启视频（否则每次恢复窗口都从头播）。
-        try:
-            from src.core import skins as _skins2
-
-            from . import wallpaper_layer as _wl
-
-            _wl.apply_wallpaper(self, _skins2.current_skin())
-        except Exception:  # noqa: BLE001 - 壁纸失败绝不能挡住显示
-            import logging as _lg
-
-            _lg.getLogger(__name__).warning("显示后铺壁纸失败", exc_info=True)
 
     def _repaint_skin_if_needed(self) -> None:
         """窗口显示后若发现自己**没被刷过**，补刷一次皮肤。

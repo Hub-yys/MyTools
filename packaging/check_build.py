@@ -76,6 +76,15 @@ REQUIRED_DATA = [
     #   这里改点名 ``echo_stack.png``（声骸堆叠图标，仍在用）。
     "vendor/okww/ok_tasks/assets/coco_annotations.json",
     "vendor/okww/ok_tasks/assets/images/echo_stack.png",
+    # ⚠⚠ 2026-11-04：之前这里一条 Web 界面都没有 —— 打出来的包
+    #   ``src/gui/web_shell.py`` 的 ``WEB_DIR`` 指向不存在的目录，
+    #   ``web_base_url()`` 校验不到 index.html 抛异常、``create_shell()`` 捕获后
+    #   **静默退回旧 Qt 界面**。用户装的正式版一直在跑老界面，全程零报错。
+    "src/gui/web/index.html",
+    "src/gui/web/js/app.js",
+    "src/gui/web/css/base.css",
+    "src/gui/web/css/glass.css",
+    "src/gui/web/css/pages/pages.css",
 ]
 
 FAILURES: list[str] = []

@@ -783,18 +783,6 @@ class SkinInterface(ScrollArea):
                 _skins.apply_card_backgrounds()
             except Exception:  # noqa: BLE001
                 pass
-            #: 更新 QML 里的 tintValue（用 scrim 压暗壁纸画面）
-            try:
-                from . import wallpaper_quick as _wq
-
-                lay = _wq.current_layer()
-                if lay is not None and lay._view is not None:
-                    root = lay._view.rootObject()
-                    if root is not None:
-                        root.setProperty("tintValue",
-                                         float(WS.get("scrim") or 0.0))
-            except Exception:  # noqa: BLE001
-                pass
         except Exception:  # noqa: BLE001
             logger.debug("壁纸外观：重刷失败", exc_info=True)
 
@@ -926,7 +914,6 @@ class SkinInterface(ScrollArea):
         """
         try:
             from ..core import wallpaper_state
-            from . import wallpaper_layer
         except Exception:  # noqa: BLE001
             logger.warning("壁纸：导入失败", exc_info=True)
             return
@@ -934,7 +921,6 @@ class SkinInterface(ScrollArea):
         window = self.window()
         if not wp_id:
             wallpaper_state.set_current("")
-            wallpaper_layer.shutdown()
             #: ★ 清缓存再重刷 —— 不然 ``_paint`` 看到"QSS 没变"就跳过，
             #: 界面还挂着壁纸模式的透明 QSS，看着像"点了没反应"。
             try:
@@ -961,12 +947,14 @@ class SkinInterface(ScrollArea):
             #: 卡片标「使用中」的是「坎特蕾拉」，但壁纸播的还是上一个画面。
             #:
             #: 根因：``set_current(wp_id)`` 只存了 id、**没存 path**。
-            #: 而 ``wallpaper_layer.apply_wallpaper`` 读的是
+            #: 而 Web 外壳读的是
             #: ``wallpaper_state.current_path()`` —— 拿到空串后会去
             #: "按 id 重新扫描找路径"，那条路会重新 `scan_wallpapers()`，
             #: 既慢又可能因为排序/同名找错。
             #: → 这里直接把路径存下来，不留歧义。
             wallpaper_state.set_current(wp_id, info["video_path"])
+            #: 2026-11-04：Qt 侧壁纸引擎已删 —— 老界面只**记住选择**，
+            #: 真正的播放由 Web 外壳（HTML ``<video>``）负责。
             #: ★★★ 2026-10-31 **顺序很重要**：先铺壁纸，再重刷皮肤。
             #:
             #: 用户截图：「是不是上面的冲突了」——
@@ -980,40 +968,6 @@ class SkinInterface(ScrollArea):
             #:
             #: → 先 `apply_video`（让 `current_layer()` 有值），
             #: 再**清缓存**强制重刷，QSS 才会走玻璃分支。
-            wallpaper_layer.apply_video(window, info["video_path"])
-            #: ★ ① 先等壁纸层真的 start（apply_video 内部是同步的，
-            #: 但 Qt 的 QMediaPlayer 要等事件循环转一圈才真正 load）
-            app = None
-            try:
-                from PySide6.QtWidgets import QApplication as _QA  # noqa: PLC0415
-
-                app = _QA.instance()
-            except Exception:  # noqa: BLE001
-                app = None
-            if app is not None:
-                for _ in range(30):
-                    app.processEvents()
-
-            #: ★ ② 清缓存 → 全量重刷（走玻璃分支）
-            try:
-                skins.invalidate_paint_cache()
-            except AttributeError:
-                skins._PAINTED_QSS = ""              # noqa: SLF001
-                skins._PAINTED_WINDOWS = set()       # noqa: SLF001
-            skins.refresh_windows()
-
-            #: ★ ③ **再单独刷一次侧栏 + 标题栏**。
-            #:
-            #: 用户截图：「上面你没改」—— 标题栏还是一块实心板。
-            #:
-            #: 因为 `_paint` 里刷面板时，`current_layer()` 可能
-            #: 还没值（壁纸刚 apply_video，QMediaPlayer 还没就绪）。
-            #: 这里补一道，确保用的是玻璃分支。
-            try:
-                skins.refresh_glass_panels([window])
-            except Exception:  # noqa: BLE001
-                pass
-
             self._refresh_wallpapers()
         except Exception:  # noqa: BLE001
             logger.warning("壁纸：铺失败", exc_info=True)

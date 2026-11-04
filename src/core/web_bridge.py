@@ -796,8 +796,8 @@ class WebBridge(QObject):
         self._wallpaper_id = ""
         #: ★ 壁纸主色缓存 ``(壁纸 id, primary, tint)`` —— 见 ``_apply_wallpaper_accent``
         #:
-        #: Web 外壳从不走 Qt 那条壁纸链路（``wallpaper_dsh`` / ``wallpaper_quick``
-        #: 会调 ``skins.apply_wallpaper_palette``），所以主题色一直停在皮肤自带的
+        #: Web 外壳从不走 Qt 那条壁纸链路（那几条 2026-11-04 已整体删除；
+        #: 它们原本会调 ``skins.apply_wallpaper_palette``），所以主题色一直停在皮肤自带的
         #: 紫色 ``#8B7CFF``。用户 2026-11-04：「守岸人主题是蓝色，所有相关的
         #: 按钮应该是蓝色」。这里自己抽一次，结果按壁纸 id 缓存。
         self._accent_cache: tuple = ("", "", 0.0)
@@ -5783,8 +5783,8 @@ class WebBridge(QObject):
 
         ## 为什么 Web 外壳要自己来这一趟
 
-        Qt 版的壁纸层（``gui/wallpaper_quick.py``、``gui/wallpaper_dsh.py``）
-        会在播放时抓一帧、算主色、调 ``skins.apply_wallpaper_palette()``。
+        Qt 版的壁纸层（已随 3429 行死代码于 2026-11-04 删除）原本会在
+        播放时抓一帧、算主色、调 ``skins.apply_wallpaper_palette()``。
         **Web 外壳一条都不走** —— 它把 ``<video>`` 直接塞进页面，
         于是 ``skins._WALLPAPER_PRIMARY`` 永远是空串，``active_skin()``
         返回皮肤自带的主色，按钮就是紫的。

@@ -43,7 +43,7 @@
 ## 本模块的定位
 
   * 存参数（``wallpaper.json`` 旁边存一份）
-  * 给 :mod:`src.core.skins` 和 :mod:`src.gui.wallpaper_quick` 读
+  * 给 :mod:`src.core.skins` 和 Web 外壳（``src/gui/web/css/base.css``）读
   * 提供 UI（见 ``src/gui/wallpaper_settings.py``）
 """
 

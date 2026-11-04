@@ -189,8 +189,32 @@ def main(argv: list[str] | None = None) -> int:
 
     from src.core.registry import ToolRegistry
     from src.gui.compat import app_icon
-    from src.gui.main_window import MainWindow
     from src.tools import discover_tools
+
+    #: ★★★ 2026-11-04：``MainWindow`` **不在这里 import**。
+    #:
+    #: ## 为什么
+    #:
+    #: 它原来是这里的一行 ``from src.gui.main_window import MainWindow``，
+    #: 位置在 ``web_shell_enabled()`` 判断**之前** —— 于是即使 Web 外壳
+    #: 起得来，也会先白白加载一整套旧界面。
+    #:
+    #: 实测（``tmp_mainpath.py`` 统计 ``sys.modules``）：
+    #:
+    #:     走 main()      21 个 src.gui 模块 / 12,548 行
+    #:     只要 WebShell   6 个 src.gui 模块 /  3,744 行
+    #:
+    #: ``main_window.py`` 第 35-45 行逐行 import 了 11 个子模块
+    #: （``tray`` / ``config_interface`` / ``home_interface`` /
+    #: ``library_interface`` / ``nav_reorder`` / ``tasks_interface`` /
+    #: ``notify_page`` / ``skin_page`` / ``update_card`` / ``widgets``），
+    #: 这些全是 Qt 控件页，Web 模式下**一个都用不到**。
+    #:
+    #: ## 改成了什么
+    #:
+    #: 真正要建旧界面时（``window is None``，见下面兜底分支）才 import。
+    #: Python 的 import 有缓存，兜底路径多花的时间可以忽略；换了的是
+    #: 正常路径少 load 约 8,800 行模块代码 + 一堆 qfluentwidgets 子类。
 
     app = QApplication(sys.argv)
     # 应用级图标：任务栏、Alt+Tab、以及所有以 app 为父的对话框都用它。
@@ -227,10 +251,11 @@ def main(argv: list[str] | None = None) -> int:
     #:     23:04:24  壁纸：开始播放                     ← 才进主界面
     #:
     #: 用户看到的就是"点了没反应，6 秒后才出来" —— 观感上就是"进不去"。
-    #: 壁纸本身是好的（下面 ``wallpaper_layer`` 在 ``showEvent`` 里铺）。
     #:
-    #: 模块 ``src/gui/startup_splash.py`` **保留着**（没删），
-    #: 以后想启用把它调回来就行。
+    #: ## 2026-11-04：模块已删除
+    #:
+    #: ``src/gui/startup_splash.py`` 连同四套 Qt 侧壁纸引擎一起删了
+    #: （共 3429 行死代码）。以后要做启动动画请**重写**，别指望调回来。
 
     # ★★★ 2026-11-01 新增：**整个窗口 = 一个 HTML 页面**（DSH 架构）
     #
@@ -289,6 +314,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if window is None:
         #: 旧界面（默认路径，也是新外壳的兜底）
+        #:
+        #: ★ 2026-11-04：``MainWindow`` 在这里才 import（原来在文件顶部的
+        #: import 区，见上面那段注释）。Web 外壳能起来时这段不执行，
+        #: 21 个 Qt 界面模块就一个都不会加载。
+        from src.gui.main_window import MainWindow  # noqa: PLC0415
+
         window = MainWindow()
         window.show()
         #: 旧界面的托盘由 ``MainWindow.__init__`` 里的 ``_setup_tray()`` 负责，

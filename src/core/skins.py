@@ -63,7 +63,7 @@ SKINS: tuple[dict, ...] = (
     #    * 文字/强调色/卡片边框 这些**配色令牌**
     #    * 深色底（壁纸没铺时 / 加载中时的兜底）
     #
-    #  界面背景由**壁纸**负责（见 `gui/wallpaper_layer.py`）。
+    #  界面背景由**壁纸**负责（Web 外壳的 HTML `<video>` + CSS，见 gui/web/）。
     # ══════════════════════════════════════════════════════════════════
     {
         "id": "glass",
@@ -436,59 +436,26 @@ def _hex_to_rgb(color: str) -> tuple[int, int, int] | None:
 
 
 def _has_wallpaper() -> bool:
-    """★ 当前有没有壁纸在**真的显示**（CPU 或 Chromium 任一路径）。
+    """★ 当前有没有壁纸在**真的显示** —— **恒为 False**（2026-11-04 起）。
 
-    ## ★★★ 2026-10-31 修「选了壁纸界面还是深色底」
+    ## 历史
 
-    用户截图：切到「守岸人钢琴版」显示「使用中」，但**界面背景是纯深色**，
-    壁纸完全没显示。
+    2026-10-31 这里查过四条壁纸路径（``wallpaper_layer`` / ``wallpaper_dsh``
+    / ``wallpaper_quick`` / ``wallpaper_web``）的 ``current_layer()``。
+    因为当时 QSS 有三处写死 ``wallpaper_layer.current_layer() is not None``，
+    而壁纸实际走 Chromium 层 → 三处都以为没壁纸，QSS 走了不透明深色底分支，
+    把壁纸整个盖住。
 
-    ## 根因
+    ## 现在
 
-    `build_qss` / `_paint_nav_panel` / `_paint_title_bar` 三处都这样判断::
+    那四套 Qt 侧壁纸引擎已整体删除（3429 行），壁纸只由 **Web 外壳**用
+    HTML ``<video>`` + CSS 画 —— 那是另一套渲染栈，跟本文件生成的 QSS
+    毫无关系。
 
-        from ..gui import wallpaper_layer as _wl
-        _walled = _wl.current_layer() is not None
-
-    **`wallpaper_layer.current_layer()` 只代表 CPU 那条路径**。
-    现在壁纸走的是 **Chromium**（`wallpaper_web`），CPU 层是 None ——
-    于是三处都以为没有壁纸，QSS 走了**不透明深色底**分支，
-    把 Chromium 的壁纸整个盖住了。
-
-    → 统一用这个函数判断（两条路径都查）。
+    → 保留这个函数只为**不改 4 个调用点**（``build_qss`` /
+    ``_paint_title_bar`` / ``_paint_nav_panel`` / ``_glass_for_cards``）：
+    它们的分支本来就写着"没壁纸用渐变/实底"，正好是老界面现在该有的样子。
     """
-    #: ① CPU 路径
-    try:
-        from ..gui import wallpaper_layer as _wl  # noqa: PLC0415
-
-        if _wl.current_layer() is not None:
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-    #: ② DSH 同款（Chromium 整层）—— 当前主用
-    try:
-        from ..gui import wallpaper_dsh as _wd  # noqa: PLC0415
-
-        if _wd.current_layer() is not None:
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-    #: ③ QtQuick 路径（备用）
-    try:
-        from ..gui import wallpaper_quick as _wq  # noqa: PLC0415
-
-        if _wq.current_layer() is not None:
-            return True
-    except Exception:  # noqa: BLE001
-        pass
-    #: ③ Chromium 路径（保留，备用）
-    try:
-        from ..gui import wallpaper_web as _ww  # noqa: PLC0415
-
-        if _ww.current_layer() is not None:
-            return True
-    except Exception:  # noqa: BLE001
-        pass
     return False
 
 
@@ -701,8 +668,8 @@ def build_qss(skin: dict) -> str:
 
     #: ★★★ 2026-10-31 **有壁纸时把 Qt 侧背景全透明**
     #:
-    #: 现在玻璃由 Chromium 层的 ``backdrop-filter`` 做
-    #: （真正 GPU 模糊，见 ``gui/wallpaper_web.py``）。
+    #: 现在玻璃由 Web 外壳的 CSS ``backdrop-filter`` 做
+    #: （真正 GPU 模糊，见 ``gui/web/css/glass.css``）。
     #:
     #: 如果 Qt 这边还画着渐变/半透明底，就会**盖在 Web 玻璃上面** ——
     #: 用户看到的是"Qt 的假玻璃"，而不是 Chromium 的真玻璃，
@@ -1119,19 +1086,6 @@ def _paint(skin: dict) -> None:
         _paint_pages(w)                 #: 页面那几层要显式透明
         _notify_custom_widgets(w)       #: ★ 自定义控件自己重取色
 
-    #: ★★★ 2026-10-30 动态壁纸（参照 dsh-plugin-wallpaper-engine）。
-    #:
-    #: 有 ``wallpaper`` 的主题 → 在窗口背后铺一层循环播放的视频，
-    #: 并把三块主背景（QStackedWidget / NavigationPanel / FluentTitleBar）
-    #: 改成**透明 + 黑纱**，让视频透出来。
-    #:
-    #: ⚠ 必须在**设完主 QSS 之后**套透明覆盖 —— 后写的优先级高，正好盖掉
-    #: 主 QSS 里的渐变背景。反过来的话主 QSS 会把透明又盖回去。
-    try:
-        _apply_wallpaper_for(targets, skin)
-    except Exception:  # noqa: BLE001 - 壁纸失败绝不能影响换肤
-        logger.warning("壁纸应用失败", exc_info=True)
-
     #: ★ 记下"已经刷过这份 QSS + 这些窗口"—— 下次同一个皮肤 + 同样窗口才跳过
     _PAINTED_QSS = qss
     _PAINTED_WINDOWS = set(map(id, targets))
@@ -1154,64 +1108,6 @@ def _paint(skin: dict) -> None:
 #: → 改成**通用机制**：任何控件只要定义了同名方法，换肤时自动被调用。
 #: 约定优于配置 —— 不用注册、不用继承。
 SKIN_REFRESH_METHOD = "refresh_skin_colors"
-
-
-def _apply_wallpaper_for(windows: list, skin: dict) -> None:
-    """★ 按主题给每个窗口铺/拆动态壁纸。
-
-    ## 分层
-
-    有 ``wallpaper`` 的主题 = **动态壁纸模式**：
-
-        ① ``gui.wallpaper_layer`` 在窗口背后铺一层循环视频
-        ② 本函数给窗口**追加**一段"透明覆盖 QSS"
-           （``wallpaper_qss``），让三块主背景透明、视频透出来
-
-    没有壁纸的主题 = 普通渐变模式：拆掉视频 + 移除透明覆盖。
-
-    ## ⚠ 透明覆盖要**追加**在主 QSS 后面
-
-    Qt 里后设的 QSS 优先级更高。所以顺序必须是::
-
-        w.setStyleSheet(主 QSS)              #: 渐变背景
-        w.setStyleSheet(主 QSS + 透明覆盖)    #: 后加的把渐变盖成透明
-
-    只设"透明覆盖"的话，主 QSS 里 20 多处的渐变会全丢，
-    连文字颜色都没了。
-    """
-    from ..gui import wallpaper_layer  # noqa: PLC0415 - 避免循环导入
-
-    has_wallpaper = False
-    for w in windows:
-        try:
-            ok = wallpaper_layer.apply_wallpaper(w, skin)
-            if ok:
-                has_wallpaper = True
-                #: ★ 追加透明覆盖（不是替换！）
-                try:
-                    base = w.styleSheet() or ""
-                    overlay = wallpaper_layer.wallpaper_qss(skin)
-                    if overlay and overlay not in base:
-                        w.setStyleSheet(base + "\n" + overlay)
-                except (RuntimeError, AttributeError):
-                    continue
-            else:
-                #: 没有壁纸 → 把之前追加的透明覆盖去掉
-                try:
-                    base = w.styleSheet() or ""
-                    overlay = wallpaper_layer.wallpaper_qss(
-                        {"wallpaper": "yes"})       #: 用同样模板生成
-                    if overlay and overlay in base:
-                        w.setStyleSheet(base.replace(overlay, ""))
-                except (RuntimeError, AttributeError):
-                    continue
-        except (RuntimeError, AttributeError):
-            continue
-        except Exception:  # noqa: BLE001 - 单个窗口失败不影响别的
-            logger.warning("壁纸：处理窗口失败", exc_info=True)
-
-    if has_wallpaper:
-        logger.info("壁纸：已启用动态壁纸模式")
 
 
 def _notify_custom_widgets(window) -> None:
@@ -1466,15 +1362,10 @@ def _paint_title_bar(window, skin: dict) -> None:
     bar = getattr(window, "titleBar", None)
     if bar is None:
         return
-    #: 判断当前是不是壁纸模式
-    walled = _has_wallpaper()
-
-    if walled:
-        bg = _wallpaper_nav_bg(skin)      #: 湿玻璃高光 + 半透明主题底
-        border = " border-bottom: 1px solid rgba(255, 255, 255, 0.08);"
-    else:
-        bg = gradient_qss(skin)
-        border = ""
+    #: 2026-11-04：壁纸引擎已删，``_has_wallpaper()`` 恒 False
+    #: → 标题栏一律走主题渐变（旧代码里"湿玻璃"那条分支已不存在的了）
+    bg = gradient_qss(skin)
+    border = ""
 
     try:
         bar.setStyleSheet(
@@ -1618,21 +1509,15 @@ def _paint_nav_panel(window, skin: dict) -> None:
     ``grad`` 是**不透明渐变** —— 壁纸模式下的"透明 + 玻璃高光"
     被它整个盖掉了，所以侧栏看着就是一块实心板。
 
-    → 现在按 ``wallpaper_layer`` 的模式判断：
-    有壁纸时用**湿玻璃高光渐变**（可透出壁纸），没壁纸时用原来的底色渐变。
+    → 2026-11-04：壁纸引擎已删，统一用主题底色渐变。
     """
     panel = getattr(getattr(window, "navigationInterface", None),
                     "panel", None)
     if panel is None:
         return
-    #: ★ 判断当前是不是壁纸模式（壁纸层活着 = 是）
-    walled = _has_wallpaper()
-
-    if walled:
-        #: 壁纸模式：湿玻璃高光（半透，能透出模糊壁纸）
-        bg = _wallpaper_nav_bg(skin)
-    else:
-        bg = gradient_qss(skin)
+    #: 2026-11-04：壁纸引擎已删，``_has_wallpaper()`` 恒 False
+    #: → 侧栏一律走主题渐变
+    bg = gradient_qss(skin)
     try:
         panel.setStyleSheet(f"NavigationPanel {{ background: {bg}; }}")
         panel.setAttribute(
@@ -1646,38 +1531,6 @@ def _paint_nav_panel(window, skin: dict) -> None:
                 vp.setStyleSheet("background: transparent;")
     except (RuntimeError, AttributeError):
         return
-
-
-def _wallpaper_nav_bg(skin: dict) -> str:
-    """壁纸模式下侧栏的背景 —— 湿玻璃高光 + 半透明主题底。
-
-    ## ★ 2026-10-31 对齐用户 DSH 设置
-
-    DSH 里::
-
-        玻璃透明度   40%      → 不透明度 60%
-        雾化         9px      → 见 wallpaper_layer.DEFAULT_BLUR
-        玻璃保真度   20%
-
-    侧栏比内容区**再实 10%**（导航文字必须清楚），
-    所以用 ``0.60 + 0.10 = 0.70``。
-
-    配方照抄 DSH 插件（``client.js`` 2385 行）::
-
-        linear-gradient(180deg,
-            rgba(255,255,255,0.16),
-            rgba(255,255,255,0.05) 38%,
-            rgba(255,255,255,0.02))
-
-    底下再垫一层**半透明主题底**（保证导航文字在亮壁纸上也看得清）。
-    """
-    hi = glass_qss(skin)
-    #: 侧栏：0.60（玻璃不透明度）+ 0.10 = 0.70
-    rgb = _hex_to_rgb(skin["bg"][0][1]) or (20, 16, 32)
-    base = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-            f" stop:0 rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, 0.70),"
-            f" stop:1 rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, 0.62))")
-    return f"{hi}, {base}"
 
 
 #: ★ 壁纸主色覆盖（内存里，不落盘）
@@ -1941,60 +1794,22 @@ def invalidate_paint_cache() -> None:
     logger.info("皮肤：QSS 缓存已清（强制下次重刷）")
 
 
-def invalidate_paint_cache() -> None:
-    """★ 清掉 QSS 缓存，强制下次 ``_paint`` 真的重刷。
-
-    ## 为什么需要（2026-10-31 用户报「壁纸在播但看不见」）
-
-    ``_paint`` 里有个缓存::
-
-        if qss == _PAINTED_QSS and set(map(id, targets)) <= _PAINTED_WINDOWS:
-            return        #: 同一个皮肤 + 同样窗口 → 跳过
-
-    这个优化本来是对的（重复刷 QSS 要 1.4 秒）。但它有个前提：
-    **QSS 字符串要反映当前的所有状态**。
-
-    「有没有壁纸」会改变 QSS 内容（不透明渐变 ↔ 玻璃高光），
-    但**切换壁纸的那一刻 QSS 字符串还没变**（壁纸层刚铺上、
-    ``current_layer()`` 刚有值，而 ``_paint`` 还没跑）。
-    缓存判断看到"QSS 相同"就跳过了，界面还挂着旧的不透明渐变 ——
-    壁纸被完全盖住。
-
-    → 壁纸切换后**显式清缓存**，逼 ``_paint`` 重新生成 QSS。
-
-    ⚠ 只在"影响 QSS 内容的东西变了"时调（壁纸切换）。
-    别随便调 —— 每次重刷要 1.4 秒。
-    """
-    global _PAINTED_QSS, _PAINTED_WINDOWS
-    _PAINTED_QSS = ""
-    _PAINTED_WINDOWS = set()
-    logger.info("皮肤：QSS 缓存已清（强制下次重刷）")
-
-
 def refresh_glass_panels(windows: list | None = None) -> None:
-    """★ 壁纸铺上后，**单独重刷侧栏 + 标题栏**（绕过 QSS 缓存）。
+    """★ **单独重刷侧栏 + 标题栏**（绕过 ``_paint`` 的 QSS 缓存）。
 
-    ## 为什么需要这个（2026-10-31 用户截图）
+    ## 历史（2026-10-31）
 
-        > 背景还是很糊啊，而且上面你没改
+    用户截图：「背景还是很糊啊，而且上面你没改」——"上面"就是标题栏。
+    根因是 ``_paint_nav_panel`` / ``_paint_title_bar`` 靠
+    ``wallpaper_layer.current_layer()`` 判断"要不要用玻璃"，而壁纸层是
+    异步 start 的，``_paint`` 刷的那一下常常还看不到它。
+    → 壁纸铺好后再单独刷一次这两个面板。
 
-    "上面" = 标题栏。
+    ## 2026-11-04
 
-    ## 根因
-
-    ``_paint_nav_panel`` / ``_paint_title_bar`` 都靠
-    ``wallpaper_layer.current_layer()`` 判断"要不要用玻璃"。
-    但用户点壁纸时的顺序是::
-
-        ① _on_wallpaper_chosen()
-        ②   apply_video()              ← 壁纸层这时才活
-        ③   skins.refresh_windows()    ← 走 _paint，缓存可能跳过
-
-    第 ③ 步即使不跳过，``_paint`` 里调 ``_paint_nav_panel`` 的时机
-    也可能早于壁纸层真正 start（``apply_video`` 是异步的）。
-
-    → 所以壁纸铺好后**再显式刷一次这两个面板**，这次一定看得到
-    ``current_layer()`` 有值。这个函数就是干这个的。
+    四套 Qt 侧壁纸引擎已整体删除，``_has_wallpaper()`` 恒为 ``False``，
+    这两个面板现在一律用主题渐变。本函数保留为**通用的"重刷面板"入口**
+    （换肤后想立刻刷新侧栏/标题栏时可以用），不再和壁纸绑在一起。
 
     :param windows: 要刷的窗口列表；``None`` = 所有可见顶层窗口
     """
