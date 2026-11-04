@@ -34,7 +34,20 @@ WizardStyle=modern
 PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\WutheringWavesTools.exe
 ArchitecturesInstallIn64BitMode=x64compatible
-; 打包产物有上千个文件（Qt / onnxruntime / OCR 模型），关了"显示文件"页省得刷屏
+; ★ 2026-11-04（用户反馈）：「安装的时候我怎么不能选择安装位置？默认给安装在C盘了」
+;
+; 根因：**这一项不写，默认值是 ``auto``**（Inno Setup 6.3 起改的，6.3 之前才是 ``no``）。
+; ``auto`` 的含义是：安装程序启动时先查注册表，**只要发现同一个 AppId 已经装过，
+; 就跳过「选择目标位置」那一页**，直接装到上次记录的位置。
+; 本机 D:\WutheringWavesTools 里躺着一个 2025-10-09 装的老版本，
+; 于是双击安装包后整个「想装哪」的选择被静默跳过了。
+;
+; 写 ``no`` = **永远显示**这一页（升级时也会显示，并把上次的位置预填好，
+; 用户想原地升级就直接下一步，想换盘就改路径）。
+DisableDirPage=no
+; 升级时把上次的安装位置填进上面那一页（默认就是 yes，显式写出来防止哪天被改）
+UsePreviousAppDir=yes
+; 安装程序有上千个文件（Qt / onnxruntime / OCR 模型），关了"显示文件"页省得刷屏
 DisableFinishedPage=no
 
 ; ── 自动更新相关（2026-10-05）─────────────────────────────────────────
