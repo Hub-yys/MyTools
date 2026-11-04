@@ -1484,12 +1484,9 @@
   white-space: nowrap;
 }
 
-/* 类型标签（旧界面 L391「▶ 视频」）*/
-.wallpaper-type {
-  font-size: 11px;
-  color: var(--faint);
-  line-height: 1.4;
-}
+/* ★ 类型标签（``.wallpaper-type``）已删（2026-11-04 用户圈图）
+   —— 原来每张卡都挂一条「▶ 视频」，用户要求「只留角色主题这几个字，视频去掉」。
+   它的角色由下面的 ``.wallpaper-theme``（主题名 + 主色点）接管。 */
 
 .wallpaper-actions {
   display: flex;

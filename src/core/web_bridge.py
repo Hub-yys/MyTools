@@ -5826,12 +5826,31 @@ class WebBridge(QObject):
             pass
 
         #: ② 当前壁纸
+        #:
+        #: ★ 2026-11-04（用户：「默认使用守岸人主题」）：没存过选择时不能
+        #: 直接放弃 —— 页面那时**正在播默认壁纸**（:meth:`_pick_current`
+        #: 兜底到守岸人），主题色要是退回皮肤紫，就变成「播守岸人、
+        #: 按钮是紫的」。所以这里把 ``wp_id`` 兜到默认 id；``path`` 仍然
+        #: 为空也无妨 —— 默认主题的主色是写死的，走下面的精选主题分支，
+        #: 不需要抽色。
         try:
             wp_id = wallpaper_state.current_id()
             path = wallpaper_state.current_path()
         except Exception:  # noqa: BLE001
             wp_id, path = "", ""
-        if not wp_id or not path:
+        try:
+            from ..core import wallpaper_themes  # noqa: PLC0415
+
+            if not wp_id:
+                wp_id = wallpaper_themes.DEFAULT_WALLPAPER_ID
+            theme = wallpaper_themes.theme_for_wallpaper(wp_id)
+        except Exception:  # noqa: BLE001
+            theme = None
+        if not wp_id:
+            _clear()
+            return ""
+        if not path and not theme:
+            #: 没有存盘路径、又不是精选主题 → 抽不了色
             _clear()
             return ""
 
@@ -5841,12 +5860,6 @@ class WebBridge(QObject):
         #: 但实测自动抽色给出来的是橙（#F2A574）、粉红（#DE6B86）、
         #: 紫（#8569DB）—— 跟用户说的完全不是一回事。人的审美判断
         #: 机器抽不出来，只能人工挑好写进 :mod:`wallpaper_themes`。
-        try:
-            from ..core import wallpaper_themes  # noqa: PLC0415
-
-            theme = wallpaper_themes.theme_for_wallpaper(wp_id)
-        except Exception:  # noqa: BLE001
-            theme = None
         if theme:
             primary = str(theme.get("primary") or "")
             tint = float(theme.get("tint") or 0.0)
@@ -5948,7 +5961,12 @@ class WebBridge(QObject):
     def _pick_current(self, items: list[dict]) -> dict:
         """挑「当前应该播的那个」壁纸。
 
-        优先级：显式选过的 → 上次存盘的 → 列表第一个。
+        优先级：显式选过的 → 上次存盘的 → **默认主题（守岸人）** → 列表第一个。
+
+        ★ 2026-11-04（用户：「默认使用守岸人主题」）：加了一步「默认 id」。
+        原来的兜底是 ``items[0]`` —— 而 ``scan_wallpapers()`` 是
+        ``sort(key=(not supported, title))`` 排的，第一张是谁纯属按标题
+        拼音排出来的巧合，**再加一张壁纸就变了**。默认值必须是显式的。
         """
         if self._wallpaper_id:
             hit = next((x for x in items if x.get("id") == self._wallpaper_id), None)
@@ -5963,6 +5981,16 @@ class WebBridge(QObject):
                 if hit is not None:
                     return hit
         except Exception:  # noqa: BLE001 - 没存过/模块变了都正常
+            pass
+        #: ★ 默认主题（守岸人）—— 没选过、存盘的又找不到了，就它
+        try:
+            from ..core import wallpaper_themes  # noqa: PLC0415
+
+            want = wallpaper_themes.DEFAULT_WALLPAPER_ID
+            hit = next((x for x in items if x.get("id") == want), None)
+            if hit is not None:
+                return hit
+        except Exception:  # noqa: BLE001
             pass
         return items[0]
 

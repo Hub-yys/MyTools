@@ -12,6 +12,14 @@
     > 新增千咲黑红色主题，资源使用这个
     > "D:\\Steam\\steamapps\\workshop\\content\\431960\\3609013499"
 
+2026-11-04 第二批：
+
+    > 1.新增长离红色主题，资源在
+    >    "D:\\Steam\\steamapps\\workshop\\content\\431960\\3322544922"，
+    >    新增尤诺蓝色主题，资源在
+    >    "D:\\Steam\\steamapps\\workshop\\content\\431960\\3570276722"
+    > 2.按图所做，另外，默认使用守岸人主题
+
 ## 为什么要有这张表（而不是继续自动抽色）
 
 自动抽色（:func:`src.core.color_extract.extract_primary`）是从视频首帧
@@ -97,12 +105,42 @@ THEMES: tuple[dict, ...] = (
         "tint": 0.40,
         "desc": "黑红（千咲 · 回眸）",
     },
+    {
+        "wallpaper_id": "3322544922",
+        "name": "长离",
+        "primary": "#D8503C",
+        "tint": 0.42,
+        "desc": "红色（长离 · 桔梗对弈）",
+    },
+    {
+        "wallpaper_id": "3570276722",
+        "name": "尤诺",
+        "primary": "#2E7FE8",
+        "tint": 0.44,
+        "desc": "蓝色（尤诺 · 月下）",
+    },
 )
 
 
 def all_themes() -> list[dict]:
     """全部精选主题（**拷贝**，调用方改了不影响表）。"""
     return [dict(t) for t in THEMES]
+
+
+#: ★ 默认壁纸（用户 2026-11-04：「默认使用守岸人主题」）。
+#:
+#: 用在两处：
+#:
+#: * :meth:`web_bridge.WebBridge._pick_current` —— 没选过壁纸时用它，
+#:   而不是「列表第一个」（那个是 ``sort(title)`` 的巧合，加一张壁纸就变了）
+#: * :meth:`web_bridge.WebBridge._apply_wallpaper_accent` —— 没存过选择时
+#:   也要按它取主色，否则界面播着守岸人、按钮却是紫的
+DEFAULT_WALLPAPER_ID: str = "3340494990"
+
+
+def default_theme() -> dict | None:
+    """默认主题（守岸人）。表被改坏了返回 ``None``。"""
+    return theme_for_wallpaper(DEFAULT_WALLPAPER_ID)
 
 
 def theme_for_wallpaper(wp_id: str) -> dict | None:
