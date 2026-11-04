@@ -849,11 +849,15 @@ def main() -> int:
             "config_dialog_2",
         )
         d = second if isinstance(second, dict) else {}
+        #: ★ 2026-11-04 用户：「新增配置也修改为没有【自动停止】和【指定强化】」
+        #: → 弹框里的「自动停止」开关卡删了，``.enh-switch-card`` 现在
+        #:   只剩「满暴击 / 满爆伤 自动锁定」这一张（原来是 2）。
+        #:   折叠卡仍是 2（核心属性 / 可选属性）。
         ok2 = (int(d.get("modals") or 0) == 1
                and "新增配置" in str(d.get("title") or "")
                and bool(d.get("hasPicker"))
                and int(d.get("collCards") or 0) == 2
-               and int(d.get("switchCards") or 0) == 2
+               and int(d.get("switchCards") or 0) == 1
                and int(d.get("checks") or 0) >= 20)
         check("C7", ok2,
               f"点「下一步」弹出编辑表单 = {d.get('title')!r} "

@@ -1277,7 +1277,7 @@
   //  ## 本轮只做「角色声骸强化」（EchoProfile）
   //
   //  理由：它的设置区 = **「声骸自动强化」工具页那一份**（``EchoSettingsEditor``），
-  //  而那一份我在 ④ 已经按旧界面复刻完了（6 张卡）—— **可以直接复用**。
+  //  而那一份我在 ④ 已经按旧界面复刻完了 —— **可以直接复用**。
   //
   //  「角色声骸筛选」（LoadoutDialog 631 行：套装 + 4C/3C/1C 逐档挑选）
   //  是独立一大块，下一轮做。
@@ -2439,7 +2439,7 @@
     //
     //  ① 头像为什么看着"掉在外面"：``.char-picker`` 是裸的 inline-flex，
     //     它右边的 ``.char-avatar`` 直接贴在弹框背景上。而这张弹框里
-    //     别的行（双爆下限 / 满值锁定 / 自动停止 / 有效词条）**都有玻璃卡底**
+    //     别的行（双爆下限 / 满值锁定 / 有效词条）**都有玻璃卡底**
     //     —— 于是头像和角色下拉像"少了一张卡"。
     //     现在把整行套进 ``.dlg-card-row card-glass``，和那几张卡同一套配方。
     //
@@ -2474,7 +2474,7 @@
     errorEl.hidden = true;
     body.appendChild(errorEl);
 
-    // ── 设置区：**复用 ④ 那 6 张卡**（旧界面 ``EchoSettingsEditor``）──
+    // ── 设置区：复用工具页那套卡（旧界面 ``EchoSettingsEditor``，少两张）──
     //
     //: 旧界面 L242：``self.viewLayout.addWidget(area)`` —— area 就是
     //: ``EchoSettingsEditor``。这正是「设置区和工具页那一份完全一样」的实现方式。
@@ -2607,16 +2607,22 @@
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  //  对话框里的设置编辑器 —— 复用 ④ 的 6 张卡，但**用局部状态**
+  //  对话框里的设置编辑器 —— 复用 ④ 那套卡，但**用局部状态**
   // ══════════════════════════════════════════════════════════════════════
 
   /**
    * 建一套独立的设置控件（不碰工具页的 DOM / ENHANCE_STATE）。
    *
-   * 结构照抄旧界面 ``EchoSettingsEditor`` L79-84 的 6 张卡：
-   *   ① 核心属性（CollapsibleCard）  ② 双爆下限（裸行）
-   *   ③ 满值锁定（CardWidget）       ④ 自动停止（CardWidget）
-   *   ⑤ 可选属性（CollapsibleCard）  ⑥ 有效词条（裸行）
+   * 结构照抄旧界面 ``EchoSettingsEditor`` L79-84，但**少两张卡**：
+   *   ① 核心属性（CollapsibleCard）  ② 双爆下限（玻璃卡）
+   *   ③ 满值锁定（CardWidget）       ④ 可选属性（CollapsibleCard）
+   *   ⑤ 有效词条（玻璃卡）
+   *
+   * ★ 2026-11-04 删掉旧界面的「自动停止」卡 —— 用户点名：新增配置的
+   *   弹框里**不要**【自动停止】和【指定强化】。两者都还在工具页
+   *   （``tool-panels.js`` 的 ``buildEnhanceAutostopCard`` /
+   *   ``buildEnhanceDesignatedCard``），那是它们该待的地方；
+   *   弹框里再放一份就是同一个开关两个入口。
    *
    * @param {object|null} saved - 已有的设置（编辑模式）
    * @returns {{el: Element, read: Function}}
@@ -2633,7 +2639,6 @@
       critDmgField: null,
       critSwitch: null,
       maxrollSwitch: null,
-      autostopSwitch: null,
       validStepper: null,
       //: ★ 2026-11-03 当前「有效词条」的合法范围 / 属性条数
       //: （``syncValidRange()`` 每次重算后写进来，``validate()`` 读它）
@@ -2731,9 +2736,10 @@
     //:    补了 ``.enh-crit-card``，**配置页这边漏了**（两处是分开实现的）。
     //:
     //: ② **三个开关没对齐** —— 这行的开关靠 ``flex:1 1 auto`` 推到了
-    //:    最右，而下面「满值锁定」「自动停止」两张卡的开关也在最右，
-    //:    但**卡片的左右内边距不同**（裸行 vs ``card-glass`` 的 padding），
-    //:    于是三者的 x 坐标差几个像素，看着就是没对齐。
+    //:    最右，而下面「满值锁定」卡的开关也在最右（当时还有「自动停止」
+    //:    卡，2026-11-04 已按要求删掉），但**卡片的左右内边距不同**
+    //:    （裸行 vs ``card-glass`` 的 padding），
+    //:    于是几者的 x 坐标差几个像素，看着就是没对齐。
     //:
     //: ## 修法
     //:
@@ -2784,7 +2790,7 @@
     //:
     //: ⚠ ``.enh-switch-left`` 容器**保留** —— 没有它开关会被
     //:   ``.enh-switch-row`` 的 ``align-items: flex-start`` 顶到最左，
-    //:   和下面「自动停止」的开关错位（那才是用户说的"没对齐"）。
+    //:   和「双爆下限」那行的开关错位（那才是用户说的"没对齐"）。
     const maxCard = P.el('div', { class: 'enh-switch-card card-glass' });
     const maxRow = P.el('div', { class: 'enh-switch-row' });
     const maxLeft = P.el('div', { class: 'enh-switch-left' });
@@ -2800,23 +2806,6 @@
     maxRow.appendChild(maxSw);
     maxCard.appendChild(maxRow);
     root.appendChild(maxCard);
-
-    // ── ④ 自动停止（P8：用户要求简写 + 删说明，见 tool-panels.js 的注释）──
-    const stopCard = P.el('div', { class: 'enh-switch-card card-glass' });
-    const stopRow = P.el('div', { class: 'enh-switch-row' });
-    const stopLeft = P.el('div', { class: 'enh-switch-left' });
-    stopLeft.appendChild(P.el('div', {
-      class: 'enh-switch-title',
-      text: '自动停止'
-    }));
-    stopRow.appendChild(stopLeft);
-    const stopSw = P.toggle('启用', s.enable_auto_stop !== false, function () {},
-      { onText: '启用', offText: '不启用' });
-    stopSw.classList.add('enh-switch-top');
-    local.autostopSwitch = stopSw.querySelector('input[type="checkbox"]');
-    stopRow.appendChild(stopSw);
-    stopCard.appendChild(stopRow);
-    root.appendChild(stopCard);
 
     // ── ⑤ 可选属性（CollapsibleCard）──
     //
@@ -3082,8 +3071,13 @@
         enable_crit_check: local.critSwitch ? local.critSwitch.checked : true,
         enable_max_roll_lock: local.maxrollSwitch
           ? local.maxrollSwitch.checked : true,
-        enable_auto_stop: local.autostopSwitch
-          ? local.autostopSwitch.checked : true,
+        //: ★ 2026-11-04 弹框里已删「自动停止」卡（用户要求），但**字段还要
+        //: 传** —— 后端 ``EchoSettings.from_dict`` 读它，缺了会落到默认值
+        //: True。这里**原样保留磁盘上的值**（``s.enable_auto_stop``）：
+        //: 老配置里若存着 False，编辑别的东西时不该被悄悄改成 True；
+        //: 新建时 ``s`` 是空对象，自然取默认 True。
+        //: 想改这个开关请去工具页 —— 那里的开关仍然生效，且「一改就存」。
+        enable_auto_stop: s.enable_auto_stop !== false,
         min_valid_count: local.validStepper.get()
       };
     }
