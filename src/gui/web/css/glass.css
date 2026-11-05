@@ -173,6 +173,40 @@
     2px 0 24px rgba(0, 0, 0, 0.14);
 }
 
+/*: ★★★ 2026-11-05 视频壁纸时，侧栏改用「冻住的那一帧」当背景。
+ *
+ * 为什么不用 backdrop-filter 了：
+ *   模糊只会把运动画面糊开，**不会让它停下来**。实测（整屏抓像素，交错采样）：
+ *     现状 blur16 + 29.4% 不透明  → 亮度摆幅 1.74，逐像素差 0.79
+ *     静态帧 + 45% 不透明、无模糊 → 亮度摆幅 **0.01**，逐像素差 0.002
+ *   其它排除过的方向：DOM 重写（9 秒 0 次 mutation）、rAF 掉帧
+ *   （p99 16.8ms、droppedVideoFrames 0）、CSS 动画（getAnimations() 0 个）、
+ *   加大模糊（blur48 反而让摆幅升到 1.66）、把底色加到 86% 不透明
+ *   （确实不闪了，但侧栏基本实心，用户要的玻璃感没了）。
+ *
+ * 快照由 ``app.js`` 的 ``applySidebarSnap()`` 生成（按 object-fit: cover
+ * 的几何裁出侧栏那一列，所以画面位置和壁纸对得上），写进 ``--we-sidebar-snap``。
+ *
+ * 静态壁纸（``data-wall="image"``）保持原样 —— 画面本来就不动，不需要冻。
+ */
+body[data-wall="video"] .glass-sidebar {
+  background-image:
+    var(--we-sidebar-snap, none),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.075) 0%,
+      rgba(255, 255, 255, 0.022) 22%,
+      rgba(255, 255, 255, 0.00) 60%
+    );
+  background-size: cover, auto;
+  background-position: center center, 0 0;
+  background-repeat: no-repeat, repeat;
+  /*: 快照已经自带壁纸的颜色，再叠一层底色把它压到和卡片同一档次 */
+  background-color: var(--sidebar-snap-bg);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 
 /* ══════════════════════════════════════════════════════════════════════════
    ③ 标题栏玻璃
