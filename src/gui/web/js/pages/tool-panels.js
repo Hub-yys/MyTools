@@ -3011,7 +3011,12 @@
     if (btn) btn.textContent = '登录中…';
     setBuildNotice('正在登录…', 'info');
 
-    const r = await P.call('kuroLogin', mobile, code, feature);
+    //: ★ 必须用 ``callMulti`` —— ``kuroLogin`` 是
+    //: ``@Slot(str, str, str, result=str)`` 三个参数。QWebChannel 按
+    //: **JS 实参个数**匹配签名，用单参的 ``P.call`` 会「找不到匹配」并
+    //: 静默返回空数组（见 ``_shared.js`` 里那段长注释），
+    //: 表现就是**一按登录立刻失败**、日志写着「接口未就绪」。
+    const r = await P.callMulti('kuroLogin', [mobile, code, feature]);
     if (!r.ok) {
       BUILD_STATE.busy = false;
       buildApplyEditable();
