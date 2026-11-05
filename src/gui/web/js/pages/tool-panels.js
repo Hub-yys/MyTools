@@ -5614,6 +5614,17 @@
   const ENHANCE_MAX_CORE = 5;
   const ENHANCE_DEFAULT_CRIT_MIN = 7.5;
   const ENHANCE_DEFAULT_CRIT_DMG_MIN = 15.0;
+  //: ★ 2026-11-05 用户圈图：「这里应该做校验，只能输入数字，且暴击只能在
+  //: 6.3 到 10.5 之间（一位小数），爆伤只能在 12.6 到 21.0 之间」。
+  //:
+  //: 区间的来历（不是随便定的）：10.5 / 21.0 是声骸**满值词条**的数值
+  //: （见上面「满值锁定」卡的注释），6.3 / 12.6 是最低一档词条值。
+  //: 填界外的数没有意义 —— 暴击下限填 15 等于「一条都不可能达标」，
+  //: 任务会把每一件都判成不合格。
+  const ENHANCE_CRIT_MIN_LOW = 6.3;
+  const ENHANCE_CRIT_MIN_HIGH = 10.5;
+  const ENHANCE_CRIT_DMG_MIN_LOW = 12.6;
+  const ENHANCE_CRIT_DMG_MIN_HIGH = 21.0;
   const ENHANCE_DEFAULT_VALID = 2;
 
   const ENHANCE_STATE = {
@@ -6010,7 +6021,8 @@
     const row = P.el('div', { class: 'enh-crit-row' });
     row.appendChild(P.el('span', { class: 'enh-inline-label', text: '暴击不低于' }));
     ENHANCE_STATE.critField = Panels.numberInput(ENHANCE_DEFAULT_CRIT_MIN, {
-      min: 0, max: 100
+      min: ENHANCE_CRIT_MIN_LOW, max: ENHANCE_CRIT_MIN_HIGH,
+      step: 0.1, decimals: 1, numeric: true
     });
     ENHANCE_STATE.critField.el.classList.add('cfg-number');
       ENHANCE_STATE.critField.input.classList.add('cfg-number-input');
@@ -6018,7 +6030,8 @@
     row.appendChild(P.el('span', { style: 'width:22px;flex:0 0 auto' }));
     row.appendChild(P.el('span', { class: 'enh-inline-label', text: '爆伤不低于' }));
     ENHANCE_STATE.critDmgField = Panels.numberInput(ENHANCE_DEFAULT_CRIT_DMG_MIN, {
-      min: 0, max: 300
+      min: ENHANCE_CRIT_DMG_MIN_LOW, max: ENHANCE_CRIT_DMG_MIN_HIGH,
+      step: 0.1, decimals: 1, numeric: true
     });
     ENHANCE_STATE.critDmgField.el.classList.add('cfg-number');
       ENHANCE_STATE.critDmgField.input.classList.add('cfg-number-input');
@@ -6652,6 +6665,10 @@
     ENHANCE_MAX_CORE: ENHANCE_MAX_CORE,
     ENHANCE_DEFAULT_CRIT_MIN: ENHANCE_DEFAULT_CRIT_MIN,
     ENHANCE_DEFAULT_CRIT_DMG_MIN: ENHANCE_DEFAULT_CRIT_DMG_MIN,
+    ENHANCE_CRIT_MIN_LOW: ENHANCE_CRIT_MIN_LOW,
+    ENHANCE_CRIT_MIN_HIGH: ENHANCE_CRIT_MIN_HIGH,
+    ENHANCE_CRIT_DMG_MIN_LOW: ENHANCE_CRIT_DMG_MIN_LOW,
+    ENHANCE_CRIT_DMG_MIN_HIGH: ENHANCE_CRIT_DMG_MIN_HIGH,
     ENHANCE_DEFAULT_VALID: ENHANCE_DEFAULT_VALID
   };
 })();

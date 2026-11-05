@@ -2749,9 +2749,19 @@
     const critCard = P.el('div', { class: 'enh-crit-card card-glass' });
     const critRow = P.el('div', { class: 'enh-crit-row' });
     critRow.appendChild(P.el('span', { class: 'enh-inline-label', text: '暴击不低于' }));
+    //: ★ 2026-11-05 用户圈图：「只能输入数字，且暴击只能在 6.3 到 10.5
+    //: 之间（一位小数），爆伤只能在 12.6 到 21.0 之间」。
+    //: 区间常量在 ``tool-panels.js`` 里定义并导出（工具页那边同一行用同一套，
+    //: 两处原来是分开写死的 0~100 / 0~300，改一处漏一处就会不一致）。
+    const CRIT_LO = TP.ENHANCE_CRIT_MIN_LOW != null ? TP.ENHANCE_CRIT_MIN_LOW : 6.3;
+    const CRIT_HI = TP.ENHANCE_CRIT_MIN_HIGH != null ? TP.ENHANCE_CRIT_MIN_HIGH : 10.5;
+    const CRITDMG_LO = TP.ENHANCE_CRIT_DMG_MIN_LOW != null
+      ? TP.ENHANCE_CRIT_DMG_MIN_LOW : 12.6;
+    const CRITDMG_HI = TP.ENHANCE_CRIT_DMG_MIN_HIGH != null
+      ? TP.ENHANCE_CRIT_DMG_MIN_HIGH : 21.0;
     local.critField = Panels.numberInput(
       s.crit_min != null ? s.crit_min : TP.ENHANCE_DEFAULT_CRIT_MIN,
-      { min: 0, max: 100 });
+      { min: CRIT_LO, max: CRIT_HI, step: 0.1, decimals: 1, numeric: true });
     local.critField.el.classList.add('cfg-number');
     local.critField.input.classList.add('cfg-number-input');
     critRow.appendChild(local.critField.el);
@@ -2759,7 +2769,7 @@
     critRow.appendChild(P.el('span', { class: 'enh-inline-label', text: '爆伤不低于' }));
     local.critDmgField = Panels.numberInput(
       s.crit_dmg_min != null ? s.crit_dmg_min : TP.ENHANCE_DEFAULT_CRIT_DMG_MIN,
-      { min: 0, max: 300 });
+      { min: CRITDMG_LO, max: CRITDMG_HI, step: 0.1, decimals: 1, numeric: true });
     local.critDmgField.el.classList.add('cfg-number');
     local.critDmgField.input.classList.add('cfg-number-input');
     critRow.appendChild(local.critDmgField.el);
@@ -3106,6 +3116,14 @@
      * @returns {string} 空串 = 通过；否则是要显示给用户的错误文案
      */
     function validate() {
+      //: ★ 2026-11-05 先校验双爆下限（用户圈图：「只能输入数字，且暴击只能在
+      //: 6.3 到 10.5 之间（一位小数），爆伤只能在 12.6 到 21.0 之间」）。
+      //:
+      //: ⚠ 输入框靠 ``blur`` 夹上下界，但用户**直接点「创建」不先失焦**时
+      //: ``get()`` 读到的仍是脏值 —— 那种情况原来会静默存进去，后端
+      //: ``EchoSettings`` 只做 ``float()`` 强转、不校验范围。
+      const badCrit = checkCritRanges();
+      if (badCrit) return badCrit;
       const range = local.validRange;
       if (!range) return '';
       const MINV = 2;
@@ -3125,6 +3143,49 @@
         return '「有效词条」填的是 ' + cur + ' 条，但所选属性' + span +
           '（核心 ' + range.coreN + ' 条 + 可选 ' + range.optN +
           ' 条）—— 无法创建。';
+      }
+      return '';
+    }
+
+    /**
+     * 双爆下限的区间校验（2026-11-05 用户圈图要求）。
+     *
+     * ## 为什么「输入过滤」还不够
+     *
+     * ``numberInput({ numeric: true })`` 只滤字符和位数（字母敲不进去、
+     * 最多一位小数），**不夹上下界** —— 中途夹会让打字错乱（想填 6.9 的
+     * 人刚敲 "6" 就被架成 6.3，后面 ".9" 无处可落）。
+     * 失焦时 ``blur`` 会夹，但用户**直接点「创建」不先失焦**就绕过了。
+     *
+     * ## 区间的来历
+     *
+     * 10.5 / 21.0 是声骸满值词条的数值（见「满值锁定」卡），
+     * 6.3 / 12.6 是最低一档词条值。填界外的数没有意义 ——
+     * 暴击下限填 15 等于「一条都不可能达标」，任务会把每件都判成不合格。
+     *
+     * @returns {string} 空串 = 通过；否则是要显示给用户的错误文案
+     */
+    function checkCritRanges() {
+      const CRIT_LO = TP.ENHANCE_CRIT_MIN_LOW != null ? TP.ENHANCE_CRIT_MIN_LOW : 6.3;
+      const CRIT_HI = TP.ENHANCE_CRIT_MIN_HIGH != null ? TP.ENHANCE_CRIT_MIN_HIGH : 10.5;
+      const DMG_LO = TP.ENHANCE_CRIT_DMG_MIN_LOW != null
+        ? TP.ENHANCE_CRIT_DMG_MIN_LOW : 12.6;
+      const DMG_HI = TP.ENHANCE_CRIT_DMG_MIN_HIGH != null
+        ? TP.ENHANCE_CRIT_DMG_MIN_HIGH : 21.0;
+      //: 开关关掉时这两个框是灰的、不参与判定 —— 别拿灰框里的值拦人
+      if (local.critSwitch && !local.critSwitch.checked) return '';
+
+      const crit = local.critField ? Number(local.critField.get()) : NaN;
+      if (!isFinite(crit) || crit < CRIT_LO || crit > CRIT_HI) {
+        return '「暴击不低于」只能填 ' + CRIT_LO + ' ~ ' + CRIT_HI +
+          ' 之间的一位小数（当前 ' + (isFinite(crit) ? crit : '空') +
+          '）—— 无法创建。';
+      }
+      const dmg = local.critDmgField ? Number(local.critDmgField.get()) : NaN;
+      if (!isFinite(dmg) || dmg < DMG_LO || dmg > DMG_HI) {
+        return '「爆伤不低于」只能填 ' + DMG_LO + ' ~ ' + DMG_HI +
+          ' 之间的一位小数（当前 ' + (isFinite(dmg) ? dmg : '空') +
+          '）—— 无法创建。';
       }
       return '';
     }

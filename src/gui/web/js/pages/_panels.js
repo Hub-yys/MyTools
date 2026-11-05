@@ -530,6 +530,20 @@
   function numberInput(value, opts) {
     opts = opts || {};
     const step = opts.step != null ? Number(opts.step) : 1;
+    //: ★ 2026-11-05 新增两个选项（用户圈图：双爆下限「只能输入数字，
+    //: 且暴击只能在 6.3 到 10.5 之间（一位小数）」）。
+    //:
+    //: ① ``decimals`` —— 保留几位小数（默认 2，**老调用的行为一个像素不变**）。
+    //:    之前 ``fmt()`` 硬编码 ``*100/100``，双爆下限要求一位小数做不到。
+    //: ② ``numeric`` —— 是否在**输入阶段**就滤掉非法字符。
+    //:    以前只靠 ``blur`` 纠错：``type="text"`` 能敲字母，用户敲了 "abc"
+    //:    要等失焦才被改成 0，中间那段时间框里就是脏的。
+    //:
+    //: ⚠ 输入阶段**只滤字符和位数，不夹上下界** —— 中途夹会让打字错乱：
+    //:   想填 6.9 的人刚敲 "6" 就被夹成 6.3，后面那个 ".9" 无处可落。
+    //:   上下界交给 ``blur``（现有行为）和调用方的 ``validate()``。
+    const decimals = opts.decimals != null ? Math.max(0, Number(opts.decimals)) : 2;
+    const numeric = opts.numeric === true;
     //: ★★★ 2026-11-03 必须是 ``let``（原来是 ``const``）—— 见下面
     //: ``setRange()`` 的注释：配置页的「有效词条」上下界会跟着核心/可选
     //: 属性**动态变**，而 ``clamp()`` 读的就是这两个变量。
@@ -554,6 +568,13 @@
       value: value == null ? '' : String(value),
       placeholder: opts.placeholder || ''
     });
+    //: ★ 2026-11-05：建控件时就把上下界写到 DOM 属性上。
+    //: 原来只有 ``setRange()`` 会写，构造时传的 ``min``/``max`` 只存在闭包里
+    //: —— ``type="text"`` 本来就不认这两个属性、不影响行为，但**探针和
+    //: "看一眼属性就知道范围"的场景会读它**（2026-11-05 的探针就因此误判成
+    //: 「没限制范围」）。现在两条入口行为一致。
+    if (min != null) input.min = String(min);
+    if (max != null) input.max = String(max);
     wrap.appendChild(input);
 
     const plus = P.el('button', {
@@ -574,7 +595,10 @@
 
     /** 去掉末尾多余的 0（7.00 → 7，6.90 → 6.9）—— 旧界面 ``_fmt_number`` */
     function fmt(n) {
-      return String(Math.round(Number(n) * 100) / 100);
+      const num = Number(n);
+      if (!isFinite(num)) return '';
+      const scale = Math.pow(10, decimals);
+      return String(Math.round(num * scale) / scale);
     }
 
     function current() {
@@ -598,6 +622,31 @@
     if (opts.clampOnBlur !== false) {
       input.addEventListener('blur', function () {
         input.value = fmt(clamp(current()));
+      });
+    }
+
+    //: 输入阶段过滤：只留数字 + 一个小数点 + 最多 ``decimals`` 位小数。
+    //: 用 ``input`` 事件而不是 ``keydown`` —— 粘贴、输入法、手机键盘
+    //: 都走 ``input``，``keydown`` 只能拦物理按键。
+    if (numeric) {
+      input.addEventListener('input', function () {
+        const raw = input.value;
+        let out = '';
+        let hasDot = false;
+        let decCount = 0;
+        for (const ch of raw) {
+          if (ch >= '0' && ch <= '9') {
+            if (hasDot) {
+              if (decCount >= decimals) continue;
+              decCount += 1;
+            }
+            out += ch;
+          } else if (ch === '.' && !hasDot && decimals > 0) {
+            hasDot = true;
+            out += ch;
+          }
+        }
+        if (out !== raw) input.value = out;
       });
     }
 
