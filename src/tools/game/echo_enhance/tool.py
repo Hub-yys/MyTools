@@ -1520,6 +1520,22 @@ class OkwwTaskRunner:
 
                 setattr(task, DESIGNATED_ECHO_FLAG, True)
                 setattr(task, "_designated_mode", True)
+                #: ★★★ 2026-11-05 用户：「这个【指定声骸】其实你已经做到了，
+                #: 我鼠标停在哪个位置，你就强化那个……其他的应该跟正常强化
+                #: 一样的，强化好了就停止或者强化完这个声骸停止，你这里是
+                #: 强化完一个就停了」
+                #:
+                #: 指定模式关掉「有效词条数上限」的**提前弃置** —— 否则只开了
+                #: 3 孔、有效 0 条时它会算「0 + 剩余 2 = 2 < 要求 3」当场弃置，
+                #: 永远走不到满 5 条（``stats.judge`` 第 4 条）。关掉后一路打到
+                #: 满级再判，满级那块自己会补同样的判断（够就 lock、不够就
+                #: discard），不会把废声骸锁住。
+                #:
+                #: 普通强化模式不受影响（``strict_valid_cap`` 默认 True）。
+                import dataclasses as _dc  # noqa: PLC0415
+
+                task.judge_config = _dc.replace(
+                    task.judge_config, strict_valid_cap=False)
                 task.info_set("指定强化", "开（只强化玩家选中的那个声骸）")
                 logger.info("【注入】指定声骸强化模式 → task#%s", id(task))
             except Exception:  # noqa: BLE001 - 打标记失败不该挡住启动

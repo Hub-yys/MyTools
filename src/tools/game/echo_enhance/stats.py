@@ -178,6 +178,21 @@ class JudgeConfig:
     #: （``configure(task) -> task.judge_config = config``），
     #: 加在这里就**自动流到引擎侧**，不必再改两处注入代码。
     enable_auto_stop: bool = True
+    #: ★ 2026-11-05 用户：「这个【指定声骸】其实你已经做到了，我鼠标停在哪个
+    #: 位置，你就强化那个……其他的应该跟正常强化一样的，强化好了就停止或者
+    #: 强化完这个声骸停止，你这里是强化完一个就停了」
+    #:
+    #: 关掉它 = **不在中途因为「有效词条数数学上已经不够」提前弃置**，
+    #: 一路强化到满 5 条再看结果。只有指定强化模式会关（见
+    #: ``OkwwTaskRunner._configure``），普通强化保持 True 不变。
+    #:
+    #: 为什么需要这个开关：普通模式下一个声骸不达标就立刻弃置换下一个，
+    #: 省材料；但指定强化**只强化玩家点中的这一个**，提前弃置等于「任务
+    #: 还没打完就结束了」，用户看到的就是「强化完一个就停了」。
+    #:
+    #: ⚠ 关掉它以后**满级那块会补一次同样的判断**（见 ``judge`` 第 5 条），
+    #: 否则有效词条不够的废声骸会被当成「符合条件」上锁 —— 那更糟。
+    strict_valid_cap: bool = True
     #: 满级时至少要有多少条有效词条
     min_valid_count: int = 3
     max_sub_stats: int = MAX_SUB_STATS
@@ -403,7 +418,12 @@ def judge(stats: list[EchoStat], config: JudgeConfig) -> JudgeResult:
     valid_count = sum(1 for s in present if s.name in valid_set)
     # ⚠ 用 effective_min_valid_count 而不是用户填的原值：集合只有 N 条时 "≥N+1"
     #   永远达不到，照原值判会把**每个**声骸都弃置（2026-09-24 事故）。
-    if valid_count + remaining < config.effective_min_valid_count:
+    #
+    #: ★ 2026-11-05 加了 ``config.strict_valid_cap`` 这个开关：指定强化模式下
+    #: 关掉「提前弃置」，让这个声骸一路强化到满 5 条再判 —— 用户原话「强化完
+    #: 这个声骸停止」。别的模式仍是 True，行为一点没变。
+    if (config.strict_valid_cap
+            and valid_count + remaining < config.effective_min_valid_count):
         return result(
             "discard",
             f"有效词条最多只能到 {valid_count + remaining} 条"
@@ -415,8 +435,21 @@ def judge(stats: list[EchoStat], config: JudgeConfig) -> JudgeResult:
             valid=valid_count,
         )
 
-    # ---- 4. 满级且全部通过 → 保留
+    # ---- 5. 满级：够条件就上锁，不够就弃置
     if used >= config.max_sub_stats:
+        #: ★ 2026-11-05 关掉提前弃置（``strict_valid_cap=False``）时，这里必须
+        #: **补一次同样的判断** —— 否则一个有效 0 条的废声骸强化到满级会被
+        #: 当成「符合条件」上锁，那比提前弃置糟得多（锁住的声骸还得手动解锁）。
+        if valid_count < config.effective_min_valid_count:
+            return result(
+                "discard",
+                f"满 {used} 条但只有 {valid_count} 条有效，"
+                f"达不到 {config.effective_min_valid_count} 条",
+                code="valid",
+                crit=crit,
+                crit_dmg=crit_dmg,
+                valid=valid_count,
+            )
         return result(
             "lock",
             f"满 {used} 条且符合条件（有效 {valid_count} 条）",
