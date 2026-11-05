@@ -65,6 +65,16 @@
   const CARD_WIDTH = 268;
   const PREVIEW_H = 132;
 
+  //: ★ 卡片缩略图停在哪一秒 —— **不能是 0**（2026-11-05 用户圈图
+  //: 「这个为什么是糊的，移过去又变清晰了」）。
+  //:
+  //: 有些壁纸的开头是淡入 / 虚化，实测爱弥斯那段 webm：
+  //: ``t=0`` 锐度 62.7，``t=1`` 秒就跳到 347.6（差 5.8 倍）；
+  //: 其余几张（守岸人 310 / 尤诺 621 / 心月狐 838）t=0 本来就清晰。
+  //:
+  //: 取 2 秒是因为实测 7 张壁纸在 t≥2 时锐度都已稳定。
+  const POSTER_SEEK = 2;
+
   const state = {
     wallpapers: [],
     currentId: '',
@@ -269,6 +279,17 @@
       //: 首帧到了才算有画面
       video.addEventListener('loadeddata', function () {
         preview.classList.add('has-frame');
+        //: ★★★ 2026-11-05 用户圈图「这个为什么是糊的，移过去又变清晰了，
+        //: 我想让他一直处于清晰的状态」。
+        //:
+        //: 根因：缩略图停的是**视频第 0 帧**，而有些壁纸的开头是淡入 / 虚化
+        //: （实测爱弥斯那段 webm 的 t=0 锐度只有 62.7，t=1 秒就到 347.6
+        //: —— 差 5.8 倍）。鼠标移上去播放 → 画面变清晰；移开时
+        //: ``currentTime = 0`` 又**退回那张虚化帧** → 又糊。
+        //:
+        //: 修法：不要停在第 0 帧，停在 **POSTER_SEEK** 秒（取 2 秒，
+        //: 实测那之后各壁纸的锐度都稳定了）。鼠标移开也回到同一帧。
+        try { video.currentTime = POSTER_SEEK; } catch (err) { void err; }
       }, { once: true });
       //: 加载失败 → 占位文字（别留黑框）
       video.addEventListener('error', function () {
@@ -287,7 +308,8 @@
       });
       card.addEventListener('mouseleave', function () {
         video.pause();
-        video.currentTime = 0;
+        //: ★ 回到**清晰那一帧**（不是 0）—— 见 loadeddata 里那段说明
+        try { video.currentTime = POSTER_SEEK; } catch (err) { void err; }
       });
       preview.appendChild(video);
     } else {
