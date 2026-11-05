@@ -58,6 +58,7 @@ import json
 import logging
 import os
 import threading
+from datetime import datetime
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -583,6 +584,32 @@ def _gacha_report_to_dict(report, fetched_total: int = 0) -> dict:
         "fourCount": _safe(lambda: report.four_count, 0),
         "rate": round(_safe(lambda: report.rate(), 0.0), 2),
         "average": round(_safe(lambda: report.average(), 0.0), 2),
+        #: ★★★ 2026-11-05 补：这几个是**欧皇卡那 6 个格子**要的字段，
+        #: 原来这里一个都没有 → 用户 m15107「有数据但标记处没数据」。
+        #:
+        #: 前端 ``gachaRenderOverview()`` 读的是 **``getGachaOverview``
+        #: 的字段名**（``avgFive``/``noLoseRate``/``five``/``perChar``/
+        #: ``perWeapon``/``rank``），而分析结果推的是另一套
+        #: （``average``/``fiveCount``/…）—— 两边字段体系完全不同，
+        #: 除 ``total`` 外全变 ``—``。
+        #:
+        #: 现在这里**同时给两套名字**：旧的一套不动（别的地方可能还在用），
+        #: 新增与 ``getGachaOverview`` 同名的那几个，前端就不用再猜。
+        #: 口径逐条对齐 ``getGachaOverview``（见那里的对照表）。
+        "avgFive": round(_safe(lambda: report.average(), 0.0), 1),
+        #: ``not_up_rate()`` 返回 ``None`` 表示「没抽过限定池」——
+        #: **不能变成 0**（0 会被读成"每次都歪"）
+        "noLoseRate": (None if (v := _safe(lambda: report.not_up_rate(), None))
+                       is None else round(v, 1)),
+        "five": _safe(lambda: report.five_count, 0),
+        "perChar": (None if (v := _safe(
+            lambda: report.average_per_up("角色"), None)) is None
+            else round(v, 1)),
+        "perWeapon": (None if (v := _safe(
+            lambda: report.average_per_up("武器"), None)) is None
+            else round(v, 1)),
+        "rank": (lambda luck: luck[0] if luck else None)(
+            _safe(lambda: report.luck(), None)),
         "fetchedTotal": int(fetched_total or 0),
         "pools": pools,
         "fiveStars": fives,
@@ -657,9 +684,13 @@ def _make_gacha_thread():
         succeeded = Signal(dict)
         failed = Signal(str)
 
-        def __init__(self, params, parent=None):
+        def __init__(self, params, parent=None, store_path=None):
             super().__init__(parent)
             self._params = params
+            #: ★ 历史文件路径（``None`` = 真实用户数据）。测试传临时文件，
+            #: 这样验证「合并 + 落盘」时可以跑**同一条代码路径**而不碰
+            #: 用户 549 KB 的真实记录（2026-11-02 那次事故的教训）。
+            self._store_path = store_path
 
         def run(self) -> None:  # noqa: D102
             try:
@@ -677,32 +708,84 @@ def _make_gacha_thread():
                 self.failed.emit(f"{type(exc).__name__}: {exc}")
 
         def _merged_report(self, raw, gacha, gacha_store):
-            """把新拉的记录并进本地历史，再统计。
+            """把新拉的记录并进本地历史（并**落盘**），再统计。
 
-            合并失败（老数据格式不对等）时**退回只统计这次拉到的** ——
-            宁可数字少一点，也不要让整个分析失败。
+            ## ★★★ 2026-11-05 修：这里原来整段是**死的**
+
+            原实现写 ``store = gacha_store.GachaStore()`` —— 但
+            ``gacha_store`` 里**没有** ``GachaStore`` 这个类（真名是
+            :class:`~src.core.gacha_store.GachaHistoryStore`），也没实现过
+            ``merge``/``absorb``/``update`` 这些方法。于是每次都抛
+            ``AttributeError`` → 被下面的 ``except Exception`` 吞掉 →
+            **退回只统计本次拉到的**。
+
+            后果（用户 m15107 报的「拿到的不是最新的数据」就是它）：
+
+            * 本地 ``data/gacha_history.json`` 从 2026-10-09 起再没被写过；
+            * 每次「分析」只显示**这一次**拉到的几百条，不是累计；
+            * 上一行的 ``total`` 和本地历史（711 抽）对不上 ——
+              因为后者是 ``getGachaOverview()`` 从磁盘读的，前者是本次的。
+
+            ## 现在照抄旧界面 ``gacha/tool.py`` L182-210 的真实链路
+
+            .. code:: python
+
+                history = store.load_and_repair()      # 顺带修历史遗留问题
+                for pool_type, display in gacha.POOLS:
+                    added += history.merge(raw.get(pool_type, []),
+                                           pool_type=pool_type,
+                                           pool_name=display,
+                                           at=..., player_id=who)
+                report = gacha.report_from_records(history.all_records(who),
+                                                   player_id=who)
+                history.add_snapshot(PullSnapshot(...))
+                store.save(history)                    # ← 原子写盘
+
+            合并失败时才退回 ``report_from_raw``（宁可数字少，也别整个分析失败）。
             """
+            who = str(self._params.get("playerId", "") or "").strip()
+            at = str(self._params.get("_fetched_at", "") or "")
             try:
-                store = gacha_store.GachaStore()
-                #: 尝试用本地历史合并；不同版本 API 略有差异，逐个试
-                merged = None
-                for method_name in ("merge", "merge_raw", "absorb", "update"):
-                    method = getattr(store, method_name, None)
-                    if callable(method):
-                        try:
-                            result = method(raw)
-                            if isinstance(result, dict):
-                                merged = result
-                                break
-                        except TypeError:
-                            continue
-                records = merged or raw
-                if not isinstance(records, dict):
-                    records = raw
-                return gacha.report_from_raw(records)
+                if self._store_path:
+                    store = gacha_store.GachaHistoryStore(path=self._store_path)
+                else:
+                    store = gacha_store.GachaHistoryStore()
+                #: ⚠ 用 ``load_and_repair``（会写）而不是 ``load`` ——
+                #: 用户点「分析」本来就是在改数据，顺手修历史遗留问题不突兀。
+                history = store.load_and_repair()
+                before = len(history)
+
+                added = 0
+                for pool_type, display in gacha.POOLS:
+                    added += history.merge(
+                        raw.get(pool_type, []),
+                        pool_type=pool_type, pool_name=display,
+                        at=at, player_id=who)
+
+                #: ★ 只统计**这个账号**的记录（多账号隔离，别把别的号算进来）
+                report = gacha.report_from_records(
+                    history.all_records(who), player_id=who)
+
+                history.add_snapshot(gacha_store.PullSnapshot(
+                    at=at or gacha_store._now(),
+                    total=report.total, five=report.five_count,
+                    added=added, player_id=who))
+                store.save(history)
+
+                logger.info(
+                    "抽卡历史：账号 %s 新增 %d 条（%d → %d），累计 %d 抽",
+                    who or "(未知)", added, before, len(history),
+                    report.total)
+                self._gacha_merge_note = {
+                    "added": added, "before": before,
+                    "stored": len(history),
+                }
+                return report
             except Exception:  # noqa: BLE001
-                logger.debug("抽卡历史合并失败，退回本次拉取", exc_info=True)
-                return gacha.report_from_raw(raw)
+                logger.warning("抽卡历史合并/保存失败，退回只统计本次拉取",
+                               exc_info=True)
+                self._gacha_merge_note = {"added": 0, "before": 0, "stored": 0}
+                return gacha.report_from_raw(raw, player_id=who)
 
     return _GachaThread
 
@@ -915,6 +998,9 @@ class WebBridge(QObject):
         #: ★ 抽卡分析（P4 第三批）—— 网络线程（几十秒）
         self._gacha_thread = None
         self._gacha_running = False
+        #: 上一次分析把多少条记录并进本地历史（``added``/``before``/``stored``）。
+        #: 线程里算完写这里，``on_ok`` 再随 ``gachaAnalyzed`` 一起推给页面。
+        self._gacha_merge_note: dict = {}
         self._GachaThread = _make_gacha_thread()
 
         #: ★ 读抽卡链接（2026-11-05 补）—— 本机日志线程（可能全盘扫，几十秒）
@@ -3997,17 +4083,33 @@ class WebBridge(QObject):
                           "message": message})
 
         # ── ② 起线程拉数据 ──
-        thread = self._GachaThread(params, self)
+        #: ★ 2026-11-05：拉取时刻写进参数 —— 线程合并历史时用它当时间点
+        #: （旧界面 ``gacha/tool.py:1080`` 就是这么做的）。没有它，
+        #: ``PullSnapshot.at`` 会是空串，「抽卡历史」里那条记录没时间。
+        params = dict(params)
+        params["_fetched_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        thread = self._GachaThread(
+            params, self, store_path=getattr(self, "_gacha_store_path", None))
         self._gacha_thread = thread
         self._gacha_running = True
 
         def on_ok(report_dict: dict) -> None:
             self._gacha_running = False
             report_dict["ok"] = True
+            #: ★ 本次合并进历史多少条（供页面提示「新增 N 条」）
+            report_dict["merge"] = dict(self._gacha_merge_note or {})
             self.emitEvent("gachaAnalyzed", report_dict)
-            self.pushLog(
-                f"抽卡分析完成：共 {report_dict.get('total', 0)} 抽，"
-                f"{report_dict.get('fiveCount', 0)} 个五星", "ok")
+            note = self._gacha_merge_note or {}
+            if note.get("added"):
+                self.pushLog(
+                    f"抽卡分析完成：共 {report_dict.get('total', 0)} 抽，"
+                    f"{report_dict.get('fiveCount', 0)} 个五星"
+                    f"（本次新增 {note.get('added')} 条记录）", "ok")
+            else:
+                self.pushLog(
+                    f"抽卡分析完成：共 {report_dict.get('total', 0)} 抽，"
+                    f"{report_dict.get('fiveCount', 0)} 个五星", "ok")
 
         def on_fail(message: str) -> None:
             self._gacha_running = False

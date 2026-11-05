@@ -4527,6 +4527,16 @@
     gachaLoadHistory();
     //: ★ 欧皇卡 / 抽卡总结 / 头像墙 / 分卡池 —— 后端起就渲染（不依赖点「分析」）
     gachaLoadOverview();
+    //: ★ 2026-11-05：``gachaAnalyzed`` 必须**建面板时就订阅**。
+    //:
+    //: 原来只在 ``gachaAnalyze()`` 末尾（点完「分析」、后端已受理之后）
+    //: 才 ``gachaBindAnalyzed()`` —— 于是这些场景事件全丢：
+    //:   * 点了分析、又在结果回来前切走页面再切回来（面板重建 →
+    //:     监听器随旧 DOM 一起没了）；
+    //:   * 用户在旧界面/Qt 版点了分析，Web 页面这边想跟着更新；
+    //:   * 探针从 Python 侧 emit（模拟后端推送）时页面根本没订阅。
+    //: 事件监听和"谁会触发它"无关，订阅应该跟面板生命周期绑定。
+    gachaBindAnalyzed();
     void app; void meta;
   });
 
@@ -4860,44 +4870,40 @@
     if (GACHA_STATE.statusEl) {
       const pid = String(data.playerId || '');
       const tail = pid.length > 6 ? '…' + pid.slice(-6) : pid;
+      const merged = (data.merge && data.merge.added) || 0;
       GACHA_STATE.statusEl.textContent =
-        '显示的是本地累计的 ' + (data.total != null ? data.total : 0) +
-        ' 抽' + (tail ? '（' + tail + '）' : '') + '。' +
-        '点「分析」可以把最新记录并进来。';
+        '本次拉到 ' + (data.fetchedTotal != null ? data.fetchedTotal : 0) +
+        ' 抽，' +
+        '本地累计 ' + (data.total != null ? data.total : 0) + ' 抽' +
+        (tail ? '（' + tail + '）' : '') +
+        (merged ? '，新增 ' + merged + ' 条记录。' : '。');
     }
 
-    gachaRenderOverview({
-      luck: data.luck,
-      total: data.total,
-      average: data.average,
-      notUpRate: data.notUpRate,
-      fiveCount: data.fiveCount,
-      upCharAverage: data.upCharAverage,
-      upWeaponAverage: data.upWeaponAverage
-    });
+    //: ★★★ 2026-11-05 修：这里原来手工拼了一个字段名完全对不上的对象。
+    //
+    //: ``gachaRenderOverview()`` 读的是 ``getGachaOverview`` 的字段名
+    //: （``avgFive``/``noLoseRate``/``five``/``perChar``/``perWeapon``/
+    //: ``rank``），而这里传的是分析接口的
+    //: （``average``/``notUpRate``/``fiveCount``/…）——
+    //: **一个都不认**，所以用户 m15107 看到「有数据但标记处全是 —」。
+    //
+    //: 现在**不再手工拼**：直接调 ``gachaLoadOverview()`` 重拉一次。
+    //: 那一刻 ``GachaStore`` 已经把新记录合并落盘，``getGachaOverview``
+    //: 读到的就是最新全量，字段也天然对得上（同一个函数、同一套口径）。
+    //: 两套字段各自维护一次就是上一轮踩的坑，别再拆开。
+    gachaLoadOverview();
 
     //: 抽卡总结（旧界面 ``summary_note``）
     if (GACHA_STATE.summaryNote) {
       GACHA_STATE.summaryNote.textContent = String(data.summary || '');
     }
 
-    //: 头像网格（带 ×N 角标）
-    const cards = GACHA_STATE.cardsHost;
-    if (cards) {
-      P.fill(cards, null);
-      const list = Array.isArray(data.fiveStarCards) ? data.fiveStarCards : [];
-      for (const item of list) {
-        cards.appendChild(gachaAvatarCard(item));
-      }
-      if (!list.length) {
-        cards.appendChild(P.el('div', {
-          class: 'gk-note', text: '这次分析没有五星记录。'
-        }));
-      }
-    }
-
-    //: 分卡池
-    gachaRenderPools(Array.isArray(data.pools) ? data.pools : []);
+    //: 头像墙 / 分卡池**不在这里画** —— ``gachaLoadOverview()`` 会连
+    //: ``cards`` 和 ``pools`` 一起重新渲染（它读的是合并后的全量）。
+    //: 原来这里还画了一遍，而且用的是分析接口的 ``fiveStarCards``
+    //: （后端实际叫 ``fiveStars``）→ 永远空 → 页面显示
+    //: 「这次分析没有五星记录」（用户 m15107 截图里那句），
+    //: 然后又被异步回来的 overview 覆盖掉，闪一下。
   }
 
   /**
