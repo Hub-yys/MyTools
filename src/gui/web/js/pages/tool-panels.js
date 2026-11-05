@@ -2234,18 +2234,23 @@
       }
       row.appendChild(input);
 
-      //: ★★★ 2026-11-05 用户圈图：
+      //: ★★★ 2026-11-05 用户圈图（第二次调整）：
       //:
-      //:   > 验证码变成可输入，**右边**还有 60 倒计时输入提示
+      //:   > 这个获取验证码没有效果，重发60s倒计时是啥意思，我只让你加
+      //:   > 倒计时读秒，目的是让用户快点填这个验证码，你这个重发60s
+      //:   > 倒计时像是真的发了短信一样，现在改成 60s倒计时
       //:
-      //: 验证码框**右边**挂一颗「获取验证码」。点它：
+      //: **「重发 Ns」是错的文案** —— 它暗示"我们已经发了一条短信，
+      //: 60 秒后才能再发"。实际上本机发不出去（服务端要过极验
+      //: ``NeedHumanVerify``），点它只是开始读秒。用户要的是
+      //: **「60s 倒计时」**，仅此而已。
       //:
-      //:   1. **不真的发短信** —— 服务端要求先过极验（``NeedHumanVerify``），
-      //:      纯 Python 做不到，实测点了只会拿到「人机验证」而不是短信。
-      //:      所以按钮的作用是**开始 60 秒倒计时 + 把验证码框准备好**，
-      //:      并提示用户去官方入口取（码在 APP / 网页通用）。
-      //:   2. 倒计时期间按钮禁用并在文字里显示剩余秒数（``重发 58s``），
-      //:      这是用户要的「倒计时输入提示」。
+      //: 所以：
+      //:
+      //: * 按钮文字从「重发 58s」改成「60s」，纯读秒；
+      //: * 点「获取验证码」时**把提示写清楚**：去库街区 App / 网页
+      //:   登录框点「获取验证码」拿码，这边只是计时；
+      //: * 倒计时结束后按钮恢复可点（用户没拿到码就再点一次）。
       //:
       //: ⚠ 顺序：**必须 append 在 input 之后**才是"右边"。
       //: 第一版写在了 ``row.appendChild(input)`` 前面，结果按钮跑到
@@ -2862,6 +2867,17 @@
         //: 登录成功 —— 后端紧接着会自动拉数据，这里保持 busy
         BUILD_STATE.loggedIn = true;
         BUILD_STATE.busy = true;
+        //: ★ 2026-11-05：登录成功就退出「重登态」，并停掉读秒
+        //: （否则三个框会一直保持解锁、按钮一直显示 60s）
+        BUILD_STATE.relogin = false;
+        if (BUILD_STATE.codeTimer) {
+          clearInterval(BUILD_STATE.codeTimer);
+          BUILD_STATE.codeTimer = 0;
+        }
+        BUILD_STATE.codeLeft = 0;
+        if (BUILD_STATE.codeBtn) {
+          BUILD_STATE.codeBtn.textContent = '获取验证码';
+        }
         if (BUILD_STATE.loginBtn) BUILD_STATE.loginBtn.textContent = '登录';
         buildApplyEditable();
         setBuildNotice(msg || '登录成功，开始拉取数据…', 'info');
@@ -2878,6 +2894,8 @@
     offs.push(window.Bridge.on('kuroDataReady', function (data) {
       const d = data || {};
       BUILD_STATE.busy = false;
+      //: ★ 2026-11-05：数据到位 = 这次登录流程彻底结束，清掉重登态
+      BUILD_STATE.relogin = false;
       buildApplyEditable();
       if (BUILD_STATE.refreshBtn) BUILD_STATE.refreshBtn.textContent = '刷新数据';
       //: 收到完整数据才重读缓存重画；partial 只更新提示（43 个角色要几十秒，
@@ -2892,6 +2910,7 @@
 
     offs.push(window.Bridge.on('kuroDataFailed', function (data) {
       BUILD_STATE.busy = false;
+      BUILD_STATE.relogin = false;
       buildApplyEditable();
       if (BUILD_STATE.refreshBtn) BUILD_STATE.refreshBtn.textContent = '刷新数据';
       setBuildNotice('拉取失败：' + String((data || {}).message || '未知原因'),
@@ -3112,7 +3131,17 @@
    * ============  =====================================================
    *
    * 所以「重新登录」= 解锁输入框（但**不清**特征码/手机号）+ 聚焦验证码
-   * + 把按钮文字改成「确认重登」，用户填完再点一次就真登录。
+   * + 起 60 秒读秒。
+   *
+   * ## ⚠ 2026-11-05 第二次调整（用户原话）
+   *
+   *   > 点了重新登陆后不是变成确认登陆，是变灰，60s倒计时结束前
+   *   > 不可再点重新登陆
+   *
+   * 原来点一下按钮文字变「确认重登」、要再点一次才真登录 —— 用户不要
+   * 这个两段式。现在点一下**立刻进入重登态**（解锁 + 清验证码 + 读秒），
+   * 按钮自己**变灰**，读秒结束前不能重复点。真正提交登录用旁边的「登录」
+   * 按钮（那期间它是启用的）。
    *
    * ## 为什么不直接调 ``kuroFetchData``
    *
@@ -3126,15 +3155,23 @@
       setBuildNotice('还没登录 —— 直接填手机号 + 验证码点「登录」', 'warn');
       return;
     }
-    //: 已经在重登流程里 → 这次点击是「确认重登」
-    if (BUILD_STATE.relogin) {
-      buildLogin(BUILD_STATE.loginBtn || btn);
-      return;
-    }
+    //: ★★★ 2026-11-05 用户第二次调整：
+    //:
+    //:   > 点了重新登陆后不是变成确认登陆，是变灰，60s倒计时结束前
+    //:   > 不可再点重新登陆
+    //:
+    //: 原来点一下按钮文字变「确认重登」，要再点一次才真登录 —— 用户不要
+    //: 这个两段式。现在：**点一下就开始跑**（解锁三个框 + 清验证码 +
+    //: 起 60 秒倒计时），按钮**立刻变灰**，倒计时结束前不能重复点。
+    //
+    //: 那用户怎么真正提交登录？填完验证码点旁边的「登录」即可
+    //: （那时按钮是启用的 —— ``buildApplyEditable()`` 里 relogin 态
+    //: 会解锁它）。「重新登录」本身只负责**进入重登态 + 计时**。
+
+    if (BUILD_STATE.codeLeft > 0) return;   // 倒计时中，忽略
 
     BUILD_STATE.relogin = true;
     BUILD_STATE.busy = false;
-    buildApplyEditable();
 
     //: ★ 特征码 / 手机号**保持原值**（用户明确要求），只清验证码
     const fields = BUILD_STATE.loginFields || {};
@@ -3142,29 +3179,31 @@
       fields.code.value = '';
       try { fields.code.focus(); } catch (err) { void err; }
     }
-    if (btn) btn.textContent = '确认重登';
+    buildApplyEditable();
     setBuildNotice(
-      '重新登录：特征码和手机号已保留，填一个新验证码后点「确认重登」。' +
-      '点「获取验证码」可以看到 60 秒倒计时提示。', 'info');
-    //: 顺手起一个倒计时（用户要的「右边还有 60 倒计时输入提示」）
+      '重新登录：特征码和手机号已保留。去库街区 App / 网页登录框点' +
+      '「获取验证码」，拿到后填进验证码框，再点「登录」。', 'info');
+    //: ★ 起 60 秒倒计时 → 期间「重新登录」保持灰色不可点
     buildStartCodeCountdown();
   }
 
   /**
-   * ★ 验证码倒计时（用户：「右边还有 60 倒计时输入提示」）。
+   * ★ 验证码读秒（用户：「60s倒计时」）。
    *
-   * ## ★★★ 为什么**不真发短信**
+   * ## ★★★ 为什么**不真发短信**，也不该说「重发」
    *
    * ``kuro_account.send_sms_code`` 实测会抛 :class:`NeedHumanVerify` ——
    * 服务端返回 ``{"code":200, "data":{"geeTest":true}}``，
    * **code 是 200 但短信根本没发**（极验要跑 JS 采行为轨迹，纯 Python 做不到）。
    *
-   * 好消息是**验证码在 APP 端与网页端通用**，用户自己去官方入口点一次
-   * 「获取验证码」就能拿到，填到这里即可。所以这颗按钮的职责是
-   * **倒计时 + 引导**，不是发短信。
+   * 用户第二次明确指出：「重发 60s 倒计时是啥意思……像是真的发了短信一样」。
+   * 所以按钮文字就是纯读秒 **「60s」**，不说「重发」两个字。
    *
-   * 倒计时结束（60 秒）后按钮恢复可点 —— 这时用户如果还没拿到码，
-   * 说明官方那边的码可能也过期了，该再去点一次。
+   * 这块倒计时的**唯一目的**是给用户一个"快去填"的时间感，以及
+   * **60 秒内不许重复点「重新登录」**（用户明确要求）。
+   *
+   * 验证码在 APP 端与网页端通用 —— 用户自己去官方入口点一次
+   * 「获取验证码」就能拿到。
    */
   function buildSendCode(btn) {
     if (BUILD_STATE.codeLeft > 0) return;
@@ -3178,34 +3217,45 @@
     }
   }
 
-  /** 起 60 秒倒计时，按钮文字显示剩余秒数。 */
+  /** 起 60 秒读秒（按钮文字 = 剩余秒数 + "s"）。 */
   function buildStartCodeCountdown(btn) {
     const codeBtn = btn || BUILD_STATE.codeBtn;
-    if (!codeBtn) return;
     if (BUILD_STATE.codeTimer) {
       clearInterval(BUILD_STATE.codeTimer);
       BUILD_STATE.codeTimer = 0;
     }
-    BUILD_STATE.codeLeft = 60;
+    //: ★★★ 2026-11-05 用**截止时间戳**算剩余秒数，而不是每秒 ``-=1``
+    //:
+    //: 踩过：Chromium 会对**不可见 / 被遮挡**的窗口节流 ``setInterval``
+    //: （实测 1 秒的定时器 4 秒才跑一次），递减计数就会变成
+    //: 「60s 挂在那儿半天不动」。用 ``Date.now()`` 差值算，
+    //: 定时器跑晚了也能立刻显示正确的剩余秒数。
+    const deadline = Date.now() + 60 * 1000;
     const paint = function () {
-      if (BUILD_STATE.codeLeft > 0) {
-        codeBtn.textContent = '重发 ' + BUILD_STATE.codeLeft + 's';
-        codeBtn.disabled = true;
-      } else {
-        codeBtn.textContent = '获取验证码';
-        codeBtn.disabled = false;
-        if (BUILD_STATE.codeTimer) {
-          clearInterval(BUILD_STATE.codeTimer);
-          BUILD_STATE.codeTimer = 0;
+      const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      BUILD_STATE.codeLeft = left;
+      if (left > 0) {
+        //: ★ 只读秒，不写「重发」—— 用户明确说那样"像是真的发了短信"
+        if (codeBtn) {
+          codeBtn.textContent = left + 's';
+          codeBtn.disabled = true;
         }
-        buildApplyEditable();
+        //: 读秒期间「重新登录」也要跟着灰（用户要求 60s 内不可再点）
+        if (BUILD_STATE.reloginBtn) BUILD_STATE.reloginBtn.disabled = true;
+        return;
       }
+      //: 归零：恢复按钮
+      if (codeBtn) {
+        codeBtn.textContent = '获取验证码';
+      }
+      if (BUILD_STATE.codeTimer) {
+        clearInterval(BUILD_STATE.codeTimer);
+        BUILD_STATE.codeTimer = 0;
+      }
+      buildApplyEditable();
     };
     paint();
-    BUILD_STATE.codeTimer = setInterval(function () {
-      BUILD_STATE.codeLeft -= 1;
-      paint();
-    }, 1000);
+    BUILD_STATE.codeTimer = setInterval(paint, 250);
   }
 
 
@@ -3251,11 +3301,13 @@
     if (BUILD_STATE.codeBtn) {
       BUILD_STATE.codeBtn.disabled = locked || BUILD_STATE.codeLeft > 0;
     }
-    //: ★ 2026-11-05：「重新登录」在**已登录 + 不忙**时可用
-    //: （没登录时它就是普通登录，不需要它）
+    //: ★ 2026-11-05（用户第二次调整）：「重新登录」在**已登录 + 不忙 +
+    //: 读数结束**时可用。点一下进入重登态并开始读秒，读秒期间**保持灰色**
+    //: —— 用户原话：「60s倒计时结束前不可再点重新登陆」。
     if (BUILD_STATE.reloginBtn) {
       BUILD_STATE.reloginBtn.disabled = !BUILD_STATE.loggedIn
-        || !!BUILD_STATE.busy;
+        || !!BUILD_STATE.busy
+        || BUILD_STATE.codeLeft > 0;
     }
     //: 旧的「刷新数据」按钮已经删了，``refreshBtn`` 恒为 null。
     //: 保留判空是因为事件回调里还有几处引用（删干净要改三处，
