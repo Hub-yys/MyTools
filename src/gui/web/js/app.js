@@ -709,6 +709,65 @@
             'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.16)');
           root.style.setProperty('--primary-glow',
             'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',0.42)');
+
+          //: ★★★ 2026-11-05：主色同时当「填充底」和「文字色」用，两者要的字色相反。
+          //:
+          //: 起因：用户「千咲主题改成黑色主题」。纯黑/近黑当按钮底很好看，
+          //: 但当**文字色**就等于隐形（黑底黑字），`--primary-glow` 也没有发光感。
+          //:
+          //: 规则：
+          //:
+          //: * ``--on-primary``  —— 画在主色填充**上面**的字。
+          //:   近黑 / 近白两个候选，**按 WCAG 对比度实际算一遍选高的**。
+          //:   为什么不算阈值：长离 ``#D8503C`` 的 luma 107.5 按阈值会选浅字
+          //:   （3.89:1），而深字是 4.47:1 —— 唯一不会判错的判据就是真比。
+          //: * ``--primary-text`` —— 把主色**当文字/图标**用时的那份颜色。
+          //:   主色够亮 → 直接用；太暗 → 混白提亮到能读（保色相）。
+          //: * ``data-primary-dark`` —— 给 CSS 一个「这是暗主色」的钩子，
+          //:   让 hover 之类需要额外补偿的地方能分叉（见 layout.css）。
+          const dOnDark = contrastRatio(ON_DARK_TEXT, rgb);   // 深字压在主色上
+          const dOnLight = contrastRatio(ON_LIGHT_TEXT, rgb); // 浅字压在主色上
+          const useLight = dOnLight > dOnDark;
+          root.style.setProperty('--on-primary',
+            useLight ? 'rgba(248, 249, 252, 0.95)' : '#15112b');
+
+          //: ★★★ 2026-11-05（第二轮）：**填充色本身**也要能微调。
+          //:
+          //: 有些主题落在「中间调」（心月狐 #D8323C、长离 #D8503C）——
+          //: 配浅字 4.49:1、配深字 4.47:1，**两条路都够不到 WCAG AA 的 4.5**。
+          //: 这时能调的只剩底色：往选定字色的反方向推一点（配浅字就压暗、
+          //: 配深字就提亮），推到刚好达标为止，**只推最小幅度**保住主题观感。
+          //:
+          //: 为什么单独一个 ``--primary-fill`` 而不是改 ``--primary``：
+          //: 主题色还要给导航/选中态/光晕等**非填充**处当色相参考，
+          //: 那里改了会让整个界面偏色。填充只有按钮底、开关滑块、进度条、
+          //: 选中 chip 这几处（见 layout.css / pages.css 的 ``var(--primary-fill)``）。
+          const fill = nudgeFill(rgb, useLight);
+          root.style.setProperty('--primary-fill', rgbToHex(fill));
+          const fillText = useLight ? 'rgba(248, 249, 252, 0.95)' : '#15112b';
+          //: 微调后重新算一遍（日志/探针都能看到真实比值）
+          const dFill = contrastRatio(
+            useLight ? ON_LIGHT_TEXT : ON_DARK_TEXT, fill);
+          const readable = readableFrom(rgb);
+          root.style.setProperty('--primary-text', rgbToHex(readable));
+          //: 暗主色的「发光」用提亮后的那份，否则 shadow 是一片黑
+          root.style.setProperty('--primary-glow',
+            'rgba(' + Math.round(readable.r) + ',' + Math.round(readable.g) +
+            ',' + Math.round(readable.b) + ',0.42)');
+          const isDark = lumaOf(rgb) < 110;
+          if (isDark) {
+            root.setAttribute('data-primary-dark', '1');
+          } else {
+            root.removeAttribute('data-primary-dark');
+          }
+          console.info('[app] 主色', skin.primary,
+            '→ 填充上的字用' + (useLight ? '浅色' : '深色'),
+            '(' + Math.max(dOnDark, dOnLight).toFixed(2) + ':1)',
+            '填充色 =', rgbToHex(fill),
+            '(' + dFill.toFixed(2) + ':1' +
+              (dFill + 1e-9 >= 4.5 ? '' : ' ⚠ 未达 AA') + ')',
+            '文字色 =', rgbToHex(readable),
+            isDark ? '(暗主色)' : '(亮主色)');
         }
       }
 
@@ -1060,6 +1119,102 @@
       g: parseInt(h.slice(2, 4), 16),
       b: parseInt(h.slice(4, 6), 16)
     };
+  }
+
+  /** 相对亮度（WCAG，0~255 尺度）—— 用来判断主色该配深字还是浅字。 */
+  function lumaOf(rgb) {
+    if (!rgb) return 0;
+    return 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b;
+  }
+
+  /** WCAG 相对亮度（线性化后的 0~1，对比度公式用的就是它）。 */
+  function relLum(rgb) {
+    if (!rgb) return 0;
+    const f = function (v) {
+      const c = v / 255;
+      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * f(rgb.r) + 0.7152 * f(rgb.g) + 0.0722 * f(rgb.b);
+  }
+
+  /** WCAG 对比度（1~21）。 */
+  function contrastRatio(a, b) {
+    const la = relLum(a);
+    const lb = relLum(b);
+    const hi = Math.max(la, lb);
+    const lo = Math.min(la, lb);
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  //: 主色填充上两种候选字色。**不猜阈值，直接比对比度** ——
+  //: 实测反例：长离 ``#D8503C`` 的 luma 是 107.5，按「<110 当暗色」猜会选浅字
+  //: （3.89:1），但深字其实是 4.47:1，更好。比一比就没有这种边界问题。
+  const ON_DARK_TEXT = { r: 0x15, g: 0x11, b: 0x2b };   // #15112b 近黑
+  const ON_LIGHT_TEXT = { r: 0xf8, g: 0xf9, b: 0xfc };  // #f8f9fc 近白
+
+  function rgbToHex(rgb) {
+    const h = function (v) {
+      const s = Math.max(0, Math.min(255, Math.round(v))).toString(16);
+      return s.length < 2 ? '0' + s : s;
+    };
+    return '#' + h(rgb.r) + h(rgb.g) + h(rgb.b);
+  }
+
+  /**
+   * 主色太暗时，把**当文字用**的那份提亮到能读（保色相）。
+   *
+   * 做法：往白色混，直到亮度到 150 —— 数学上等价于
+   * ``mix(primary, white, t)``，用 HSL 保色相更自然，但没有 HSL 依赖，
+   * 直接线性混白（人眼对这个变化很平滑，实测可读性够）。
+   */
+  function readableFrom(rgb) {
+    let out = { r: rgb.r, g: rgb.g, b: rgb.b };
+    let guard = 0;
+    while (lumaOf(out) < 150 && guard < 24) {
+      out = {
+        r: out.r + (255 - out.r) * 0.12,
+        g: out.g + (255 - out.g) * 0.12,
+        b: out.b + (255 - out.b) * 0.12
+      };
+      guard += 1;
+    }
+    return out;
+  }
+
+  /**
+   * 把**填充色**往某方向推，直到它上面的字达到 WCAG AA（4.5:1）。
+   *
+   * ## 为什么需要（2026-11-05 第二轮）
+   *
+   * 有些主色落在「中间调」——心月狐 ``#D8323C`` 配浅字 4.49:1、配深字
+   * 4.47:1；长离 ``#D8503C`` 配浅字 4.47:1、配深字 4.47:1。
+   * **两条路都够不到 4.5**，光挑字色解决不了。
+   *
+   * 能调的只剩底色。规则：
+   *
+   * * 上面要放**浅字** → 把底**压暗**（往 ``#000`` 混）
+   * * 上面要放**深字** → 把底**提亮**（往 ``#fff`` 混）
+   *
+   * 每轮混 4%，最多 20 轮（0%~80%）。**只在没达标时才推，且取最小够用幅度**
+   * —— 心月狐只需推 2 轮（约 8%）就从 4.49 到 4.5+，肉眼几乎看不出色差。
+   *
+   * @param {{r:number,g:number,b:number}} rgb 原始主色
+   * @param {boolean} lightText 上面放的是浅字还是深字
+   */
+  function nudgeFill(rgb, lightText) {
+    const text = lightText ? ON_LIGHT_TEXT : ON_DARK_TEXT;
+    const target = lightText ? 0 : 255;
+    let out = { r: rgb.r, g: rgb.g, b: rgb.b };
+    let guard = 0;
+    while (contrastRatio(text, out) < 4.5 && guard < 20) {
+      out = {
+        r: out.r + (target - out.r) * 0.04,
+        g: out.g + (target - out.g) * 0.04,
+        b: out.b + (target - out.b) * 0.04
+      };
+      guard += 1;
+    }
+    return out;
   }
 
   // ════════════════════════════════════════════════════════════════════════

@@ -115,7 +115,8 @@
   place-items: center;
   background: var(--primary-dim);
   border: 1px solid rgba(255, 255, 255, 0.10);
-  color: var(--primary);
+  /*: ★ 主色当图标色用 —— 走 --primary-text（黑主题下会提亮，否则隐形）*/
+  color: var(--primary-text);
   opacity: 0;
   transform: scale(0.88);
   transition: opacity 140ms var(--ease), transform 140ms var(--ease),
@@ -131,8 +132,9 @@
 }
 
 .tool-card-run:hover {
-  background: var(--primary);
-  color: #15112b;
+  background: var(--primary-fill, var(--primary));
+  /*: ★ 画在主色填充上的字，走 --on-primary（黑主题下会翻成浅色）*/
+  color: var(--on-primary);
 }
 
 .tool-card-run .nav-icon {
@@ -199,7 +201,7 @@
 }
 
 .stat-chip.is-accent b {
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 
@@ -390,9 +392,9 @@
 
 /* 按步骤类型着色（类型常量见 src/core/tasks.py）*/
 .step-chip[data-type="tool"] {
-  color: color-mix(in srgb, var(--primary) 70%, white);
-  background: color-mix(in srgb, var(--primary) 13%, transparent);
-  border-color: color-mix(in srgb, var(--primary) 24%, transparent);
+  color: color-mix(in srgb, var(--primary-text) 70%, white);
+  background: color-mix(in srgb, var(--primary-text) 13%, transparent);
+  border-color: color-mix(in srgb, var(--primary-text) 24%, transparent);
 }
 
 .step-chip[data-type="config"] {
@@ -668,7 +670,7 @@
 
 .task-char.is-open .search-caret {
   transform: rotate(180deg);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 .task-char-panel {
@@ -897,17 +899,21 @@
 
 .sw-input:checked + .sw-track {
   background: var(--primary-dim);
-  border-color: var(--primary);
+  /*: ★ 开关的「开」状态要能一眼看出来。黑色主题下 --primary 近黑，
+   * 画在深色轨道上等于关着 —— 描边用提亮色*/
+  border-color: var(--primary-text);
 }
 
 .sw-input:checked + .sw-track .sw-thumb {
   /*: 40(轨道) - 16(滑块) - 2(左) - 2(右) = 20 */
   transform: translateX(20px);
-  background: var(--primary);
+  /*: ★ 滑块同理 —— 近黑滑块在深色轨道上看不见（用户会以为开关坏了）*/
+  background: var(--primary-text);
 }
 
 .sw-input:focus-visible + .sw-track {
-  outline: 2px solid var(--primary);
+  /*: ★ 焦点环 → 提亮色（同 base.css 的 :focus-visible）*/
+  outline: 2px solid var(--primary-text);
   outline-offset: 2px;
 }
 
@@ -1316,7 +1322,8 @@
 }
 
 .search:focus-within {
-  border-color: var(--primary);
+  /*: ★ 聚焦描边是深色底上的可见元素 → 提亮色（黑主题下 --primary 会隐形）*/
+  border-color: var(--primary-text);
 }
 
 .search .nav-icon {
@@ -1700,7 +1707,7 @@
 /* 已勾选：主色描边 + 轻微底色（扫一眼就知道选了哪些）*/
 .sweep-row.is-checked {
   background-color: var(--primary-dim);
-  border-color: color-mix(in srgb, var(--primary) 42%, transparent);
+  border-color: color-mix(in srgb, var(--primary-text) 42%, transparent);
 }
 
 .sweep-check {
@@ -1708,7 +1715,7 @@
   width: 15px;
   height: 15px;
   margin: 2px 0 0;
-  accent-color: var(--primary);
+  accent-color: var(--primary-text);
   cursor: pointer;
 }
 
@@ -1744,9 +1751,9 @@
 }
 
 .sweep-tag[data-kind="nest"] {
-  color: color-mix(in srgb, var(--primary) 70%, white);
-  background: color-mix(in srgb, var(--primary) 13%, transparent);
-  border-color: color-mix(in srgb, var(--primary) 24%, transparent);
+  color: color-mix(in srgb, var(--primary-text) 70%, white);
+  background: color-mix(in srgb, var(--primary-text) 13%, transparent);
+  border-color: color-mix(in srgb, var(--primary-text) 24%, transparent);
 }
 
 .sweep-tag[data-kind="nightmare"] {
@@ -1791,7 +1798,7 @@
   padding: 8px 11px;
   border-radius: var(--radius-sm);
   background-color: rgba(13, 21, 36, calc(var(--we-readability-floor) * 0.40));
-  border-left: 2px solid color-mix(in srgb, var(--primary) 45%, transparent);
+  border-left: 2px solid color-mix(in srgb, var(--primary-text) 45%, transparent);
   font-size: 11.5px;
   line-height: 1.62;
   color: var(--dim);
@@ -1841,7 +1848,7 @@
 
 .build-row.is-active {
   background-color: var(--primary-dim);
-  border-color: color-mix(in srgb, var(--primary) 42%, transparent);
+  border-color: color-mix(in srgb, var(--primary-text) 42%, transparent);
 }
 
 .build-avatar {
@@ -2539,7 +2546,7 @@
 .build-char-search.is-open .search-caret,
 .lib-char-search.is-open .search-caret {
   transform: rotate(180deg);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 /*: ⚠ ``type="search"`` 在 WebEngine 里带一个**原生**小叉 ——
@@ -2942,8 +2949,8 @@
 
 /* 选中：主色描边 */
 .build-tile.is-selected {
-  border-color: color-mix(in srgb, var(--primary) 60%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 35%, transparent);
+  border-color: color-mix(in srgb, var(--primary-text) 60%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary-text) 35%, transparent);
   background-color: var(--primary-dim);
 }
 
@@ -3199,7 +3206,7 @@
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: var(--primary);
+  accent-color: var(--primary-text);
   cursor: pointer;
   flex: 0 0 auto;
 }
@@ -3396,14 +3403,21 @@
 }
 
 .cfg-btn-primary {
-  background: var(--primary);
+  background: var(--primary-fill, var(--primary));
   border-color: transparent;
-  color: #15112b;
+  /*: ★ 同 .btn-primary —— 主色填充上的字用 --on-primary*/
+  color: var(--on-primary);
   font-weight: 620;
 }
 
 .cfg-btn-primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--primary) 88%, #ffffff);
+  background: color-mix(in srgb, var(--primary-fill, var(--primary)) 88%, #ffffff);
+}
+
+/*: 黑色主题（primary 很暗）时 hover 要往白走更多才看得见 ——
+ *  和 layout.css 的 .btn-primary 同一条规则，靠 :root 上的标记分叉*/
+:root[data-primary-dark="1"] .cfg-btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary-fill, var(--primary)) 74%, #ffffff);
 }
 
 /* 状态行（旧界面 self.state_label，红色系 #C9514C）*/
@@ -3441,7 +3455,7 @@
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: var(--primary);
+  accent-color: var(--primary-text);
   cursor: pointer;
 }
 
@@ -3660,7 +3674,7 @@
 
 .sweep-card.is-checked {
   background-color: var(--primary-dim);
-  border-color: color-mix(in srgb, var(--primary) 38%, transparent);
+  border-color: color-mix(in srgb, var(--primary-text) 38%, transparent);
 }
 
 /* 套装区（每行 2 个）*/
@@ -3738,7 +3752,7 @@
   width: 16px;
   height: 16px;
   margin: 0;
-  accent-color: var(--primary);
+  accent-color: var(--primary-text);
   cursor: pointer;
 }
 
@@ -3889,7 +3903,7 @@
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: var(--primary);
+  accent-color: var(--primary-text);
   cursor: pointer;
   flex: 0 0 auto;
 }
@@ -4229,7 +4243,7 @@
 .gk-pool-tab.is-active {
   color: var(--text);
   background-color: var(--primary-dim);
-  border-color: color-mix(in srgb, var(--primary) 40%, transparent);
+  border-color: color-mix(in srgb, var(--primary-text) 40%, transparent);
 }
 
 /* 池详情行 */
@@ -4930,7 +4944,7 @@
 /*: 菜单展开时箭头翻转（和搜索框的 ``.search-caret`` 同一个交互语言）*/
 .char-picker.is-open .char-arrow {
   transform: rotate(180deg);
-  color: var(--primary);
+  color: var(--primary-text);
 }
 
 /* 候选列表 */
@@ -5127,7 +5141,7 @@
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: var(--primary);
+  accent-color: var(--primary-text);
   cursor: pointer;
 }
 
@@ -5146,7 +5160,7 @@
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: var(--primary);
+  accent-color: var(--primary-text);
   cursor: pointer;
 }
 
@@ -5254,7 +5268,7 @@
   width: 15px;
   height: 15px;
   margin: 0;
-  accent-color: var(--primary);
+  accent-color: var(--primary-text);
   cursor: pointer;
 }
 
@@ -5312,7 +5326,7 @@
   width: 12px;
   height: 12px;
   margin: 0;
-  accent-color: var(--primary);
+  accent-color: var(--primary-text);
   cursor: pointer;
 }
 
@@ -5586,7 +5600,8 @@
 
 .input:focus {
   outline: none;
-  border-color: var(--primary);
+  /*: ★ 同上 —— 输入框获得焦点时那圈边必须看得见*/
+  border-color: var(--primary-text);
   background-color: rgba(13, 21, 36, calc(var(--we-readability-floor) * 0.66));
 }
 
@@ -6486,7 +6501,8 @@ input.input.cfg-count-box {
 }
 
 .picker.is-open .picker-trigger {
-  border-color: var(--primary);
+  /*: ★ 下拉展开态描边 → 提亮色*/
+  border-color: var(--primary-text);
 }
 
 /*: trigger 里的图标（32×32 有点大，压到 24）*/
