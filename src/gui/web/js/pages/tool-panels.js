@@ -5210,10 +5210,25 @@
     function useInitial() {
       P.fill(avatar, null);
       const name = String(item.name || '?');
-      //: ``initial`` 是后端算好的首字（大多数情况就是 name[0]）
-      const letter = String(item.initial || name.slice(0, 1) || '?');
+      //: ★★★ 2026-11-05 修（用户圈图：卡墙上出现一个 ``[object Object]``）
+      //:
+      //: 后端 ``_initial_avatar(name)``（``web_bridge.py:196``）返回的是
+      //: **一个 dict** ``{name, initial, hue, color, textColor}``，
+      //: 不是字符串。原来这里直接 ``String(item.initial)`` →
+      //: ``String({...})`` 得到 ``"[object Object]"``，于是那个名额
+      //: 显示成一坨 ``[object Object]``。
+      //:
+      //: 正确写法要取 ``.initial`` 字段（``config.js:1105`` 和本文件
+      //: ``gachaFiveRow`` 都这么写，只有这里漏了）。
+      const raw = item.initial;
+      const letter = String(
+        (raw && typeof raw === 'object' ? raw.initial : raw)
+        || name.slice(0, 1) || '?');
       avatar.textContent = letter;
-      const hue = Number(item.avatarHue);
+      //: 色相也优先用后端算好的（dict 里的 hue 或顶层的 avatarHue）
+      const hue = Number(
+        item.avatarHue != null ? item.avatarHue
+          : (raw && typeof raw === 'object' ? raw.hue : NaN));
       if (isFinite(hue)) {
         avatar.style.backgroundColor = 'hsl(' + hue + ', 42%, 30%)';
         avatar.style.color = 'rgba(255,255,255,0.92)';

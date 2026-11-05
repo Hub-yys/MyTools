@@ -2,7 +2,7 @@
   "_source": [
     "https://wiki.kurobbs.com/mc/catalogue/list?fid=1099（库街区官方 wiki，catalogueId=1106 武器）"
   ],
-  "_fetched": "2026-09-30",
+  "_fetched": "2026-11-05",
   "_game_version": "3.7",
   "_note": "武器名单与「类型 / 主词条 / 星级」整理自库街区官方 wiki。图标按 assets/game/weapons/<武器名>.png 放（用 tools/fetch_wuwa_assets.py 的 weapons 类别下载）。",
   "weapons": [
@@ -398,6 +398,12 @@
     },
     {
       "name": "永远的启明星",
+      "type": "迅刀",
+      "stat": "暴击率",
+      "rarity": 5
+    },
+    {
+      "name": "沉冥",
       "type": "迅刀",
       "stat": "暴击率",
       "rarity": 5

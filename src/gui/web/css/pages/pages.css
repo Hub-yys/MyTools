@@ -4006,6 +4006,12 @@
   font-weight: 620;
   color: var(--text);
   margin-bottom: 8px;
+  /* ★ 2026-11-05：视频壁纸下垫底板（静态壁纸 = transparent，观感不变）*/
+  background: var(--we-video-plate, transparent);
+  border-radius: var(--radius-sm);
+  padding: 4px 12px;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .gk-note {
@@ -4014,6 +4020,13 @@
   color: #8A8F98;
   margin-bottom: 10px;
   white-space: pre-line;
+  background: var(--we-video-plate, transparent);
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  /*: ★ 2026-11-05：``fit-content`` 而不是满宽 —— 视频壁纸下满宽就是
+      一条横贯整页的暗带，太重；缩到文字那么宽才像一块「底板」。 */
+  width: fit-content;
+  max-width: 100%;
 }
 
 .gk-howto {
@@ -4022,6 +4035,11 @@
   color: #8A8F98;
   margin-bottom: 14px;
   white-space: pre-line;
+  background: var(--we-video-plate, transparent);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  width: fit-content;
+  max-width: 100%;
 }
 
 /* 取链接行：[获取抽卡记录] [输入框] [分析] —— 按钮在**左** */
@@ -4043,6 +4061,13 @@
   line-height: 1.6;
   color: #8A8F98;
   margin-bottom: 14px;
+  /* ★ 2026-11-05：视频壁纸下垫一块底板（静态壁纸时是 transparent，
+     完全不动原来的通透观感）。见 base.css 的 ``--we-video-plate``。 */
+  background: var(--we-video-plate, transparent);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  width: fit-content;
+  max-width: 100%;
 }
 
 /* ── 欧皇卡（6 个大数字）── */
@@ -4100,6 +4125,12 @@
   font-weight: 620;
   color: var(--text);
   margin: 16px 0 8px;
+  /* ★ 2026-11-05：视频壁纸下垫底板（静态壁纸 = transparent，不受影响）*/
+  background: var(--we-video-plate, transparent);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  width: fit-content;
+  max-width: 100%;
 }
 
 /* ── 头像墙（带 ×N 角标）── */
@@ -4163,6 +4194,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* ★ 2026-11-05：视频壁纸下垫底板 —— 名字是最容易被动态高光吃掉的一行，
+     静态壁纸时 transparent，观感不变。 */
+  background: var(--we-video-plate, transparent);
+  border-radius: 4px;
+  padding: 1px 5px;
 }
 
 /* ── 分卡池页签 ── */
@@ -4234,6 +4270,12 @@
   align-items: center;
   gap: 10px;
   margin: 16px 0 10px;
+  /* ★ 2026-11-05：视频壁纸下垫底板（挑「清空历史」那颗按钮和标题）*/
+  background: var(--we-video-plate, transparent);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .gk-history {

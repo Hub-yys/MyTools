@@ -328,6 +328,27 @@ html[data-theme="light"] .card-glass .cfg-state-muted {
 }
 
 
+/* ★★★ 2026-11-05：**视频壁纸下，页面标题也要垫底板**
+ *
+ * 用户 m15532 截图里「抽卡记录分析」这个 22px 大标题直接压在动的
+ * 坎特蕾拉画面上 —— 高光扫过来时字会被吃掉，看起来也在「闪」。
+ *
+ * 静态壁纸时 ``--we-video-plate`` 是 ``transparent``，这条路完全没效果，
+ * 2026-11-04「透明度就很好」的观感一个像素都不变。
+ *
+ * ⚠ 只垫 ``.page-title`` 本身（``width: fit-content``），不要给
+ * ``.page-head`` / ``.page`` 加背景 —— 那会把整页铺成一块灰板，
+ * 视频就白透了。
+ */
+body[data-wall="video"] .page-title {
+  background: var(--we-video-plate);
+  border-radius: var(--radius-sm);
+  padding: 2px 12px;
+  width: fit-content;
+  max-width: 100%;
+}
+
+
 /* ══════════════════════════════════════════════════════════════════════════
    ⑤ 壁纸层 + 压暗层
 
@@ -383,6 +404,24 @@ html[data-theme="light"] .card-glass .cfg-state-muted {
   background: #050409;
   opacity: var(--we-scrim);
   transition: opacity var(--dur) var(--ease);
+}
+
+/* ★ 2026-11-05：**视频壁纸额外压暗一档**。
+   
+   用户 m15532：「图1这里怎么一直在闪？」
+   
+   实测：那段壁纸（坎特蕾拉）自身亮度在 58.5~86.2 之间抖（200 帧），
+   循环接缝还有一次 20.4 级的跳变。它透过 21%~24% 的面板 + 0% 的裸文字块
+   传到眼前 —— 30 帧/秒的明暗变化就是「闪」。
+   
+   压暗是**性价比最高**的一刀：`0.45 → 0.63` 之后抖动的绝对幅度
+   从 27.6 级压到约 10.5 级（暗部再乘一次），而**面板的透明度一个像素
+   都没改** —— 2026-11-04 用户认可的「透明度就很好」原样保留，
+   只是视频壁纸整体暗一点（静态壁纸不受影响，见 base.css 的 data-wall）。
+   
+   配合 pages.css 里给裸文字块垫的 `--we-video-plate`，字也不会被高光顶掉。 */
+body[data-wall="video"] #scrim {
+  opacity: calc(var(--we-scrim) + 0.18);
 }
 
 

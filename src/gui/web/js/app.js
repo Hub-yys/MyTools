@@ -737,8 +737,25 @@
 
       this.wallpaper = wp;
 
+      //: ★ 2026-11-05：告诉 CSS 当前壁纸是**视频**还是静态
+      //
+      //: 用户 m15532：「抽卡页一直在闪」。查下来是视频壁纸的亮度在
+      //: 58~86 之间来回抖（200 帧实测），而抽卡页的文字块遮挡率是 **0%**
+      //: —— 30 帧/秒的明暗变化直接透在字底下，看起来就是闪。
+      //:
+      //: 但 2026-11-04 用户又明确说过「这个透明度就很好」，不能全站加深。
+      //: → 按类型分岔：只有视频壁纸才给裸文字块垫底板
+      //: （``base.css`` 的 ``body[data-wall="video"]`` + ``--we-video-plate``）。
+      const markWall = function (kind) {
+        try {
+          if (kind) document.body.dataset.wall = kind;
+          else delete document.body.dataset.wall;
+        } catch (err) { /* 极老的浏览器才没有 dataset，忽略 */ }
+      };
+
       if (!wp.url) {
         //: 没有可播的壁纸 → 显示渐变兜底
+        markWall('');
         video.classList.remove('is-playing');
         video.removeAttribute('src');
         try { video.load(); } catch (err) { /* 忽略 */ }
@@ -746,6 +763,11 @@
         console.info('[app] 壁纸不可用，用渐变兜底:', wp.title || '(无)');
         return;
       }
+
+      //: 静态图（.png/.jpg）不需要垫底板 —— 画面不动就不会闪。
+      //: 现在的壁纸全是转好的 webm，走视频分支。
+      const isVideo = /\.(webm|mp4|ogv|ogg|mov|mkv)(\?|$)/i.test(String(wp.url));
+      markWall(isVideo ? 'video' : 'image');
 
       if (video.src === wp.url && video.classList.contains('is-playing')) {
         return;   // 已经是这个了
