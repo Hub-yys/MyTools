@@ -161,10 +161,10 @@
     rgba(255, 255, 255, 0.00) 60%
   );
   /* ★ 和标题栏同一套 —— saturate 让壁纸的颜色渗上来，否则玻璃发灰 */
-  backdrop-filter: blur(calc(var(--we-blur) * 0.85))
+  backdrop-filter: blur(var(--we-blur-sidebar))
                    saturate(var(--we-saturate))
                    brightness(calc(var(--we-glass-brightness) * var(--we-glass-dim)));
-  -webkit-backdrop-filter: blur(calc(var(--we-blur) * 0.85))
+  -webkit-backdrop-filter: blur(var(--we-blur-sidebar))
                            saturate(var(--we-saturate))
                            brightness(calc(var(--we-glass-brightness) * var(--we-glass-dim)));
   border-right: 1px solid var(--sidebar-border);
