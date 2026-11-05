@@ -4431,15 +4431,6 @@
   background-color: rgba(255, 255, 255, 0.03);
 }
 
-/* ★ 2026-11-05：「获取验证码」按钮 —— 在验证码输入框**右边**。
-   倒计时期间文字变成「重发 58s」并禁用，宽度会跳（60s → 9s 少一位数字），
-   固定一个最小宽度让整行不跟着抖。 */
-.build-code-btn {
-  flex: 0 0 auto;
-  min-width: 92px;
-  justify-content: center;
-}
-
 .build-login-btns {
   display: flex;
   align-items: center;

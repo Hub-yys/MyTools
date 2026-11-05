@@ -1974,8 +1974,10 @@
     //:    见 ``buildApplyEditable()``
     loginBtn: null,
     refreshBtn: null,
-    //: ★ 2026-11-05：验证码行右边的「获取验证码」按钮 + 倒计时句柄
-    codeBtn: null,
+    //: ★ 2026-11-05（第三次调整，用户 m16573 圈图「获取验证码干掉啊」）：
+    //: 那颗按钮**删了** —— 本机根本发不出短信（服务端要过极验
+    //: ``NeedHumanVerify``），点它只是开始读秒 + 弹一句"去官方入口拿码"，
+    //: 纯属多一个会误导人的按钮。读秒改挂在「重新登录」上。
     codeLeft: 0,
     codeTimer: 0,
     //: ★ 2026-11-05：「重新登录」按钮（原来那颗「刷新数据」删了）
@@ -2234,39 +2236,6 @@
       }
       row.appendChild(input);
 
-      //: ★★★ 2026-11-05 用户圈图（第二次调整）：
-      //:
-      //:   > 这个获取验证码没有效果，重发60s倒计时是啥意思，我只让你加
-      //:   > 倒计时读秒，目的是让用户快点填这个验证码，你这个重发60s
-      //:   > 倒计时像是真的发了短信一样，现在改成 60s倒计时
-      //:
-      //: **「重发 Ns」是错的文案** —— 它暗示"我们已经发了一条短信，
-      //: 60 秒后才能再发"。实际上本机发不出去（服务端要过极验
-      //: ``NeedHumanVerify``），点它只是开始读秒。用户要的是
-      //: **「60s 倒计时」**，仅此而已。
-      //:
-      //: 所以：
-      //:
-      //: * 按钮文字从「重发 58s」改成「60s」，纯读秒；
-      //: * 点「获取验证码」时**把提示写清楚**：去库街区 App / 网页
-      //:   登录框点「获取验证码」拿码，这边只是计时；
-      //: * 倒计时结束后按钮恢复可点（用户没拿到码就再点一次）。
-      //:
-      //: ⚠ 顺序：**必须 append 在 input 之后**才是"右边"。
-      //: 第一版写在了 ``row.appendChild(input)`` 前面，结果按钮跑到
-      //: 标签和输入框中间（看着像"获取验证码"是第二个标签），已改。
-      if (item[0] === 'code') {
-        const codeBtn = P.button('获取验证码', {
-          size: 'sm',
-          title: '去库街区 App / 网页登录框点「获取验证码」，然后填到这里' +
-            '（验证码两边通用；本机发不出去 —— 服务端要求人机验证）',
-          onClick: function () { buildSendCode(codeBtn); }
-        });
-        codeBtn.dataset.action = 'send-code';
-        codeBtn.classList.add('build-code-btn');
-        BUILD_STATE.codeBtn = codeBtn;
-        row.appendChild(codeBtn);
-      }
       loginCard.appendChild(row);
       BUILD_STATE.loginFields[item[0]] = input;
     }
@@ -2875,9 +2844,6 @@
           BUILD_STATE.codeTimer = 0;
         }
         BUILD_STATE.codeLeft = 0;
-        if (BUILD_STATE.codeBtn) {
-          BUILD_STATE.codeBtn.textContent = '获取验证码';
-        }
         if (BUILD_STATE.loginBtn) BUILD_STATE.loginBtn.textContent = '登录';
         buildApplyEditable();
         setBuildNotice(msg || '登录成功，开始拉取数据…', 'info');
@@ -3183,70 +3149,29 @@
     setBuildNotice(
       '重新登录：特征码和手机号已保留。去库街区 App / 网页登录框点' +
       '「获取验证码」，拿到后填进验证码框，再点「登录」。', 'info');
-    //: ★ 起 60 秒倒计时 → 期间「重新登录」保持灰色不可点
-    buildStartCodeCountdown();
-  }
-
-  /**
-   * ★ 验证码读秒（用户：「60s倒计时」）。
-   *
-   * ## ★★★ 为什么**不真发短信**，也不该说「重发」
-   *
-   * ``kuro_account.send_sms_code`` 实测会抛 :class:`NeedHumanVerify` ——
-   * 服务端返回 ``{"code":200, "data":{"geeTest":true}}``，
-   * **code 是 200 但短信根本没发**（极验要跑 JS 采行为轨迹，纯 Python 做不到）。
-   *
-   * 用户第二次明确指出：「重发 60s 倒计时是啥意思……像是真的发了短信一样」。
-   * 所以按钮文字就是纯读秒 **「60s」**，不说「重发」两个字。
-   *
-   * 这块倒计时的**唯一目的**是给用户一个"快去填"的时间感，以及
-   * **60 秒内不许重复点「重新登录」**（用户明确要求）。
-   *
-   * 验证码在 APP 端与网页端通用 —— 用户自己去官方入口点一次
-   * 「获取验证码」就能拿到。
-   */
-  function buildSendCode(btn) {
-    if (BUILD_STATE.codeLeft > 0) return;
-    buildStartCodeCountdown(btn);
-    setBuildNotice(
-      '验证码需要去库街区 App / 网页登录框点「获取验证码」，' +
-      '拿到后填到这个框里（两边通用，本机发不出去）。', 'info');
-    const fields = BUILD_STATE.loginFields || {};
-    if (fields.code) {
-      try { fields.code.focus(); } catch (err) { void err; }
-    }
-  }
-
-  /** 起 60 秒读秒（按钮文字 = 剩余秒数 + "s"）。 */
-  function buildStartCodeCountdown(btn) {
-    const codeBtn = btn || BUILD_STATE.codeBtn;
+    //: ★ 起 60 秒读秒 → 期间「重新登录」保持灰色不可点
+    //: （2026-11-05 第三次调整：原来验证码右边那颗「获取验证码」按钮删了，
+    //: 读秒直接挂在「重新登录」按钮上 —— 点它就进重登态 + 读秒，
+    //: 60 秒内不能再点）。用截止时间戳算，不信 ``-=1``：
+    //: Chromium 会节流不可见窗口的 setInterval（实测 1 秒拖到 4 秒）。
     if (BUILD_STATE.codeTimer) {
       clearInterval(BUILD_STATE.codeTimer);
       BUILD_STATE.codeTimer = 0;
     }
-    //: ★★★ 2026-11-05 用**截止时间戳**算剩余秒数，而不是每秒 ``-=1``
-    //:
-    //: 踩过：Chromium 会对**不可见 / 被遮挡**的窗口节流 ``setInterval``
-    //: （实测 1 秒的定时器 4 秒才跑一次），递减计数就会变成
-    //: 「60s 挂在那儿半天不动」。用 ``Date.now()`` 差值算，
-    //: 定时器跑晚了也能立刻显示正确的剩余秒数。
     const deadline = Date.now() + 60 * 1000;
     const paint = function () {
       const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       BUILD_STATE.codeLeft = left;
       if (left > 0) {
-        //: ★ 只读秒，不写「重发」—— 用户明确说那样"像是真的发了短信"
-        if (codeBtn) {
-          codeBtn.textContent = left + 's';
-          codeBtn.disabled = true;
+        if (BUILD_STATE.reloginBtn) {
+          //: 只写「53s」看不出是什么，补上按钮本名
+          BUILD_STATE.reloginBtn.textContent = '重新登录 ' + left + 's';
+          BUILD_STATE.reloginBtn.disabled = true;
         }
-        //: 读秒期间「重新登录」也要跟着灰（用户要求 60s 内不可再点）
-        if (BUILD_STATE.reloginBtn) BUILD_STATE.reloginBtn.disabled = true;
         return;
       }
-      //: 归零：恢复按钮
-      if (codeBtn) {
-        codeBtn.textContent = '获取验证码';
+      if (BUILD_STATE.reloginBtn) {
+        BUILD_STATE.reloginBtn.textContent = '重新登录';
       }
       if (BUILD_STATE.codeTimer) {
         clearInterval(BUILD_STATE.codeTimer);
@@ -3258,23 +3183,6 @@
     BUILD_STATE.codeTimer = setInterval(paint, 250);
   }
 
-
-  /**
-   * ★★★ 2026-11-05 同步「登录卡能不能编辑」。
-   *
-   * 照抄旧界面 ``_apply_inputs_editable(editable)`` 的语义：
-   *
-   * * **未登录** → 特征码 / 手机号 / 验证码可编辑，登录按钮可点
-   * * **已登录** → 三者置灰 + tooltip「已登录 —— 想换号请先点「退出登录」」
-   * * **正在登录 / 正在拉数据** → 全置灰（防止连点，也防止改到一半被覆盖）
-   *
-   * ## ⚠ 为什么必须集中成一个函数
-   *
-   * 原来「能不能编辑」散在三处（建卡时写死 ``disabled = true``、
-   * 退出登录时只清 ``value`` 不动 ``disabled``、回填时也不动），
-   * 于是**退出登录后再也输入不了** —— 用户圈图问的就是这个 bug。
-   * 现在只有这里改 ``disabled``，谁改状态谁调它。
-   */
   function buildApplyEditable() {
     const fields = BUILD_STATE.loginFields || {};
     //: ★ 2026-11-05：「重新登录」进行中时**即使已登录也要解锁** ——
@@ -3297,14 +3205,16 @@
           ? '已登录 —— 想换号请先点「退出登录」；只想换验证码点「重新登录」'
           : '手机号 + 短信验证码（验证码在库街区 App / 网页登录框获取）');
     }
-    //: 「获取验证码」跟着验证码框的可用性走（倒计时期间另有自己的禁用逻辑）
-    if (BUILD_STATE.codeBtn) {
-      BUILD_STATE.codeBtn.disabled = locked || BUILD_STATE.codeLeft > 0;
-    }
+
     //: ★ 2026-11-05（用户第二次调整）：「重新登录」在**已登录 + 不忙 +
     //: 读数结束**时可用。点一下进入重登态并开始读秒，读秒期间**保持灰色**
     //: —— 用户原话：「60s倒计时结束前不可再点重新登陆」。
+    //: 注意：读秒期间按钮文字是「60s」、由读秒自己管 disabled，
+    //: 这里只在**不读秒**时复位文案，别把数字覆盖掉。
     if (BUILD_STATE.reloginBtn) {
+      if (BUILD_STATE.codeLeft <= 0) {
+        BUILD_STATE.reloginBtn.textContent = '重新登录';
+      }
       BUILD_STATE.reloginBtn.disabled = !BUILD_STATE.loggedIn
         || !!BUILD_STATE.busy
         || BUILD_STATE.codeLeft > 0;
