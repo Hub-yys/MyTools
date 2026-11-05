@@ -1974,6 +1974,9 @@
     //:    见 ``buildApplyEditable()``
     loginBtn: null,
     refreshBtn: null,
+    //: ★ 2026-11-05：「退出登录」按钮 —— 未登录时**整个隐藏**
+    //: （用户圈图：「都没登录还能点退出登录」）
+    logoutBtn: null,
     loggedIn: false,
     //: 登录 / 拉数据是否正在进行（防止连点，也用于页面切回来时恢复状态）
     busy: false
@@ -2180,6 +2183,9 @@
       onClick: function () { buildLogout(logoutBtn); }
     });
     logoutBtn.dataset.action = 'logout';
+    //: ★ 2026-11-05：记下来，交给 ``buildApplyEditable()`` 控制显隐
+    //: （未登录时应该**整个不出现** —— 用户圈图「都没登录还能点退出登录」）。
+    BUILD_STATE.logoutBtn = logoutBtn;
     loginHead.appendChild(logoutBtn);
     loginCard.appendChild(loginHead);
 
@@ -2930,8 +2936,10 @@
       buildApplyEditable();
       setBuildNotice(String(d.message ||
         '已退出登录（令牌 + 缓存都已删除）'), 'warn');
-      //: 退出成功后按钮就该消失（没登录了）
-      btn.style.display = 'none';
+      //: 退出成功后按钮就该消失（没登录了）—— 交给状态函数统一处理，
+      //: 别再在这里手写 ``style.display``（两处都改容易漏一处）
+      btn.disabled = false;
+      buildApplyEditable();
     })();
   }
 
@@ -2973,6 +2981,23 @@
     if (BUILD_STATE.refreshBtn) {
       BUILD_STATE.refreshBtn.disabled = !BUILD_STATE.loggedIn
         || !!BUILD_STATE.busy;
+    }
+    //: ★★★ 2026-11-05 用户圈图：「都没登录还能点退出登录」。
+    //:
+    //: 没登录时哪来的登录态可退？点它只会在「确认退出？」和
+    //: 删一个不存在的令牌之间来回 —— 纯属误导。
+    //: 所以：**未登录时整个按钮隐藏**，已登录才显示。
+    //:
+    //: 放这里而不是 ``buildLogout()`` 里，是因为「显不显示」是**状态**，
+    //: 而 ``buildApplyEditable()`` 就是这个状态函数 ——
+    //: 上一轮「按钮文案散在两处」吃过亏，同理。
+    //
+    //: ⚠ 用 ``style.display`` 而不是 ``hidden`` 属性：``P.button`` 产出的
+    //: 是普通 ``<button>``，``hidden`` 会被 `.btn { display: inline-flex }`
+    //: 盖掉（和前面 ``.search-caret`` 踩过的是同一类坑）。
+    if (BUILD_STATE.logoutBtn) {
+      BUILD_STATE.logoutBtn.style.display =
+        BUILD_STATE.loggedIn ? '' : 'none';
     }
   }
 

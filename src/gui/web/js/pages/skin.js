@@ -92,18 +92,6 @@
     //: 后台转码好了要重建卡片 —— 把页面实例存下来（见 applyWallpaperReady）
     state.app = app;
 
-    //: 两行说明（旧界面 L470-475 原话，逐字照抄）
-    //:
-    //: ★ 2026-11-04 改：Scene 型不再是「暂不支持」—— 心月狐那种 3D 场景壁纸，
-    //: 后端会从 ``scene.pkg`` 里把内嵌的 mp4 抠出来（``core/pkg_video.py``），
-    //: 再照常转 webm 播放。只有抠不出视频的 Scene / Web 型才真的不支持。
-    section.appendChild(P.el('div', {
-      class: 'skin-top-hint',
-      html: '配色主题：点一下立刻生效，所有选择都会记住。<br>' +
-            '壁纸：从本机 Wallpaper Engine 创意工坊读取' +
-            '（视频型直接播放；Scene 型会尝试取出内嵌视频，取不到才需 WebGL）。'
-    }));
-
     await loadWallpapers(app);
 
     // ── 分区标题（旧界面 L536-539「Wallpaper Engine 壁纸」，15px 加粗）──
@@ -111,11 +99,6 @@
       class: 'skin-section-title',
       text: 'Wallpaper Engine 壁纸'
     }));
-
-    // ── 说明行（旧界面 L905-906，带**真实计数**）──
-    const hint = P.el('div', { class: 'skin-section-hint' });
-    section.appendChild(hint);
-    updateHint(hint);
 
     // ── 卡片墙 ──
     if (!state.wallpapers.length) {
