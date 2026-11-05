@@ -1974,6 +1974,15 @@
     //:    见 ``buildApplyEditable()``
     loginBtn: null,
     refreshBtn: null,
+    //: ★ 2026-11-05：验证码行右边的「获取验证码」按钮 + 倒计时句柄
+    codeBtn: null,
+    codeLeft: 0,
+    codeTimer: 0,
+    //: ★ 2026-11-05：「重新登录」按钮（原来那颗「刷新数据」删了）
+    reloginBtn: null,
+    //: 「重新登录」进行中：三个框解锁 + 只等验证码。
+    //: 已登录时正常是锁住的，但用户要换一个新的验证码 → 临时解锁。
+    relogin: false,
     //: ★ 2026-11-05：「退出登录」按钮 —— 未登录时**整个隐藏**
     //: （用户圈图：「都没登录还能点退出登录」）
     logoutBtn: null,
@@ -2224,6 +2233,35 @@
         });
       }
       row.appendChild(input);
+
+      //: ★★★ 2026-11-05 用户圈图：
+      //:
+      //:   > 验证码变成可输入，**右边**还有 60 倒计时输入提示
+      //:
+      //: 验证码框**右边**挂一颗「获取验证码」。点它：
+      //:
+      //:   1. **不真的发短信** —— 服务端要求先过极验（``NeedHumanVerify``），
+      //:      纯 Python 做不到，实测点了只会拿到「人机验证」而不是短信。
+      //:      所以按钮的作用是**开始 60 秒倒计时 + 把验证码框准备好**，
+      //:      并提示用户去官方入口取（码在 APP / 网页通用）。
+      //:   2. 倒计时期间按钮禁用并在文字里显示剩余秒数（``重发 58s``），
+      //:      这是用户要的「倒计时输入提示」。
+      //:
+      //: ⚠ 顺序：**必须 append 在 input 之后**才是"右边"。
+      //: 第一版写在了 ``row.appendChild(input)`` 前面，结果按钮跑到
+      //: 标签和输入框中间（看着像"获取验证码"是第二个标签），已改。
+      if (item[0] === 'code') {
+        const codeBtn = P.button('获取验证码', {
+          size: 'sm',
+          title: '去库街区 App / 网页登录框点「获取验证码」，然后填到这里' +
+            '（验证码两边通用；本机发不出去 —— 服务端要求人机验证）',
+          onClick: function () { buildSendCode(codeBtn); }
+        });
+        codeBtn.dataset.action = 'send-code';
+        codeBtn.classList.add('build-code-btn');
+        BUILD_STATE.codeBtn = codeBtn;
+        row.appendChild(codeBtn);
+      }
       loginCard.appendChild(row);
       BUILD_STATE.loginFields[item[0]] = input;
     }
@@ -2243,14 +2281,44 @@
     BUILD_STATE.loginBtn = loginBtn;
     loginBtnRow.appendChild(loginBtn);
 
-    const refreshBtn = P.button('刷新数据', {
+    //: ★★★ 2026-11-05 用户第二条圈图：
+    //:
+    //:   > 刷新数据改成重新登录，重新登陆不会清除特征码和手机号信息
+    //:   > （退出登陆会清除），验证码变成可输入，右边还有60倒计时输入提示
+    //:
+    //: 所以这里换成「重新登录」。它的语义**不是**「再拉一次数据」
+    //: （那是 ``kuroFetchData``），而是：
+    //:
+    //:   1. 已登录状态下点它 → 三个框解锁（特征码/手机号**保持原值**）
+    //:   2. 验证码框清空并聚焦，右边出现「60s」倒计时
+    //:   3. 倒计时期间点「获取验证码」不重复发（服务端要求人机验证，
+    //:      我们发不出去 —— 见下面 :func:`buildRelogin` 的说明）
+    //:
+    //: 保留旧的「刷新数据」能力但**不再挂在按钮上**：登录成功后会自动
+    //: 拉一次数据，中途要重拉走 ``BUILD_STATE.relogin`` 里的「拉取」
+    //: 分支（见 ``buildRelogin`` 的实现说明）。
+    const reloginBtn = P.button('重新登录', {
       size: 'sm',
-      title: '重新拉取账号数据（需要已登录）',
-      onClick: function () { buildRefresh(loginBtn); }
+      title: '用同一个手机号重新登录（特征码 / 手机号会保留，只需重填验证码）',
+      onClick: function () { buildRelogin(reloginBtn); }
     });
-    refreshBtn.dataset.action = 'refresh';
-    BUILD_STATE.refreshBtn = refreshBtn;
-    loginBtnRow.appendChild(refreshBtn);
+    reloginBtn.dataset.action = 'relogin';
+    BUILD_STATE.reloginBtn = reloginBtn;
+    loginBtnRow.appendChild(reloginBtn);
+
+    //: ★★★ 2026-11-05：原来的「刷新数据」按钮**删掉**了 ——
+    //: 用户要求「刷新数据改成重新登录」。
+    //:
+    //: 那个按钮原来调 ``kuroFetchData``（真的重拉数据）。现在数据拉取
+    //: 挂在两处，不需要单独按钮了：
+    //:
+    //:   * 登录成功后**自动**拉一次（后端 ``kuroLogin.on_ok``）
+    //:   * 「重新登录」走完后也会拉（同一段逻辑）
+    //:
+    //: ``BUILD_STATE.refreshBtn`` 保留为 ``null`` —— 事件回调里
+    //: 还有几处 ``if (BUILD_STATE.refreshBtn)`` 的判空保护，
+    //: 不删那些代码（删了要改三处，且判空本来就是对的）。
+    BUILD_STATE.refreshBtn = null;
     loginCard.appendChild(loginBtnRow);
 
     //: ★★★ 2026-11-03 用户圈图：「干掉」——删掉两块说明文字：
@@ -2851,57 +2919,52 @@
   });
 
   /**
-   * ★ 退出登录（2026-11-03，两段确认）。
+   * ★ 退出登录 —— 2026-11-05 用户要求**改成弹出提示框确认**。
    *
-   * ## 为什么要二次确认
+   * ## 为什么不能再用「按钮变确认态」
    *
-   * 登出会**删掉令牌 + ``kuro_练度.json`` 缓存**（旧界面
-   * ``_on_logout`` 就是 ``clear_account() + clear_cache()``），
-   * 不可逆。误点一次的代价是"得重新用旧界面登录一次"。
+   * 原来点第一下按钮自己变成「确认退出？」、5 秒内再点一次才执行。
+   * 用户圈图（m15330 图1 红框圈的就是那颗按钮）说：
    *
-   * 所以：第一次点 → 按钮变「确认退出？」并标红；
-   * 5 秒内再点一次才真执行；超时或点别处自动还原。
+   *   > 退出登录点击后改成弹出提示框确认
+   *
+   * 两次点击之间没有别的视觉提示，用户容易以为「点一下没反应」而连点；
+   * 而且按钮就在卡片标题行最右，旁边的状态文字完全没变。
+   *
+   * 现在用项目里统一的 ``.dlg-overlay`` / ``.dlg-box`` 弹框（CSS 是全局的，
+   * ``config.js`` / ``tasks.js`` 也是这套），标题 + 说明 + 取消/退出 两个按钮。
+   *
+   * 弹框内容要**说清后果**：登出会删掉令牌 + ``kuro_练度.json`` 缓存，
+   * 下次得重新拿验证码登录。这是不可逆操作，不能只写一句「确定吗」。
    *
    * @param {HTMLElement} btn - 「退出登录」按钮
    */
   function buildLogout(btn) {
-    if (!btn) return;
+    openConfirmDialog({
+      title: '退出登录',
+      message: '退出后会删掉登录令牌和本地练度缓存（data/kuro_练度.json）。' +
+        '下次要用得重新获取验证码登录，拉一次数据大约 30~60 秒。',
+      confirmLabel: '退出登录',
+      danger: true
+    }).then(function (ok) {
+      if (ok) doLogout(btn);
+    });
+  }
 
-    //: 第一段：变成确认态
-    if (btn.dataset.confirming !== '1') {
-      btn.dataset.confirming = '1';
-      const original = btn.textContent;
-      btn.textContent = '确认退出？';
-      btn.classList.add('is-confirming');
-      const timer = setTimeout(function () {
-        btn.dataset.confirming = '';
-        btn.textContent = original;
-        btn.classList.remove('is-confirming');
-      }, 5000);
-      btn._cancelTimer = timer;
-      return;
-    }
-
-    //: 第二段：真执行
-    if (btn._cancelTimer) {
-      clearTimeout(btn._cancelTimer);
-      btn._cancelTimer = null;
-    }
-    btn.dataset.confirming = '';
-    btn.textContent = '退出登录';
-    btn.classList.remove('is-confirming');
-    btn.disabled = true;
+  /** 真执行退出（弹框确认之后）。*/
+  function doLogout(btn) {
+    if (btn) btn.disabled = true;
 
     (async function () {
       const r = await P.call('kuroLogout');
       if (!r.ok) {
-        btn.disabled = false;
+        if (btn) btn.disabled = false;
         setBuildNotice('退出登录失败（接口未就绪）', 'error');
         return;
       }
       const d = r.data || {};
       if (d.ok === false) {
-        btn.disabled = false;
+        if (btn) btn.disabled = false;
         setBuildNotice('退出登录失败：' +
           String(d.message || d.reason || '后端拒绝'), 'error');
         return;
@@ -2933,15 +2996,218 @@
       //: 于是登出之后**再也输不进去**，只能重启程序（而重启后还是禁用）。
       BUILD_STATE.loggedIn = false;
       BUILD_STATE.busy = false;
+      BUILD_STATE.relogin = false;
       buildApplyEditable();
       setBuildNotice(String(d.message ||
         '已退出登录（令牌 + 缓存都已删除）'), 'warn');
       //: 退出成功后按钮就该消失（没登录了）—— 交给状态函数统一处理，
       //: 别再在这里手写 ``style.display``（两处都改容易漏一处）
-      btn.disabled = false;
+      if (btn) btn.disabled = false;
       buildApplyEditable();
     })();
   }
+
+  // ════════════════════════════════════════════════════════════════════════
+  //  通用确认弹框（tool-panels 里原来没有，config.js / tasks.js 各有一份）
+  //
+  //  ⚠ 为什么不去抽成公共的：``tool-panels.js`` 在 index.html 里
+  //  **排在 tasks.js / config.js 之前**，那两个文件的 ``openDialog``
+  //  是 IIFE 内部的局部函数，拿不到。真正要抽公共应当挪进 ``_shared.js``，
+  //  但那要动三个文件的调用点（40+ 处）—— 为一个弹框不值得。
+  //  这里只做「标题 + 一段话 + 取消/确定」，够用且不引额外依赖。
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * 弹一个确认框，返回 ``Promise<boolean>``。
+   *
+   * @param {Object} opts
+   * @param {string} opts.title 标题
+   * @param {string} opts.message 正文（**不支持 Markdown**，
+   *   ``**…**`` 和 ``` `` ``` 会原样显示 —— 写纯文本）
+   * @param {string} [opts.confirmLabel] 确认按钮文字
+   * @param {boolean} [opts.danger] 确认按钮是否红色
+   */
+  function openConfirmDialog(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      let settled = false;
+
+      const overlay = P.el('div', { class: 'dlg-overlay' });
+      const box = P.el('div', {
+        class: 'dlg-box',
+        style: 'width:440px'
+      });
+
+      function close(value) {
+        if (settled) return;
+        settled = true;
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+        document.removeEventListener('keydown', onKey);
+        resolve(value);
+      }
+
+      function onKey(ev) {
+        if (ev.key === 'Escape') close(false);
+      }
+
+      const head = P.el('div', { class: 'dlg-head' }, [
+        P.el('div', { class: 'dlg-title', text: opts.title || '确认' }),
+        P.el('div', { style: 'flex:1 1 auto' }),
+        P.el('button', {
+          class: 'dlg-close', type: 'button', text: '×', title: '关闭',
+          onClick: function () { close(false); }
+        })
+      ]);
+      box.appendChild(head);
+
+      const body = P.el('div', { class: 'dlg-body' });
+      body.appendChild(P.el('div', {
+        class: 'dlg-note',
+        style: 'font-size:12.5px;line-height:1.75',
+        text: String(opts.message || '')
+      }));
+      box.appendChild(body);
+
+      const foot = P.el('div', { class: 'dlg-foot' });
+      foot.appendChild(P.el('div', { style: 'flex:1 1 auto' }));
+      const cancelBtn = P.button('取消', {
+        onClick: function () { close(false); }
+      });
+      cancelBtn.dataset.action = 'cancel';
+      foot.appendChild(cancelBtn);
+      const okBtn = P.button(opts.confirmLabel || '确定', {
+        kind: opts.danger ? 'danger' : 'primary',
+        onClick: function () { close(true); }
+      });
+      okBtn.dataset.action = 'confirm';
+      foot.appendChild(okBtn);
+      box.appendChild(foot);
+
+      overlay.appendChild(box);
+      //: 点遮罩关闭（点框内不关）
+      overlay.addEventListener('mousedown', function (ev) {
+        if (ev.target === overlay) close(false);
+      });
+      document.addEventListener('keydown', onKey);
+      document.body.appendChild(overlay);
+      //: 焦点给「取消」—— 危险操作默认不落在确认上
+      try { cancelBtn.focus(); } catch (err) { void err; }
+    });
+  }
+
+  /**
+   * ★★★ 2026-11-05 用户圈图：「刷新数据改成重新登录，重新登陆不会清除
+   * 特征码和手机号信息（退出登陆会清除），验证码变成可输入，
+   * 右边还有 60 倒计时输入提示」。
+   *
+   * ## 三种状态别混
+   *
+   * ============  =====================================================
+   * 操作           语义
+   * ============  =====================================================
+   * 登录           未登录时用手机号 + 验证码登进来
+   * **重新登录**   **已登录**时换一个新验证码再登一次 —— 特征码/手机号
+   *                保持原值，只重填验证码
+   * 退出登录       清令牌 + 清缓存，三个框全部清空
+   * ============  =====================================================
+   *
+   * 所以「重新登录」= 解锁输入框（但**不清**特征码/手机号）+ 聚焦验证码
+   * + 把按钮文字改成「确认重登」，用户填完再点一次就真登录。
+   *
+   * ## 为什么不直接调 ``kuroFetchData``
+   *
+   * 那个是「已有令牌重拉数据」，不需要验证码。用户这次要的是**换新验证码
+   * 重登**（令牌会过期，过期后只能重新登录，不能刷新）。
+   *
+   * @param {HTMLElement} btn - 「重新登录」按钮
+   */
+  function buildRelogin(btn) {
+    if (!BUILD_STATE.loggedIn) {
+      setBuildNotice('还没登录 —— 直接填手机号 + 验证码点「登录」', 'warn');
+      return;
+    }
+    //: 已经在重登流程里 → 这次点击是「确认重登」
+    if (BUILD_STATE.relogin) {
+      buildLogin(BUILD_STATE.loginBtn || btn);
+      return;
+    }
+
+    BUILD_STATE.relogin = true;
+    BUILD_STATE.busy = false;
+    buildApplyEditable();
+
+    //: ★ 特征码 / 手机号**保持原值**（用户明确要求），只清验证码
+    const fields = BUILD_STATE.loginFields || {};
+    if (fields.code) {
+      fields.code.value = '';
+      try { fields.code.focus(); } catch (err) { void err; }
+    }
+    if (btn) btn.textContent = '确认重登';
+    setBuildNotice(
+      '重新登录：特征码和手机号已保留，填一个新验证码后点「确认重登」。' +
+      '点「获取验证码」可以看到 60 秒倒计时提示。', 'info');
+    //: 顺手起一个倒计时（用户要的「右边还有 60 倒计时输入提示」）
+    buildStartCodeCountdown();
+  }
+
+  /**
+   * ★ 验证码倒计时（用户：「右边还有 60 倒计时输入提示」）。
+   *
+   * ## ★★★ 为什么**不真发短信**
+   *
+   * ``kuro_account.send_sms_code`` 实测会抛 :class:`NeedHumanVerify` ——
+   * 服务端返回 ``{"code":200, "data":{"geeTest":true}}``，
+   * **code 是 200 但短信根本没发**（极验要跑 JS 采行为轨迹，纯 Python 做不到）。
+   *
+   * 好消息是**验证码在 APP 端与网页端通用**，用户自己去官方入口点一次
+   * 「获取验证码」就能拿到，填到这里即可。所以这颗按钮的职责是
+   * **倒计时 + 引导**，不是发短信。
+   *
+   * 倒计时结束（60 秒）后按钮恢复可点 —— 这时用户如果还没拿到码，
+   * 说明官方那边的码可能也过期了，该再去点一次。
+   */
+  function buildSendCode(btn) {
+    if (BUILD_STATE.codeLeft > 0) return;
+    buildStartCodeCountdown(btn);
+    setBuildNotice(
+      '验证码需要去库街区 App / 网页登录框点「获取验证码」，' +
+      '拿到后填到这个框里（两边通用，本机发不出去）。', 'info');
+    const fields = BUILD_STATE.loginFields || {};
+    if (fields.code) {
+      try { fields.code.focus(); } catch (err) { void err; }
+    }
+  }
+
+  /** 起 60 秒倒计时，按钮文字显示剩余秒数。 */
+  function buildStartCodeCountdown(btn) {
+    const codeBtn = btn || BUILD_STATE.codeBtn;
+    if (!codeBtn) return;
+    if (BUILD_STATE.codeTimer) {
+      clearInterval(BUILD_STATE.codeTimer);
+      BUILD_STATE.codeTimer = 0;
+    }
+    BUILD_STATE.codeLeft = 60;
+    const paint = function () {
+      if (BUILD_STATE.codeLeft > 0) {
+        codeBtn.textContent = '重发 ' + BUILD_STATE.codeLeft + 's';
+        codeBtn.disabled = true;
+      } else {
+        codeBtn.textContent = '获取验证码';
+        codeBtn.disabled = false;
+        if (BUILD_STATE.codeTimer) {
+          clearInterval(BUILD_STATE.codeTimer);
+          BUILD_STATE.codeTimer = 0;
+        }
+        buildApplyEditable();
+      }
+    };
+    paint();
+    BUILD_STATE.codeTimer = setInterval(function () {
+      BUILD_STATE.codeLeft -= 1;
+      paint();
+    }, 1000);
+  }
+
 
   /**
    * ★★★ 2026-11-05 同步「登录卡能不能编辑」。
@@ -2961,23 +3227,39 @@
    */
   function buildApplyEditable() {
     const fields = BUILD_STATE.loginFields || {};
-    const locked = !!BUILD_STATE.loggedIn || !!BUILD_STATE.busy;
+    //: ★ 2026-11-05：「重新登录」进行中时**即使已登录也要解锁** ——
+    //: 用户要重填验证码，锁着就没法填（这是那条圈图的核心诉求）。
+    const locked = (!!BUILD_STATE.loggedIn && !BUILD_STATE.relogin)
+      || !!BUILD_STATE.busy;
     for (const key of Object.keys(fields)) {
       const el = fields[key];
       if (!el) continue;
       el.disabled = locked;
-      //: 验证码框在已登录时干脆留空（旧界面也不留旧验证码）
+      //: 验证码框在**已登录且不在重登流程**时干脆留空
+      //: （旧界面也不留旧验证码）。重登时不清 —— 用户马上就要填新的。
       if (key === 'code' && locked) el.value = '';
     }
     if (BUILD_STATE.loginBtn) {
       BUILD_STATE.loginBtn.disabled = locked;
       BUILD_STATE.loginBtn.title = BUILD_STATE.busy
         ? '正在处理，请稍候'
-        : (BUILD_STATE.loggedIn
-          ? '已登录 —— 想换号请先点「退出登录」'
+        : (BUILD_STATE.loggedIn && !BUILD_STATE.relogin
+          ? '已登录 —— 想换号请先点「退出登录」；只想换验证码点「重新登录」'
           : '手机号 + 短信验证码（验证码在库街区 App / 网页登录框获取）');
     }
-    //: 「刷新数据」在**已登录 + 不忙**时可用 —— 它要令牌
+    //: 「获取验证码」跟着验证码框的可用性走（倒计时期间另有自己的禁用逻辑）
+    if (BUILD_STATE.codeBtn) {
+      BUILD_STATE.codeBtn.disabled = locked || BUILD_STATE.codeLeft > 0;
+    }
+    //: ★ 2026-11-05：「重新登录」在**已登录 + 不忙**时可用
+    //: （没登录时它就是普通登录，不需要它）
+    if (BUILD_STATE.reloginBtn) {
+      BUILD_STATE.reloginBtn.disabled = !BUILD_STATE.loggedIn
+        || !!BUILD_STATE.busy;
+    }
+    //: 旧的「刷新数据」按钮已经删了，``refreshBtn`` 恒为 null。
+    //: 保留判空是因为事件回调里还有几处引用（删干净要改三处，
+    //: 而且判空本身是对的）。
     if (BUILD_STATE.refreshBtn) {
       BUILD_STATE.refreshBtn.disabled = !BUILD_STATE.loggedIn
         || !!BUILD_STATE.busy;
