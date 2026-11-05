@@ -865,8 +865,38 @@
     setStatus(state, text) {
       const pill = document.getElementById('status-pill');
       const label = document.getElementById('status-text');
-      if (pill) pill.dataset.state = state;
-      if (label) label.textContent = text;
+      //: ★★★ 2026-11-05 用户：「还有左侧边栏一直在闪，什么情况，问题很严重」
+      //:
+      //: 根因就在这两行 —— 每 1.5 秒轮询一次 `getEngineStatus`，不管值
+      //: 变没变都无条件写：
+      //:
+      //:   * ``pill.dataset.state = state`` 即使值相同，Chromium **照样
+      //:     生成 attribute mutation 记录**（属性写入不看新旧）；
+      //:   * ``label.textContent = text`` 更狠 —— 它是「清空子节点 + 插一个
+      //:     新文本节点」，产生 childList mutation。
+      //:
+      //: 而 ``.glass-sidebar`` 带 ``backdrop-filter: blur(...)``：子节点被
+      //: 替换后 Chromium 会把整块带背景模糊的图层**重新合成一次**。
+      //: 每 1.5 秒来一次，肉眼看就是闪。
+      //:
+      //: 实测（9 秒 / 24 次采样）：状态序列只有 ``idle|就绪`` 一种，
+      //: 却产生了 18 次 mutation（attrtitle 6 / data-state 6 / childList 6）。
+      //:
+      //: 所以：**值没变就一个字节都不碰**。改文案用 ``firstChild.nodeValue``
+      //: 而不是 ``textContent``，连节点都不重建（nodeValue 是 characterData
+      //: mutation，不触发子树失效）。
+      if (pill && pill.dataset.state !== state) pill.dataset.state = state;
+      if (label) {
+        const next = text == null ? '' : String(text);
+        if (label.textContent !== next) {
+          const first = label.firstChild;
+          if (first && first.nodeType === 3 && label.childNodes.length === 1) {
+            first.nodeValue = next;
+          } else {
+            label.textContent = next;
+          }
+        }
+      }
     },
 
     // ──────────────────────────────────────────────────────────────────────
@@ -908,21 +938,30 @@
       const pill = document.getElementById('status-pill');
       //: 药丸窄，失败原因放悬停提示（完整原因仍在工具页状态行/日志里）
       const why = String(st.bootError || '').trim();
+      //: ★ 2026-11-05：``pill.title`` 也吃同一个坑 —— 每 1.5 秒无条件赋值，
+      //: 即使文案完全相同也照样生成 attribute mutation，把带
+      //: ``backdrop-filter`` 的侧栏整块重新合成一次（用户报「侧栏一直在闪」）。
+      //: 所以先用一个局部变量算出**目标**文案，最后统一比对再写。
+      let nextTitle = null;
       if (pill) {
         if (st.state === 'error' || st.available === false) {
-          pill.title = st.available === false
+          nextTitle = st.available === false
             ? 'ok-ww 引擎模块导入失败 —— 任务和工具都跑不了，详见日志'
             : ('ok-ww 引擎启动失败' + (why ? '：' + why : '')
                + ' —— 任务和工具都跑不了');
         } else if (st.ready) {
-          pill.title = st.state === 'running'
+          nextTitle = st.state === 'running'
             ? 'ok-ww 引擎就绪，正在跑：' + (st.runningTask || '某个任务')
             : 'ok-ww 引擎就绪 —— 任务和工具可以运行';
         } else if (st.state === 'booting' || st.pendingStart) {
-          pill.title = 'ok-ww 引擎正在启动（首次冷启动约 20 秒）';
+          nextTitle = 'ok-ww 引擎正在启动（首次冷启动约 20 秒）';
         } else {
-          pill.title = '';
+          nextTitle = '';
         }
+      }
+      //: 只在真的变了才写（见上面 nextTitle 的说明）
+      if (pill && nextTitle !== null && pill.title !== nextTitle) {
+        pill.title = nextTitle;
       }
       //: 桥接层有任务在跑时戴「运行中」的帽子（引擎那格留给下面判断）
       if (this.status && this.status.running) {
