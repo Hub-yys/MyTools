@@ -498,7 +498,21 @@ def main() -> int:
             "nest_sweep": ".page.is-active .cfg-btn-primary",
             "echo_enhance": ".page.is-active .enh-title-row .btn-primary",
             "gacha": ".page.is-active .gk-link-row .btn-primary",
-            "character_build": ".page.is-active .build-card .btn",
+            #: ⑥ 练度页：★ 2026-11-05 改成点「登录」。
+            #:
+            #: 原来写的是 ``.build-card .btn``（第一张卡里的第一个按钮），
+            #: 那在当时是对的 —— 登录卡里三个框全是禁用的、按钮也是禁用的，
+            #: 第一个可点的按钮就是「刷新数据」。
+            #:
+            #: 但 2026-11-03 把「退出登录」挪进卡片标题行之后，
+            #: ``.build-card .btn`` 抓到的**第一个**按钮变成了「退出登录」——
+            #: 点它只会进入「确认退出？」的二次确认态（按钮自己改文案），
+            #: 状态行 / 日志 / 概览一个都不动 → P5 假失败。
+            #:
+            #: 现在用户要求登录可用（「退出登录后，特征码、手机号、验证码
+            #: 怎么不能输入？」），这一页的**主操作**就是「登录」。
+            #: 用 ``data-action`` 精确定位，不再靠"第一个按钮"。
+            "character_build": ".page.is-active [data-action=\"login\"]",
             "wuwa_library_update": ".page.is-active .lib-status-head .btn",
         }
         selector = PRIMARY_SELECTOR.get(key, ".page.is-active .cfg-btn-primary")
@@ -539,7 +553,11 @@ def main() -> int:
           function collect(){
             document.querySelectorAll(
               '.page.is-active .cfg-state, .page.is-active .cfg-muted,'
-              + '.page.is-active .gk-status, .page.is-active .lib-status-text'
+              + '.page.is-active .gk-status, .page.is-active .lib-status-text,'
+              //: ★ 2026-11-05：练度页的反馈走 ``.build-notice``
+              //: （「请填写 11 位手机号…」「登录失败：…」「数据已更新…」），
+              //: 不认这条,点「登录」后校验提示就被判成"没反应"。
+              + '.page.is-active .build-notice'
             ).forEach(function(e){
               if (e.classList.contains('hidden')) return;
               if (!e.offsetHeight) return;
@@ -595,7 +613,11 @@ def main() -> int:
             #:   单列出来，别混进 ``states``（否则概览的数值会被当成"状态"）。
             "states: Array.from(document.querySelectorAll("
             "  '.page.is-active .cfg-state, .page.is-active .cfg-muted, "
-            "   .page.is-active .gk-status, .page.is-active .lib-status-text'))"
+            "   .page.is-active .gk-status, .page.is-active .lib-status-text, "
+            #: ★ 2026-11-05：练度页「点登录」的反馈在 ``.build-notice``
+            #: （「请填写 11 位手机号…」/「登录失败：…」/「数据已更新…」）。
+            #: 不认这条会把这个正确的校验提示判成"点了没反应"。
+            "   .page.is-active .build-notice'))"
             #: ★ 2026-11-03：过滤掉 ``.hidden`` 的元素 —— 工具页的说明文字
             #: 已按用户要求删除，状态行**常态是隐藏的**（``display:none``），
             #: ``textContent`` 为空；但 DOM 里还留着元素（失败时要显示）。

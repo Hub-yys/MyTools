@@ -2293,6 +2293,26 @@
   color: #ff9b95;
 }
 
+/*: ★ 2026-11-05 登录 / 拉数据过程中的中间态（Web 版第一次支持登录）
+ *
+ *  ``info`` = 正在登录 / 正在拉数据（中性，别让用户以为是警告）；
+ *  ``ok``   = 数据已更新。
+ *
+ *  默认那条（无 ``data-level``）是**警告黄**，用在过程提示上会
+ *  让人以为出错了 —— 所以必须分开。
+ */
+.build-notice[data-level="info"] {
+  border-left-color: rgba(120, 170, 255, 0.65);
+  background-color: rgba(70, 120, 220, 0.12);
+  color: #a9c8ff;
+}
+
+.build-notice[data-level="ok"] {
+  border-left-color: rgba(110, 220, 150, 0.65);
+  background-color: rgba(50, 180, 110, 0.12);
+  color: #9fe6ba;
+}
+
 /*: ★★★ 2026-11-03 「角色搜索」下拉候选（用户圈图）
  *
  *   「只搜索角色，也是下拉列表，也可输入搜索

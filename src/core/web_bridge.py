@@ -842,6 +842,28 @@ class WebBridge(QObject):
         #: 线程类延迟取（见 _make_library_threads 的说明）
         self._LibCheckThread, self._LibApplyThread = _make_library_threads()
 
+        #: ★★★ 2026-11-05 库街区登录 / 拉数据（Web 版第一次真正支持登录）
+        #:
+        #: ## 为什么要补
+        #:
+        #: 用户圈图：「退出登录后，特征码、手机号、验证码怎么不能输入？」
+        #:
+        #: 根因是 P5 时的临时决定 —— 那时 Web 版只做「读旧界面留下的缓存」，
+        #: 于是把三个输入框写死 ``disabled``、登录按钮 ``disabled`` 且没有
+        #: ``onClick``，并且**退出登录后也从不恢复**。
+        #:
+        #: 但底层能力一直都在：``core/kuro_account.py`` 有完整的
+        #: ``app_login_with_code``，旧界面 ``character_build/tool.py`` 里的
+        #: ``LoginThread`` / ``FetchThread`` 也是现成的。缺的只是桥接。
+        #:
+        #: 复用那两个线程类（不复制一份）：它们是纯 ``QThread``，
+        #: 依赖的 ``kuro_account`` / ``wuwa_guide`` / ``icon_cache`` 都在
+        #: ``core`` 层，没有 Qt 控件依赖 —— 复制一份只会让两边逻辑漂移。
+        self._kuro_login_thread = None
+        self._kuro_fetch_thread = None
+        #: 登录 / 拉数据是否正在进行（互斥，防止连点）
+        self._kuro_busy = False
+
         #: ★ 抽卡分析（P4 第三批）—— 网络线程（几十秒）
         self._gacha_thread = None
         self._gacha_running = False
@@ -4389,13 +4411,192 @@ class WebBridge(QObject):
             return _json({"ok": False, "reason": "error",
                           "message": f"{type(exc).__name__}: {exc}"})
 
-    # ================================================ 角色练度缓存（P4 第三批）
+    # ================================================ 角色练度（P4 第三批 + P15 登录）
     #
-    # 「查询角色练度」工具是**只读展示**：数据由 Qt 版登录拉取后存在
-    # ``data/kuro_练度.json``。Web 面板不需要登录，读缓存即可。
+    # 「查询角色练度」原来在 Web 版是**只读展示**：数据由旧界面登录拉取后存在
+    # ``data/kuro_练度.json``，Web 面板只读缓存、不登录。
     #
-    # ⚠ Web 版**不做登录**（那要手机号 + 验证码 + 风控，且用户明确
-    # 只要求"读缓存"）。缓存没有就明确告诉用户去旧界面登录一次。
+    # ★★★ 2026-11-05 **改为支持登录**（用户：「退出登录后，特征码、手机号、
+    # 验证码怎么不能输入？」）。原来那条「Web 版不做登录」的说法站不住：
+    # 底层 ``core/kuro_account.app_login_with_code`` 一直是通的，旧界面
+    # 也一直能登录 —— Web 版没理由拦着。
+    #
+    # ⚠ 验证码**不由我们发**：``send_sms_code`` 要先过极验（见
+    # ``kuro_account.NeedHumanVerify``），而且官方验证码在 APP 端与 Web 端
+    # 通用 —— 用户自己在任意官方入口点「获取验证码」即可。
+
+    @Slot(str, str, str, result=str)
+    def kuroLogin(self, mobile: str, code: str, feature: str = "") -> str:
+        """★ 手机号 + 短信验证码登录库街区（**异步**）。
+
+        ## 流程（照抄旧界面 ``_on_login`` → ``LoginThread``）
+
+        1. 校验手机号（11 位数字）/ 验证码非空 —— 同步失败直接返回，
+           不浪费一次网络请求
+        2. 起 :class:`LoginThread`：``app_login_with_code`` + ``save_account``
+        3. 登录成功 → **自动拉一次数据**（``FetchThread``），和旧界面一致
+        4. 全程推事件：
+
+        ==============================  ==================================
+        事件                            时机
+        ==============================  ==================================
+        ``kuroLoginState``              开始 / 成功 / 失败
+        ``kuroDataProgress``            拉数据时的每一行进度
+        ``kuroDataReady``               数据到手（含 ``partial=True``）
+        ``kuroDataFailed``              拉数据失败
+        ==============================  ==================================
+
+        :return: ``{ok: true}``（立刻返回，结果走事件）
+                 / ``{ok: false, reason, message}``
+        """
+        if self._kuro_busy:
+            return _json({"ok": False, "reason": "busy",
+                          "message": "正在登录 / 拉取数据，请稍候"})
+
+        mobile = (mobile or "").strip()
+        code = (code or "").strip()
+        feature = (feature or "").strip()
+
+        #: 先做**同步**校验 —— 手机号明显不对就没必要发请求
+        if not (mobile.isdigit() and len(mobile) == 11):
+            return _json({"ok": False, "reason": "bad_mobile",
+                          "message": "手机号应为 11 位数字"})
+        if not code:
+            return _json({"ok": False, "reason": "bad_code",
+                          "message": "请填写短信验证码（在库街区 App / "
+                                     "网页登录框点「获取验证码」）"})
+
+        try:
+            from ..tools.game.character_build.tool import LoginThread  # noqa: PLC0415
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("kuroLogin：登录线程不可用", exc_info=True)
+            return _json({"ok": False, "reason": "unavailable",
+                          "message": f"登录模块不可用：{exc}"})
+
+        thread = LoginThread(mobile, code, "", self)
+        self._kuro_login_thread = thread
+        self._kuro_busy = True
+        self.emitEvent("kuroLoginState", {
+            "state": "logging_in",
+            "message": "正在登录（APP 端）…",
+        })
+
+        def on_progress(text: str) -> None:
+            self.emitEvent("kuroLoginState", {
+                "state": "logging_in", "message": str(text)})
+
+        def on_ok(account) -> None:
+            self._kuro_busy = False
+            logger.info("kuroLogin：登录成功")
+            self.emitEvent("kuroLoginState", {
+                "state": "logged_in",
+                "message": "登录成功，开始拉取数据…",
+                "loginInfo": self._kuro_login_info({}),
+            })
+            #: 登录成功 → 自动拉一次（旧界面 ``_on_logged_in`` 也是这么做的）
+            self._start_kuro_fetch(account, feature)
+
+        def on_fail(message: str) -> None:
+            self._kuro_busy = False
+            logger.warning("kuroLogin：登录失败 %s", message)
+            self.emitEvent("kuroLoginState", {
+                "state": "failed", "message": str(message)})
+
+        thread.progress.connect(on_progress)
+        thread.succeeded.connect(on_ok)
+        thread.failed.connect(on_fail)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+        return _json({"ok": True})
+
+    def _start_kuro_fetch(self, account, feature: str = "") -> None:
+        """起 ``FetchThread`` 拉账号数据（登录成功后 / 「刷新数据」都走这里）。"""
+        try:
+            from ..tools.game.character_build.tool import FetchThread  # noqa: PLC0415
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("_start_kuro_fetch：线程不可用", exc_info=True)
+            self._kuro_busy = False
+            self.emitEvent("kuroDataFailed", {
+                "message": f"拉取模块不可用：{exc}"})
+            return
+
+        thread = FetchThread(account, (feature or "").strip(), self)
+        self._kuro_fetch_thread = thread
+        self._kuro_busy = True
+
+        def on_progress(text: str) -> None:
+            self.emitEvent("kuroDataProgress", {"message": str(text)})
+
+        def on_partial(payload) -> None:
+            #: ★ 拉到一半也先给页面 —— 43 个角色要几十秒，中途关掉不白拉
+            self.emitEvent("kuroDataReady", {
+                "ok": True, "partial": True,
+                "updatedAt": str((payload or {}).get("at") or ""),
+            })
+
+        def on_ok(payload) -> None:
+            self._kuro_busy = False
+            logger.info("kuroFetch：数据拉取完成")
+            self.emitEvent("kuroDataReady", {
+                "ok": True, "partial": False,
+                "updatedAt": str((payload or {}).get("at") or ""),
+            })
+
+        def on_fail(message: str) -> None:
+            self._kuro_busy = False
+            logger.warning("kuroFetch：失败 %s", message)
+            self.emitEvent("kuroDataFailed", {"message": str(message)})
+
+        thread.progress.connect(on_progress)
+        thread.partial.connect(on_partial)
+        thread.succeeded.connect(on_ok)
+        thread.failed.connect(on_fail)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    @Slot(str, result=str)
+    def kuroFetchData(self, feature: str = "") -> str:
+        """★ 重新拉一次数据（「刷新数据」按钮）。
+
+        ## 和旧界面「刷新数据」的区别
+
+        旧界面那个按钮**只重读缓存、不重新拉**（``_on_reload`` →
+        ``load_cache()``）。用户 2026-11-05 说「退出登录后…不能输入」，
+        我们要让 Web 版真的能用，所以这里的「刷新数据」= **真的重拉**：
+        已经有令牌就直接拉，没有令牌就让用户先登录。
+
+        :return: ``{ok: true}``（立刻返回，结果走事件）
+                 / ``{ok: false, reason, message}``
+        """
+        if self._kuro_busy:
+            return _json({"ok": False, "reason": "busy",
+                          "message": "正在登录 / 拉取数据，请稍候"})
+        try:
+            from . import kuro_account  # noqa: PLC0415
+
+            account = kuro_account.load_account()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("kuroFetchData：读令牌失败", exc_info=True)
+            return _json({"ok": False, "reason": "no_account",
+                          "message": f"还没登录（{exc}）"})
+        if not getattr(account, "logged_in", False) and not getattr(
+                account, "token", ""):
+            return _json({"ok": False, "reason": "no_account",
+                          "message": "还没登录 —— 请先填手机号 + 验证码登录"})
+
+        self.emitEvent("kuroDataProgress", {"message": "正在重新拉取数据…"})
+        self._start_kuro_fetch(account, feature)
+        return _json({"ok": True})
+
+    @Slot(result=str)
+    def kuroBusy(self) -> str:
+        """页面重建时问一句「现在是不是正在登录 / 拉数据」。
+
+        页面一切走（切页 / 切工具）就丢掉了本地状态，
+        但后台线程还在跑 —— 重建时必须能恢复「正在拉取…」的样子，
+        否则按钮会变回可点、用户会连点。
+        """
+        return _json({"busy": bool(self._kuro_busy)})
 
     @Slot(result=str)
     def kuroLogout(self) -> str:
@@ -4482,9 +4683,12 @@ class WebBridge(QObject):
             if not cache_file.is_file():
                 return _json({
                     "ok": False, "reason": "no_cache",
-                    "message": "还没有角色练度数据。请先用旧界面"
-                               "（MYTOOLS_WEB_SHELL=0）登录一次「查询角色练度」，"
-                               "登录后这里会自动读到缓存。",
+                    #: ★ 2026-11-05：Web 版**已经能登录了**，这段文案必须跟着改。
+                    #: 原来写的是「请先用旧界面（MYTOOLS_WEB_SHELL=0）登录一次」
+                    #: —— 那是 P5 只读缓存时期的话，现在已经误导用户了。
+                    "message": "还没有角色练度数据。"
+                               "在上面填手机号 + 短信验证码点「登录」，"
+                               "登录成功后会自动拉取（约 30~60 秒）。",
                 })
 
             raw = json.loads(cache_file.read_text(encoding="utf-8"))

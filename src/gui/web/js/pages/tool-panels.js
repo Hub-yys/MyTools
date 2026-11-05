@@ -1968,7 +1968,15 @@
     summaryEl: null,
     //: ★ P6：① 登录卡（照抄旧界面外观）
     loginStatus: null,
-    loginFields: null
+    loginFields: null,
+    //: ★ 2026-11-05：登录按钮 / 刷新按钮 / 是否已登录
+    //: —— 「已登录」决定三个输入框和登录按钮是否置灰，
+    //:    见 ``buildApplyEditable()``
+    loginBtn: null,
+    refreshBtn: null,
+    loggedIn: false,
+    //: 登录 / 拉数据是否正在进行（防止连点，也用于页面切回来时恢复状态）
+    busy: false
   };
 
   //: 旧界面 ``FILTER_CHOICES``（tool.py L96），逐字照抄
@@ -2126,6 +2134,20 @@
     //
     //  Web 版：三个输入框 **readonly + 置灰**（显示缓存里的值），
     //  「登录」「退出登录」**禁用**，「刷新数据」可用（= 重读缓存）。
+    //
+    //  ★★★ 2026-11-05 **上面那条改掉了**（Web 版现在真能登录）
+    //
+    //  用户圈图：「退出登录后，特征码、手机号、验证码怎么不能输入？」
+    //
+    //  P5 时 Web 版只做「读旧界面留下的缓存」，所以把控件写死禁用 ——
+    //  但底层 ``core/kuro_account.app_login_with_code`` 一直是通的，
+    //  旧界面也一直能登录，Web 版没理由拦着。现在的规则：
+    //
+    //    * **未登录** → 三个输入框可编辑、登录按钮可点
+    //    * **已登录** → 三个输入框置灰、登录按钮置灰
+    //      （登录后账号由令牌决定，改输入框不会生效 —— 旧界面
+    //       ``_apply_inputs_editable`` 就是这么做的）
+    //    * **退出登录成功后** → 恢复可编辑（原来这里漏了，就是本次 bug）
     // ══════════════════════════════════════════════════════════════════════
     const loginCard = P.el('div', { class: 'build-card card-glass' });
 
@@ -2177,10 +2199,24 @@
         class: 'input build-login-input',
         type: 'text',
         placeholder: item[2],
-        readonly: 'readonly'
+        autocomplete: 'off'
       });
-      //: ★ Web 版：只显示缓存值，不可编辑
-      input.disabled = true;
+      //: ★ 2026-11-05：**默认可编辑**（原来是 ``disabled = true``，
+      //: 退出登录后也不恢复 —— 用户圈图就是这个）。已登录时才置灰，
+      //: 见 ``buildApplyEditable()``。
+      //:
+      //: 验证码额外加 ``inputmode=numeric`` + 长度提示：手机号/验证码
+      //: 都是纯数字，手机上该弹数字键盘。
+      if (item[0] === 'mobile' || item[0] === 'code') {
+        input.setAttribute('inputmode', 'numeric');
+      }
+      //: 手机号框**只留后四位可见**（``****6241``）—— 那是脱敏后的显示值，
+      //: 真去编辑时先清成空，否则用户会在 ``****6241`` 后面接着打。
+      if (item[0] === 'mobile') {
+        input.addEventListener('focus', function () {
+          if (input.value.indexOf('****') === 0) input.value = '';
+        });
+      }
       row.appendChild(input);
       loginCard.appendChild(row);
       BUILD_STATE.loginFields[item[0]] = input;
@@ -2188,20 +2224,26 @@
 
     //: 按钮行（旧界面 btn_row L732-743）
     const loginBtnRow = P.el('div', { class: 'build-login-btns' });
+    //: ★ 2026-11-05：登录按钮**启用**并接上 ``kuroLogin``。
+    //:
+    //: 原来这里是 ``disabled: true`` 且**没有 onClick** —— 连同三个输入框
+    //: 一起是 P5「只读缓存」时期的遗留。用户圈图问的正是这个。
     const loginBtn = P.button('登录', {
       size: 'sm',
-      disabled: true,
-      title: 'Web 版不支持登录（需要手机号 + 短信验证码）'
+      title: '手机号 + 短信验证码（验证码在库街区 App / 网页登录框获取）',
+      onClick: function () { buildLogin(loginBtn); }
     });
     loginBtn.dataset.action = 'login';
+    BUILD_STATE.loginBtn = loginBtn;
     loginBtnRow.appendChild(loginBtn);
 
     const refreshBtn = P.button('刷新数据', {
       size: 'sm',
-      title: '重新读取缓存',
-      onClick: function () { buildLoad(true); }
+      title: '重新拉取账号数据（需要已登录）',
+      onClick: function () { buildRefresh(loginBtn); }
     });
     refreshBtn.dataset.action = 'refresh';
+    BUILD_STATE.refreshBtn = refreshBtn;
     loginBtnRow.appendChild(refreshBtn);
     loginCard.appendChild(loginBtnRow);
 
@@ -2704,6 +2746,100 @@
     //    **同时**往「结果提示位」写（见上面 shim 的实现）。
     // ══════════════════════════════════════════════════════════════════════
 
+    // ══════════════════════════════════════════════════════════════════════
+    //  ★★★ 2026-11-05：订阅登录 / 拉数据事件
+    //
+    //  后端 ``kuroLogin`` 是**异步**的（立刻返回），结果全走事件：
+    //
+    //  * ``kuroLoginState``    —— state = logging_in / logged_in / failed
+    //  * ``kuroDataProgress``  —— 拉数据时的每一行进度
+    //  * ``kuroDataReady``     —— 数据到手（partial=True 表示拉到一半）
+    //  * ``kuroDataFailed``    —— 拉数据失败
+    //
+    //  ## ⚠ 不能在这里 ``return`` 一个 off 数组
+    //
+    //  这个面板走的是 ``registerPanel``（不是 ``registerPage``），
+    //  页面切走时**没有统一的卸载钩子** —— 所以监听器用
+    //  ``window.Bridge.on`` 挂上后由 Bridge 自己持有。
+    //  重建面板会再挂一次，但每个回调都只操作 ``BUILD_STATE`` 里
+    //  **当前**那几个元素（旧的已被 GC），不会串到别的面板。
+    const offs = [];
+    offs.push(window.Bridge.on('kuroLoginState', function (data) {
+      const d = data || {};
+      const state = String(d.state || '');
+      const msg = String(d.message || '');
+      if (BUILD_STATE.loginStatus) {
+        if (state === 'logged_in') {
+          BUILD_STATE.loginStatus.textContent = '已登录';
+        } else if (state === 'failed') {
+          BUILD_STATE.loginStatus.textContent = '未登录';
+        } else {
+          BUILD_STATE.loginStatus.textContent = '登录中…';
+        }
+      }
+      if (state === 'failed') {
+        BUILD_STATE.busy = false;
+        if (BUILD_STATE.loginBtn) BUILD_STATE.loginBtn.textContent = '登录';
+        buildApplyEditable();
+        setBuildNotice('登录失败：' + (msg || '未知原因'), 'error');
+        return;
+      }
+      if (state === 'logged_in') {
+        //: 登录成功 —— 后端紧接着会自动拉数据，这里保持 busy
+        BUILD_STATE.loggedIn = true;
+        BUILD_STATE.busy = true;
+        if (BUILD_STATE.loginBtn) BUILD_STATE.loginBtn.textContent = '登录';
+        buildApplyEditable();
+        setBuildNotice(msg || '登录成功，开始拉取数据…', 'info');
+        return;
+      }
+      setBuildNotice(msg || '正在登录…', 'info');
+    }));
+
+    offs.push(window.Bridge.on('kuroDataProgress', function (data) {
+      const msg = String((data || {}).message || '');
+      if (msg) setBuildNotice(msg, 'info');
+    }));
+
+    offs.push(window.Bridge.on('kuroDataReady', function (data) {
+      const d = data || {};
+      BUILD_STATE.busy = false;
+      buildApplyEditable();
+      if (BUILD_STATE.refreshBtn) BUILD_STATE.refreshBtn.textContent = '刷新数据';
+      //: 收到完整数据才重读缓存重画；partial 只更新提示（43 个角色要几十秒，
+      //: 每 5 个推一次 partial，重画整页会闪）
+      if (d.partial) {
+        setBuildNotice('数据拉取中…（已拉到一部分）', 'info');
+        return;
+      }
+      setBuildNotice('数据已更新（' + String(d.updatedAt || '') + '）', 'ok');
+      buildLoad();
+    }));
+
+    offs.push(window.Bridge.on('kuroDataFailed', function (data) {
+      BUILD_STATE.busy = false;
+      buildApplyEditable();
+      if (BUILD_STATE.refreshBtn) BUILD_STATE.refreshBtn.textContent = '刷新数据';
+      setBuildNotice('拉取失败：' + String((data || {}).message || '未知原因'),
+        'error');
+    }));
+    BUILD_STATE._offs = offs;
+
+    //: ★ 页面切回来时后端可能还在拉（线程不随页面销毁）——
+    //: 问一句把按钮锁住，不然用户会连点。
+    (async function () {
+      try {
+        const r = await P.call('kuroBusy');
+        if (r.ok && r.data && r.data.busy) {
+          BUILD_STATE.busy = true;
+          buildApplyEditable();
+          setBuildNotice('后台正在登录 / 拉取数据…', 'info');
+        }
+      } catch (err) {
+        void err;
+      }
+    })();
+
     buildLoad();
     void app;
   });
@@ -2783,11 +2919,134 @@
           if (el) el.value = '';
         }
       }
+      //: ★★★ 2026-11-05 **这里原来漏了恢复可编辑**
+      //:
+      //: 用户圈图：「退出登录后，特征码、手机号、验证码怎么不能输入？」
+      //: 三个输入框在建卡时就被写死 ``disabled = true``，
+      //: 退出登录只清了 ``value``、没动 ``disabled`` ——
+      //: 于是登出之后**再也输不进去**，只能重启程序（而重启后还是禁用）。
+      BUILD_STATE.loggedIn = false;
+      BUILD_STATE.busy = false;
+      buildApplyEditable();
       setBuildNotice(String(d.message ||
         '已退出登录（令牌 + 缓存都已删除）'), 'warn');
       //: 退出成功后按钮就该消失（没登录了）
       btn.style.display = 'none';
     })();
+  }
+
+  /**
+   * ★★★ 2026-11-05 同步「登录卡能不能编辑」。
+   *
+   * 照抄旧界面 ``_apply_inputs_editable(editable)`` 的语义：
+   *
+   * * **未登录** → 特征码 / 手机号 / 验证码可编辑，登录按钮可点
+   * * **已登录** → 三者置灰 + tooltip「已登录 —— 想换号请先点「退出登录」」
+   * * **正在登录 / 正在拉数据** → 全置灰（防止连点，也防止改到一半被覆盖）
+   *
+   * ## ⚠ 为什么必须集中成一个函数
+   *
+   * 原来「能不能编辑」散在三处（建卡时写死 ``disabled = true``、
+   * 退出登录时只清 ``value`` 不动 ``disabled``、回填时也不动），
+   * 于是**退出登录后再也输入不了** —— 用户圈图问的就是这个 bug。
+   * 现在只有这里改 ``disabled``，谁改状态谁调它。
+   */
+  function buildApplyEditable() {
+    const fields = BUILD_STATE.loginFields || {};
+    const locked = !!BUILD_STATE.loggedIn || !!BUILD_STATE.busy;
+    for (const key of Object.keys(fields)) {
+      const el = fields[key];
+      if (!el) continue;
+      el.disabled = locked;
+      //: 验证码框在已登录时干脆留空（旧界面也不留旧验证码）
+      if (key === 'code' && locked) el.value = '';
+    }
+    if (BUILD_STATE.loginBtn) {
+      BUILD_STATE.loginBtn.disabled = locked;
+      BUILD_STATE.loginBtn.title = BUILD_STATE.busy
+        ? '正在处理，请稍候'
+        : (BUILD_STATE.loggedIn
+          ? '已登录 —— 想换号请先点「退出登录」'
+          : '手机号 + 短信验证码（验证码在库街区 App / 网页登录框获取）');
+    }
+    //: 「刷新数据」在**已登录 + 不忙**时可用 —— 它要令牌
+    if (BUILD_STATE.refreshBtn) {
+      BUILD_STATE.refreshBtn.disabled = !BUILD_STATE.loggedIn
+        || !!BUILD_STATE.busy;
+    }
+  }
+
+  /**
+   * ★★★ 2026-11-05 点「登录」：校验 → 调 ``kuroLogin`` → 等事件。
+   *
+   * 后端 ``kuroLogin`` 是**异步**的（立刻返回 ``{ok:true}``），真正的结果
+   * 走 ``kuroLoginState`` / ``kuroDataProgress`` / ``kuroDataReady`` 事件。
+   * 所以这里只负责：拿输入 → 本地先校验一遍 → 置忙 → 发请求。
+   */
+  async function buildLogin(btn) {
+    const fields = BUILD_STATE.loginFields || {};
+    const mobileEl = fields.mobile;
+    const codeEl = fields.code;
+    const featureEl = fields.feature;
+    const mobile = String((mobileEl && mobileEl.value) || '').trim();
+    const code = String((codeEl && codeEl.value) || '').trim();
+    const feature = String((featureEl && featureEl.value) || '').trim();
+
+    //: 手机号框里可能还是脱敏值 ``****6241`` —— 那不是能提交的号码
+    if (!/^\d{11}$/.test(mobile)) {
+      setBuildNotice('请填写 11 位手机号（框里若是 ****xxxx，点一下重填）',
+        'warn');
+      if (mobileEl) mobileEl.focus();
+      return;
+    }
+    if (!code) {
+      setBuildNotice('请填写短信验证码（在库街区 App / 网页登录框点「获取验证码」）',
+        'warn');
+      if (codeEl) codeEl.focus();
+      return;
+    }
+
+    BUILD_STATE.busy = true;
+    buildApplyEditable();
+    if (btn) btn.textContent = '登录中…';
+    setBuildNotice('正在登录…', 'info');
+
+    const r = await P.call('kuroLogin', mobile, code, feature);
+    if (!r.ok) {
+      BUILD_STATE.busy = false;
+      buildApplyEditable();
+      if (btn) btn.textContent = '登录';
+      setBuildNotice('登录失败（接口未就绪）', 'error');
+      return;
+    }
+    const d = r.data || {};
+    if (d.ok === false) {
+      BUILD_STATE.busy = false;
+      buildApplyEditable();
+      if (btn) btn.textContent = '登录';
+      setBuildNotice('登录失败：' + String(d.message || d.reason || '未知原因'),
+        d.reason === 'busy' ? 'warn' : 'error');
+    }
+    //: 成功 / 忙碌：等 ``kuroLoginState`` 事件收尾，这里不动按钮
+  }
+
+  /**
+   * ★★★ 2026-11-05 点「刷新数据」：真的重新拉一次（不是只读缓存）。
+   */
+  async function buildRefresh(btn) {
+    BUILD_STATE.busy = true;
+    buildApplyEditable();
+    if (btn) btn.textContent = '拉取中…';
+    setBuildNotice('正在重新拉取账号数据…', 'info');
+    const r = await P.call('kuroFetchData', '');
+    if (!r.ok || (r.data && r.data.ok === false)) {
+      BUILD_STATE.busy = false;
+      buildApplyEditable();
+      if (btn) btn.textContent = '刷新数据';
+      const d = (r.data || {});
+      setBuildNotice('拉取失败：' +
+        String(d.message || d.reason || '接口未就绪'), 'error');
+    }
   }
 
   /**
@@ -2869,7 +3128,14 @@
     //:   ``mobile_tail: "6241"``，完整号码从来没落过盘。
     //:   所以直接用 ``phoneMasked``（``****6241``），不用自己脱敏。
     const login = data.loginInfo || data.account || {};
-    const loggedIn = login.loggedIn != null ? !!login.loggedIn : !!login.loggedIn;
+    //: ★ 2026-11-05：这里原来是照抄旧界面的
+    //: ``login.loggedIn != null ? !!login.loggedIn : !!login.loggedIn``
+    //: —— 两个分支一模一样，等于 ``!!login.loggedIn``，三元没意义。
+    //: 直接写清楚：**没有 ``loginInfo``（没缓存）就当未登录**。
+    const loggedIn = !!(login && login.loggedIn);
+
+    //: ★ 2026-11-05：登录态决定输入框能不能编辑（见 buildApplyEditable）
+    BUILD_STATE.loggedIn = loggedIn;
 
     if (BUILD_STATE.loginStatus) {
       //: 旧界面 ``_say`` L918：``f"已登录（手机号 ****{tail}）"``
@@ -2893,15 +3159,19 @@
         mob.value = String(login.phoneMasked ||
           (login.phoneTail ? '****' + login.phoneTail : ''));
       }
-      //: 验证码 —— Web 版永远空着（登录做不了）
+      //: 验证码 —— 缓存里从来没存过（旧界面也不存），留空
       const code = BUILD_STATE.loginFields.code;
       if (code) code.value = '';
     }
+    //: ★ 2026-11-05：回填完再决定置灰 —— 顺序反了会把刚回填的值锁在外面
+    buildApplyEditable();
     //: 缓存说明（时间）
+    //
+    //: ★ 2026-11-05 文案改掉：原来写「Web 版不支持登录…要更新请用旧界面」，
+    //: 现在 Web 版能登录了，那句话会误导用户。
     setBuildCacheNote(
-      'Web 版不支持登录，字段来自上次在旧界面保存的缓存。最后更新：' +
-      String(data.updatedAt || '未知时间') +
-      '；要更新请用旧界面：MYTOOLS_WEB_SHELL=0 python main.py'
+      '最后更新：' + String(data.updatedAt || '未知时间') +
+      '（点「刷新数据」可重新拉取）'
     );
 
     // ── ② 账号概览 —— **照抄旧界面 ``_format_base`` 的 6 项** ──

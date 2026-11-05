@@ -600,9 +600,24 @@ def main() -> int:
 
         # ── 停止 → 恢复空闲 ──
         js("(window.Bridge && Bridge.call('stopTask'))")
-        QTimer.singleShot(600, check_stop)
+        #: ★ 2026-11-05：原来这里 fixed ``singleShot(600, check_stop)``，
+        #: 实测**就是这条会偶发 FAIL**。探针 ``tmp_t8.py`` 逐 200ms 采样实测：
+        #:
+        #:     +200ms … +2000ms  运行中 / 停止可用（任务还在收尾）
+        #:     +2200ms           已停止 / 停止不可用 / 运行按钮恢复可点
+        #:
+        #: 原因：``stopTask`` 只是 ``request_stop()``，真正结束要等执行器
+        #: 把当前动作跑完（见 ``web_bridge.stopTask`` 文档）。游戏没开时
+        #: 前置检查失败得也快，反之就慢；固定 600ms 早于事件到达。
+        #: 改成**最多等 4 秒、每 200ms 复查一次**，一旦满足就地判 PASS。
+        check_stop(deadline=20)
 
-    def check_stop() -> None:
+    def check_stop(deadline: int = 20) -> None:
+        """停止后：停止按钮不可用 + 状态不是 running + 运行按钮恢复可点。
+
+        ``deadline`` 是**剩余重试次数**（每次 200ms）。任务还在收尾时会一直
+        重试到 4 秒；到点仍不满足才判 FAIL，并把当次快照打出来。
+        """
         snapshot = bundle(
             "JSON.stringify((function(){"
             "var row = document.querySelector('#page-tasks .flow-card');"
@@ -622,8 +637,6 @@ def main() -> int:
             and snapshot.get("stopDisabled") is True
             and "running" not in str(snapshot.get("pill") or "")
         )
-        check("T7", ok, f"停止后状态 = {snapshot}")
-
         # ── ★ 停止后运行按钮必须恢复可点（P1 的老 bug）──
         btn = bundle(
             "(function(){var b=document.querySelector("
@@ -633,6 +646,13 @@ def main() -> int:
             "run_btn_after_stop",
         )
         ok_btn = isinstance(btn, dict) and btn.get("disabled") is False
+
+        if not (ok and ok_btn) and deadline > 0:
+            #: 还在收尾 —— 200ms 后再看，别拿一次过早的采样判死
+            QTimer.singleShot(200, lambda: check_stop(deadline - 1))
+            return
+
+        check("T7", ok, f"停止后状态 = {snapshot}")
         check("T8", ok_btn, f"停止后运行按钮 = {btn}（必须是可点，P1 是永久 disabled）")
 
         # ══════════════════════════════════════════════════════════════════
