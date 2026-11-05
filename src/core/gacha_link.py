@@ -50,6 +50,27 @@ _REQUIRED_PARAMS = ("svr_id=", "player_id=", "record_id=")
 #: 记住游戏目录的小文件（放用户数据目录）
 _CONFIG_NAME = "gacha_game_dir.json"
 
+#: ★ 滚动备份日志的文件名前缀/后缀（2026-11-05 加）
+#:
+#: 鸣潮的 ``Client.log`` 会滚动：写到一定大小就改名成
+#:
+#: .. code:: text
+#:
+#:     Client-backup-2026.11.05-09.23.34-2026.11.05-10.14.15.log
+#:
+#: 即 ``Client-backup-<起>-<止>.log``，名字里带**两个**时间戳。
+#:
+#: ## 为什么必须一起扫（用户 2026-11-05 报的 bug）
+#:
+#: 用户「游戏里翻取抽卡记录」→ 程序去读 ``Client.log`` → **一条都没有**。
+#: 实测：当时 ``Client.log`` 是 10:26 才新建的（2.9 MB，只有 pak 挂载日志），
+#: 而真正的抽卡链接躺在 ``Client-backup-…10.14.15.log``（9.0 MB，覆盖 09:23→10:14）。
+#:
+#: 也就是说：**只要游戏重启过一次，刚翻的那几页记录就被滚进备份了**，
+#: 只读 ``Client.log`` 永远读不到 —— 这不是小概率事件，是每次重启都发生。
+_BACKUP_PREFIX = "Client-backup-"
+_BACKUP_SUFFIX = ".log"
+
 
 class GrabError(Exception):
     """读链接失败。消息是**写给用户看的**。"""
@@ -128,8 +149,58 @@ def scan_log(path: pathlib.Path) -> str | None:
     return extract_url(text)
 
 
-# --------------------------------------------------------------------- 找目录
+def backup_logs(log: pathlib.Path) -> list[pathlib.Path]:
+    """同一目录下的滚动备份日志，**新的在前**。
 
+    文件名形如 ``Client-backup-2026.11.05-09.23.34-2026.11.05-10.14.15.log``，
+    名字本身就带着区间，**按文件名倒序 == 按时间倒序**（时间格式是定长、
+    大端：``YYYY.MM.DD-HH.MM.SS``），所以直接 sorted 就够，不用 stat。
+
+    ``Client.log`` 本身不算备份，不在这里返回。
+    """
+    try:
+        siblings = list(log.parent.iterdir())
+    except OSError:
+        return []
+    out = [
+        p for p in siblings
+        if p.is_file()
+        and p.name.startswith(_BACKUP_PREFIX)
+        and p.name.endswith(_BACKUP_SUFFIX)
+    ]
+    out.sort(key=lambda p: p.name, reverse=True)
+    return out
+
+
+def scan_log_any(log: pathlib.Path) -> tuple[str | None, pathlib.Path | None]:
+    """先看主日志，再按新到旧看备份。返回 ``(链接, 命中的文件)``。
+
+    ## 为什么要往回看（用户 2026-11-05 实测）
+
+    ``Client.log`` 会滚动，游戏重启一次就把刚翻的抽卡记录挪进备份。
+    只读主日志 = 用户「刚在游戏里翻完、回来点按钮却什么都没有」。
+
+    ## 顺序为什么是先主后备份
+
+    主日志里如果有，那是最新的（备份必然更旧）。主日志没有才说明
+    记录已经滚走了，这时候从**最新的备份**往回找。
+    """
+    url = scan_log(log)
+    if url:
+        return url, log
+    for backup in backup_logs(log):
+        try:
+            url = scan_log(backup)
+        except GrabError:
+            #: 备份读不了（被游戏占用 / 权限）不该让整件事失败，跳过继续
+            logger.warning("读不了备份日志：%s", backup.name, exc_info=True)
+            continue
+        if url:
+            return url, backup
+    return None, None
+
+
+# --------------------------------------------------------------------- 找目录
 
 def _config_path() -> pathlib.Path:
     from . import paths  # noqa: PLC0415 - 避免和 paths 的初始化顺序打架
@@ -231,13 +302,20 @@ def find_log() -> pathlib.Path:
 
 
 def grab_link() -> str:
-    """走完整流程：找日志 → 解密 → 取链接。失败抛 :class:`GrabError`。"""
+    """走完整流程：找日志 → 解密 → 取链接。失败抛 :class:`GrabError`。
+
+    ★ 2026-11-05：主日志里没有时，**继续扫滚动备份**（见 :func:`backup_logs`）。
+    用户实测就踩在这一点上：翻完抽卡记录后游戏重启，链接被滚进
+    ``Client-backup-….log``，只读 ``Client.log`` 一条都找不到。
+    """
     log = find_log()
-    url = scan_log(log)
+    url, used = scan_log_any(log)
     if not url:
         raise GrabError(
             "日志里没有抽卡记录链接。\n"
             "请在游戏里打开一次：唤取 → 唤取记录（多翻几页），"
             "然后回到这里再点一次「获取抽卡记录」。"
         )
+    if used is not None and used.name.startswith(_BACKUP_PREFIX):
+        logger.info("抽卡链接来自滚动备份：%s", used.name)
     return url

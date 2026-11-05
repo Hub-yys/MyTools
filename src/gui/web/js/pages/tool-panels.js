@@ -4390,7 +4390,10 @@
     //: 按 poolType 合并成同一个对象，渲染时一次取
     pools: {},
     selectedPool: '',
-    history: []
+    history: [],
+    //: ★ 2026-11-05：``gachaLinkGrabbed`` 只订一次（重复订阅会让
+    //: 同一个事件触发多次回调、输入框被连续写几次）
+    grabBound: false
   };
 
   registerPanel('gacha', function renderGacha(container, app, meta) {
@@ -4424,6 +4427,9 @@
       title: '从本机游戏的日志里读出抽卡记录链接（需要先在本机登录过游戏）',
       onClick: function () { gachaGrab(); }
     });
+    //: ★ 2026-11-05：给按钮一个稳定的选择器 —— 验证脚本 / 探针要能点到它。
+    //: 按文案找太脆（改了措辞就断），按 ``data-action`` 找才稳。
+    GACHA_STATE.grabBtn.dataset.action = 'grab';
     linkRow.appendChild(GACHA_STATE.grabBtn);
 
     GACHA_STATE.linkInput = P.el('input', {
@@ -4716,34 +4722,57 @@
     if (GACHA_STATE.statusEl) {
       GACHA_STATE.statusEl.textContent = '正在从本机游戏日志里读取链接…';
     }
-    //: ⚠ 后端**还没有** ``grabGachaLink``（旧界面是 ``GrabLinkThread``，
-    //: 读本机日志 + 可能全盘扫，要几十秒，必须在 Python 线程里跑）。
-    //: 这里如实告诉用户，不假装在读。
+    //: ★ 2026-11-05：``grabGachaLink`` 补上了（后端真去读 Client.log，
+    //: 主日志没有还会往回翻滚动备份 —— 游戏重启一次就把记录滚走了）。
+    //: 它是**异步**的：Slot 立即返回 ``{ok:true}``，结果走 ``gachaLinkGrabbed``
+    //: 事件。不能在等返回值的地方填输入框，否则永远是空的。
+    gachaBindGrabbed();
     const result = await P.call('grabGachaLink');
-    if (GACHA_STATE.grabBtn) GACHA_STATE.grabBtn.disabled = false;
 
     if (!result.ok) {
+      if (GACHA_STATE.grabBtn) GACHA_STATE.grabBtn.disabled = false;
       if (GACHA_STATE.statusEl) {
         GACHA_STATE.statusEl.textContent =
-          '自动获取还没做（缺 grabGachaLink 接口）—— ' +
-          '请按上面的②手动复制粘贴链接，或回旧界面点「获取抽卡记录」。';
+          '读不了游戏日志（接口未就绪）—— 请按上面的②手动复制粘贴链接。';
       }
       return;
     }
     const data = result.data || {};
     if (data.ok === false) {
+      //: 后端忙（上一次还没结束）之类的同步拒绝
+      if (GACHA_STATE.grabBtn) GACHA_STATE.grabBtn.disabled = false;
       if (GACHA_STATE.statusEl) {
-        GACHA_STATE.statusEl.textContent = String(data.message ||
-          '没从本机日志里读到链接 —— 请按上面的②手动复制粘贴。');
+        GACHA_STATE.statusEl.textContent = String(
+          data.message || '没从本机日志里读到链接 —— 请按上面的②手动复制粘贴。');
       }
-      return;
     }
-    if (data.link && GACHA_STATE.linkInput) {
-      GACHA_STATE.linkInput.value = String(data.link);
-    }
-    if (GACHA_STATE.statusEl) {
-      GACHA_STATE.statusEl.textContent = '已读到链接，点「分析」开始。';
-    }
+    //: 已受理 → 等 ``gachaLinkGrabbed`` 事件（按钮在那里复位）
+  }
+
+  /** 订阅「读到链接」事件（只订一次）。*/
+  function gachaBindGrabbed() {
+    if (GACHA_STATE.grabBound) return;
+    GACHA_STATE.grabBound = true;
+    window.Bridge.on('gachaLinkGrabbed', function (data) {
+      if (!data) return;
+      if (GACHA_STATE.grabBtn) GACHA_STATE.grabBtn.disabled = false;
+      if (data.ok === false) {
+        if (GACHA_STATE.statusEl) {
+          GACHA_STATE.statusEl.textContent = String(
+            data.message || '没从本机日志里读到链接 —— 请按上面的②手动复制粘贴。');
+        }
+        return;
+      }
+      const link = String(data.link || '');
+      if (!link) return;
+      if (GACHA_STATE.linkInput) GACHA_STATE.linkInput.value = link;
+      if (GACHA_STATE.statusEl) {
+        //: 链接常来自滚动备份 —— 说清来源，免得用户以为读的是旧数据
+        const src = String(data.source || '');
+        GACHA_STATE.statusEl.textContent =
+          '已读到链接（来源：' + (src || 'Client.log') + '），点「分析」开始。';
+      }
+    });
   }
 
   async function gachaAnalyze() {

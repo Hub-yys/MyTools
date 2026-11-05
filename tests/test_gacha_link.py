@@ -206,6 +206,92 @@ class TestRememberedDir(unittest.TestCase):
         self.assertIsNone(gacha_link.remembered_dir())
 
 
+class TestBackupLogs(unittest.TestCase):
+    """★ 2026-11-05 用户报的 bug：翻完抽卡记录，点按钮读不到链接。
+
+    根因不是解密错 —— 是 ``Client.log`` **滚动**了：
+
+    .. code:: text
+
+        Client.log                                             ← 新的，只有 pak 挂载日志
+        Client-backup-2026.11.05-09.23.34-2026.11.05-10.14.15.log   ← 链接在这里
+
+    游戏重启一次就会滚一回，所以这不是小概率，是**每次重启都发生**。
+    """
+
+    def _make_dir(self) -> pathlib.Path:
+        return pathlib.Path(tempfile.mkdtemp())
+
+    def test_backup_logs_sorted_newest_first(self):
+        """文件名定长大端时间戳 → 按名字倒序就是按时间倒序。"""
+        d = self._make_dir()
+        for name in ("Client-backup-2026.11.05-09.23.34-2026.11.05-10.14.15.log",
+                     "Client-backup-2026.11.04-20.00.00-2026.11.04-21.00.00.log",
+                     "Client-backup-2026.11.05-11.00.00-2026.11.05-12.00.00.log"):
+            (d / name).write_bytes(b"")
+        (d / "Client.log").write_bytes(b"")
+        got = [p.name for p in gacha_link.backup_logs(d / "Client.log")]
+        self.assertEqual(got, [
+            "Client-backup-2026.11.05-11.00.00-2026.11.05-12.00.00.log",
+            "Client-backup-2026.11.05-09.23.34-2026.11.05-10.14.15.log",
+            "Client-backup-2026.11.04-20.00.00-2026.11.04-21.00.00.log",
+        ])
+
+    def test_backup_logs_ignores_other_files(self):
+        """``Client.log`` / ``cgsdk_.log`` 不是备份，不能算进来。"""
+        d = self._make_dir()
+        (d / "Client.log").write_bytes(b"")
+        (d / "cgsdk_.log").write_bytes(b"")
+        (d / "Client-backup-2026.11.05-09.23.34-2026.11.05-10.14.15.log").write_bytes(b"")
+        self.assertEqual(len(gacha_link.backup_logs(d / "Client.log")), 1)
+
+    def test_scan_log_any_falls_back_to_backup(self):
+        """主日志没有链接 → 从备份里捞（这就是用户踩的那条路）。"""
+        d = self._make_dir()
+        main = d / "Client.log"
+        main.write_bytes(obfuscate(b"just pak mounting, no url here"))
+        backup = d / "Client-backup-2026.11.05-09.23.34-2026.11.05-10.14.15.log"
+        backup.write_bytes(obfuscate(f'"url":"{SAMPLE}"'.encode("utf-8")))
+
+        url, used = gacha_link.scan_log_any(main)
+        self.assertEqual(url, SAMPLE)
+        self.assertEqual(used, backup)
+
+    def test_scan_log_any_prefers_main_log(self):
+        """主日志里有就用主日志（它比任何备份都新）。"""
+        d = self._make_dir()
+        main = d / "Client.log"
+        main.write_bytes(obfuscate(f'"url":"{SAMPLE}"'.encode("utf-8")))
+        backup = d / "Client-backup-2026.11.05-09.23.34-2026.11.05-10.14.15.log"
+        backup.write_bytes(obfuscate(
+            f'"url":"{SAMPLE.replace("PLAYER456", "OLDPLAYER")}"'.encode("utf-8")))
+
+        url, used = gacha_link.scan_log_any(main)
+        self.assertEqual(used, main)
+        self.assertIn("PLAYER456", url or "")
+
+    def test_scan_log_any_returns_none_when_nowhere(self):
+        d = self._make_dir()
+        main = d / "Client.log"
+        main.write_bytes(obfuscate(b"no url"))
+        self.assertEqual(gacha_link.scan_log_any(main), (None, None))
+
+    def test_backups_newest_wins(self):
+        """两个备份都有链接时，要拿**最新那个**（旧链接容易过期）。"""
+        d = self._make_dir()
+        main = d / "Client.log"
+        main.write_bytes(b"")
+        (d / "Client-backup-2026.11.04-20.00.00-2026.11.04-21.00.00.log"
+         ).write_bytes(obfuscate(f'"url":"{SAMPLE}"'.encode("utf-8")))
+        newer = (d / "Client-backup-2026.11.05-09.23.34-2026.11.05-10.14.15.log")
+        newer.write_bytes(obfuscate(
+            f'"url":"{SAMPLE.replace("PLAYER456", "NEWPLAYER")}"'.encode("utf-8")))
+
+        url, used = gacha_link.scan_log_any(main)
+        self.assertEqual(used, newer)
+        self.assertIn("NEWPLAYER", url or "")
+
+
 class TestGrabLink(unittest.TestCase):
     """``grab_link()`` 的整体行为（日志用临时文件替身）。"""
 

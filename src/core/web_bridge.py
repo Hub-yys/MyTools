@@ -589,6 +589,54 @@ def _gacha_report_to_dict(report, fetched_total: int = 0) -> dict:
     }
 
 
+def _make_grab_thread():
+    """延迟定义「读抽卡链接」线程（同 _make_gacha_thread 的理由）。
+
+    ## 为什么单独一个线程类
+
+    ``gacha_link.grab_link()`` 在找不到记住的目录时会**全盘扫**
+    （``where /r C:\\ Client.log``，实测几十秒）。放主线程会冻住界面。
+
+    ## 和 Qt 版 ``GrabLinkThread`` 的差别
+
+    Qt 版只发 ``succeeded(str)``；这里多发一个**来源文件名** ——
+    链接常常是从**滚动备份**里捞出来的（``Client-backup-….log``），
+    告诉用户这一点能解释「我明明刚翻过，为什么提示读的旧文件」。
+    """
+
+    from PySide6.QtCore import QThread, Signal  # noqa: PLC0415
+
+    class _GrabThread(QThread):
+        #: ``(链接, 来源文件名)``
+        succeeded = Signal(str, str)
+        failed = Signal(str)
+
+        def run(self) -> None:  # noqa: D102
+            try:
+                from . import gacha_link  # noqa: PLC0415
+
+                log = gacha_link.find_log()
+                url, used = gacha_link.scan_log_any(log)
+                if not url:
+                    raise gacha_link.GrabError(
+                        "日志里没有抽卡记录链接。\n"
+                        "请在游戏里打开一次：唤取 → 唤取记录（多翻几页），"
+                        "然后回到这里再点一次「获取抽卡记录」。"
+                    )
+            except Exception as exc:  # noqa: BLE001
+                #: ``GrabError`` 的文案是写给人看的，原样透传；
+                #: 其他异常带类名，免得把 Python 内部错误当成操作提示。
+                from .gacha_link import GrabError  # noqa: PLC0415
+
+                message = str(exc) if isinstance(exc, GrabError) \
+                    else f"{type(exc).__name__}: {exc}"
+                self.failed.emit(message)
+                return
+            self.succeeded.emit(url, used.name if used else "")
+
+    return _GrabThread
+
+
 def _make_gacha_thread():
     """延迟定义抽卡分析线程（同 _make_library_threads 的理由）。"""
     from PySide6.QtCore import QThread, Signal  # noqa: PLC0415
@@ -868,6 +916,11 @@ class WebBridge(QObject):
         self._gacha_thread = None
         self._gacha_running = False
         self._GachaThread = _make_gacha_thread()
+
+        #: ★ 读抽卡链接（2026-11-05 补）—— 本机日志线程（可能全盘扫，几十秒）
+        self._gacha_grab_thread = None
+        self._gacha_grab_running = False
+        self._GrabThread = _make_grab_thread()
 
         #: ★★★ 抽卡历史文件的**可覆盖路径**（默认 None = 用真实用户数据）。
         #:
@@ -3829,6 +3882,72 @@ class WebBridge(QObject):
     #
     # ⚠ **不能直接用 fetch_report()** —— 那只统计"这一次拉到的"，
     # 用户在多个设备/多次拉取之间，累计数字会变少（Qt 版就是这么做的）。
+
+    @Slot(result=str)
+    def grabGachaLink(self) -> str:
+        """从**本机游戏日志**里读出抽卡记录链接（**异步**）。
+
+        ## ★ 2026-11-05 补的（用户报的 bug）
+
+        用户：「游戏里翻取抽卡记录后，点获取抽卡记录，地址没有自动填充」。
+
+        根因不是日志读不出来 —— 是**这个 Slot 从来没实现过**。
+        前端 ``gachaGrab()`` 一直在调 ``P.call('grabGachaLink')``，
+        而 ``web_bridge`` 里没有它 → QWebChannel 回一个空数组 →
+        前端走 ``!result.ok`` 分支，把一句写死的
+        「自动获取还没做（缺 grabGachaLink 接口）」显示给用户。
+        那句提示是我 P4 时期留下的占位，界面上却像是功能坏了。
+
+        ## 为什么必须异步
+
+        :func:`src.core.gacha_link.grab_link` 会先按记住的目录找，
+        找不到就 ``_common_candidates()`` 逐个盘试，最后兜底
+        ``where /r C:\\ Client.log`` —— **实测几十秒**。在 ``@Slot`` 里同步跑
+        会把整个界面冻住（Qt 只在事件循环里跑 JS 回调）。
+
+        :return: ``{ok: true}`` 已受理（结果走 ``gachaLinkGrabbed`` 事件）/
+                 ``{ok: false, reason: "busy", message: "…"}``
+
+        完成后推 ``gachaLinkGrabbed``：
+
+        .. code:: json
+
+            {"ok": true, "link": "https://aki-gm-resources…&platform=PC",
+             "source": "Client.log"}          ← 或 "Client-backup-….log"
+
+        失败：``{"ok": false, "message": "…"}`` —— message 是
+        :class:`~src.core.gacha_link.GrabError` 的原文（**写给用户看的**，
+        会告诉用户"先在游戏里打开唤取记录页"）。
+        """
+        busy = getattr(self, "_gacha_grab_running", False)
+        if busy:
+            return _json({"ok": False, "reason": "busy",
+                          "message": "正在读取，请稍候"})
+
+        thread = self._GrabThread(self)
+        self._gacha_grab_thread = thread
+        self._gacha_grab_running = True
+
+        def on_ok(link: str, source: str) -> None:
+            self._gacha_grab_running = False
+            self.emitEvent("gachaLinkGrabbed",
+                           {"ok": True, "link": link, "source": source})
+            self.pushLog("已从游戏日志读到抽卡记录链接", "ok")
+
+        def on_fail(message: str) -> None:
+            self._gacha_grab_running = False
+            self.emitEvent("gachaLinkGrabbed",
+                           {"ok": False, "message": message})
+            #: 读不到链接是**用户操作没到位**（没先翻记录页），
+            #: 不是程序出错 —— 用 warning 不用 error。
+            self.pushLog(f"没读到抽卡链接：{message}", "warn")
+
+        thread.succeeded.connect(on_ok)
+        thread.failed.connect(on_fail)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+        self.pushLog("正在从游戏日志里读取抽卡链接……", "info")
+        return _json({"ok": True})
 
     @Slot(str, result=str)
     def analyzeGacha(self, link: str) -> str:
