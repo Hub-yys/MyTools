@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """声骸强化页面：核心属性 ↔ 有效词条数 的联动检查（不需游戏）。
 
-    QT_QPA_PLATFORM=windows ./.venv/Scripts/python.exe tests/check_echo_page_gui.py
+    QT_QPA_PLATFORM=offscreen ./.venv/Scripts/python.exe tests/check_echo_page_gui.py
 
 盯三件事：
 
-1. **下限 = 核心属性条数**、上限 = 有效词条集合总条数（用户要求）；
-2. **改核心属性时「有效词条数」跟着回到核心条数** —— 减少核心也要跟着降；
+1. **下限 = 核心属性条数（可选勾了 ≥1 条再 +1）**、上限 = 有效词条集合总条数
+   （2026-11-05 用户："可选属性勾上了 1 条或多条，那么有效词条要联动 +1"）；
+2. **改核心/可选属性时「有效词条数」跟着回到新下界** —— 减少核心也要跟着降；
 3. **这个脚本不许写脏用户真正的配置**。
 
 第 3 条是补的：2026-09-24 用户报"核心只有 2 条，有效词条却不是 2" ——
@@ -88,32 +89,40 @@ def main() -> int:
           f"实际 {stepper.minimum}~{stepper.maximum}")
     check("下限抬起后当前值跟着升", stepper.value() == 3, f"实际 {stepper.value()}")
 
-    # ④ 可选属性抬上限 → 能把有效词条数调高到 4
+    # ④ 可选属性抬上限（新规则：**可选勾了 ≥1 条，下界也 +1**）
+    #    核心 3 + 可选 1 → 下界 3+1 = 4、上限 3+1 = 4
     page._optional_boxes["共鸣效率"].setChecked(True)
     app.processEvents()
-    check("可选 +1 → 范围 3~4", (stepper.minimum, stepper.maximum) == (3, 4),
+    check("可选 +1 → 范围 4~4", (stepper.minimum, stepper.maximum) == (4, 4),
           f"实际 {stepper.minimum}~{stepper.maximum}")
+    # 用户 2026-11-05 原话："可选属性勾上了 1 条或多条，那么有效词条要联动 +1"
+    check("★ 可选一勾上，有效词条数就联动 +1（不用手点）", stepper.value() == 4,
+          f"实际 {stepper.value()}")
     stepper.set_value(4)
     app.processEvents()
     check("上限内可以调高", stepper.value() == 4, f"实际 {stepper.value()}")
 
-    # ⑤ ★ 核心属性减一条 → 有效词条数**跟着降回核心条数**（用户 2026-09-24 报的问题）
+    # ⑤ ★ 核心属性减一条 → 有效词条数**跟着降到新下界**（用户 2026-09-24 报的问题）
     page._core_boxes["攻击百分比"].setChecked(False)
     app.processEvents()
-    # 取消 1 条核心后只剩 1 个可选属性 → 集合 = 双爆 + 共鸣效率 = 3 条，上限是 3
-    check("核心 -1 → 范围 2~3", (stepper.minimum, stepper.maximum) == (2, 3),
+    # 取消 1 条核心后：核心 = 双爆 = 2 条，可选还留着 1 条（共鸣效率）
+    #   → 下界 = 2 + 1（可选另加）= 3、上限 = 2 + 1 = 3
+    check("核心 -1 → 范围 3~3", (stepper.minimum, stepper.maximum) == (3, 3),
           f"实际 {stepper.minimum}~{stepper.maximum}")
-    check("★ 减少核心后有效词条数跟着降", stepper.value() == 2, f"实际 {stepper.value()}")
+    check("★ 减少核心后有效词条数跟着降", stepper.value() == 3, f"实际 {stepper.value()}")
     saved = echo_tool.EchoSettings.load()
-    check("★ 盘上也跟着降（不是只改了界面）", saved.min_valid_count == 2,
+    check("★ 盘上也跟着降（不是只改了界面）", saved.min_valid_count == 3,
           f"盘上 {saved.min_valid_count}")
-    check("提示里的核心条数已回到 2", "不可小于核心词条数（2 条）" in label.text())
+    # 下界有两个来源，提示必须分开说 —— 否则「核心 2 条」却提示"不可小于 3"自相矛盾
+    check("提示改说「核心 2 条 + 可选属性另加 1 条 = 3 条」",
+          "可选属性另加 1 条" in label.text() and "= 3 条" in label.text(),
+          label.text()[:80])
 
-    # ⑥ 截一张"可调范围"的图（核心 2 + 可选 2 → 2~4）
+    # ⑥ 截一张"可调范围"的图（核心 2 + 可选 2 → 下界 2+1、上限 2+2 = 3~4）
     page._optional_boxes["攻击百分比"].setChecked(True)
     stepper.set_value(3)
     app.processEvents()
-    check("截图场景范围 2~4", (stepper.minimum, stepper.maximum) == (2, 4),
+    check("截图场景范围 3~4", (stepper.minimum, stepper.maximum) == (3, 4),
           f"实际 {stepper.minimum}~{stepper.maximum}")
     shot = SHOTS / "echo_enhance_valid_link.png"
     SHOTS.mkdir(parents=True, exist_ok=True)
@@ -129,7 +138,12 @@ def main() -> int:
     # ⑧ ★ 误弹「任务结束」回归：引擎自启完成（booting→ready、没跑过任务）不弹
     # ⑨ 真跑过任务 → ready 时弹结果报告 + 卡片更新
     # ⑩ 核心属性勾满 → 其余自选框置灰 + 文案说清双爆占 2 条
-    from src.tools.game.echo_enhance.stats import CRIT, CRIT_DMG, format_result_report
+    from src.tools.game.echo_enhance.stats import (
+        CRIT,
+        CRIT_DMG,
+        MAX_CORE_STATS,
+        format_result_report,
+    )
     from src.tools.game.auto_combat.okww_boot import OkwwHost
     import qfluentwidgets
 
@@ -193,6 +207,22 @@ def main() -> int:
     check("★ 勾满 5 条后已勾项仍可取消（不禁用）",
           len(page._checked_core()) == 5 and len(enabled_checked) == len(checked_optional),
           f"已勾 {checked_optional}，其中可点 {enabled_checked}")
+    # ⑩a ★ 核心满 5 条 → 「可选属性」**整片禁选**（用户 2026-11-05：
+    #    "最多是5，如果核心是5，可选就无法勾选了"）。核心已经占满 5 条有效词条。
+    _opt_state = {n: (b.isEnabled(), b.isChecked(), b.toolTip())
+                  for n, b in page._optional_boxes.items()}
+    check("★ 核心满 5 条 → 可选属性全部置灰",
+          all(not en for en, _, _ in _opt_state.values()),
+          f"仍可点的：{[n for n, (en, _, _) in _opt_state.items() if en]}")
+    check("★ 核心满 5 条 → 可选里不留「灰着的已勾项」",
+          all(not ck for _, ck, _ in _opt_state.values()),
+          f"仍勾着：{[n for n, (_, ck, _) in _opt_state.items() if ck]}")
+    check(f"★ 满员时可选 tooltip 说明原因（含「核心属性已满 {MAX_CORE_STATS} 条」）",
+          all(f"核心属性已满 {MAX_CORE_STATS} 条" in tip for _, _, tip in _opt_state.values()),
+          next(iter(_opt_state.values()))[2])
+    check("核心满 5 条 → 有效词条只能是 5",
+          (stepper.minimum, stepper.maximum, stepper.value()) == (5, 5, 5),
+          f"范围 {stepper.minimum}~{stepper.maximum}，值 {stepper.value()}")
     # 满了还勾 → 撤销**刚点的那个** + 红字「核心属性最多只能勾选5条」
     remaining = [n for n, b in page._core_boxes.items()
                  if n not in (CRIT, CRIT_DMG) and not b.isChecked()]
@@ -284,7 +314,6 @@ def main() -> int:
     # ⑬ ★ 盘上是脏数据（超过 5 条）时，界面也不能显示成「8 / 5 条」
     #    （2026-09-24 用户截图就是这个：加载路径以前不做上限校验）
     from src.tools.game.echo_enhance.settings import DEFAULT_CORE
-    from src.tools.game.echo_enhance.stats import MAX_CORE_STATS
 
     dirty = echo_tool.EchoSettings(
         core_stats=("暴击", "暴击伤害", "攻击", "攻击百分比", "生命",

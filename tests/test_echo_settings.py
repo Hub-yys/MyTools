@@ -129,7 +129,10 @@ class TestEchoSettings(_TempSettingsFile):
         cfg = JudgeConfig(optional_stats=frozenset({"共鸣效率"}), min_valid_count=2)
         s = EchoSettings.from_judge_config(cfg)
         self.assertEqual(s.to_judge_config().valid_stats, cfg.valid_stats)
-        self.assertEqual(s.min_valid_count, cfg.min_valid_count)
+        # JudgeConfig.__post_init__ 把双爆强制并进 core → n_core=2；「共鸣效率」
+        # 不在 core 里 → n_opt=1 → 新联动规则 low = 2 + 1 = 3，
+        # 所以构造时 2 就被抬到 3，传进来的 2 收敛不到。
+        self.assertEqual(s.min_valid_count, 3)
 
     # ------------------------------------------------------------ 坏数据兜底
     def test_broken_dict_falls_back(self):
@@ -238,8 +241,80 @@ class TestValidCountLinkedToCore(unittest.TestCase):
 
     def test_optionals_raise_the_ceiling(self):
         s = EchoSettings(optional_stats=("攻击百分比", "共鸣效率"), min_valid_count=3)
-        self.assertEqual(s.valid_count_range(), (2, 4))
+        # 核心 2 + 可选 2 → 勾了可选就 +1 → 下界 3；上界 = 集合 4 条
+        self.assertEqual(s.valid_count_range(), (3, 4))
         self.assertEqual(s.min_valid_count, 3, "能达到了就不该乱动")
+
+    # ---------------------------------------------- 新联动规则（2026-11-05）
+    # 用户原话：「这里只勾选了2条核心词条，有效词条居然能加到3，而且我核心
+    # 词条勾选了3条，有效词条还是只有2条，核心属性是必须有，因此有效词条要
+    # 联动变成3（最多是5，如果核心是5，可选就无法勾选了），同理可选属性是
+    # 可选的，如果勾选了1条或多条，那么效词条要联动+1」
+    def test_core_only_sets_both_bounds(self):
+        cases = [
+            (2, (2, 2)),
+            (3, (3, 3)),
+            (5, (5, 5)),
+        ]
+        for n_core, expected in cases:
+            with self.subTest(n_core=n_core):
+                core = (CRIT, CRIT_DMG, "攻击百分比", "生命百分比", "防御百分比")[:n_core]
+                s = EchoSettings(core_stats=core)
+                self.assertEqual(s.valid_count_range(), expected)
+                # 默认 min_valid_count=2，被 __post_init__ 抬到下界
+                self.assertEqual(s.min_valid_count, expected[0])
+
+    def test_one_or_more_optionals_add_exactly_one(self):
+        """可选勾 ≥1 条 → 下限 +1；勾几条都只 +1，不是按条数累加。"""
+        cases = [
+            (2, 0, (2, 2)),
+            (2, 1, (3, 3)),
+            (2, 2, (3, 4)),
+            (3, 0, (3, 3)),
+            (3, 1, (4, 4)),
+            (3, 2, (4, 5)),
+            (5, 0, (5, 5)),
+        ]
+        pool = (CRIT, CRIT_DMG, "攻击百分比", "生命百分比", "防御百分比")
+        opt_pool = ("共鸣效率", "普攻伤害加成", "重击伤害加成", "共鸣技能伤害加成")
+        for n_core, n_opt, expected in cases:
+            with self.subTest(n_core=n_core, n_opt=n_opt):
+                s = EchoSettings(
+                    core_stats=pool[:n_core],
+                    optional_stats=opt_pool[:n_opt],
+                )
+                self.assertEqual(s.valid_count_range(), expected)
+
+    def test_many_optionals_still_add_only_one(self):
+        # 核心 2 / 可选 4 → 下界仍是 3（不是 2+4），上界=集合 6 条但被 5 夹住
+        s = EchoSettings(
+            optional_stats=("共鸣效率", "普攻伤害加成", "重击伤害加成", "共鸣技能伤害加成"),
+        )
+        self.assertEqual(s.valid_count_range(), (3, 5))
+
+    def test_optional_sharing_a_core_name_adds_nothing(self):
+        """可选里混入核心同名项 → 差集为 0 → 不算「勾了可选」，不 +1。"""
+        s = EchoSettings(
+            core_stats=(CRIT, CRIT_DMG, "攻击百分比"),
+            optional_stats=("攻击百分比",),
+        )
+        self.assertEqual(s.valid_count_range(), (3, 3))
+
+    def test_one_core_stat_is_clamped_to_two(self):
+        """核心只有 1 条（磁盘手改才造得出来）→ 夹到 2，且不能抛异常。"""
+        s = EchoSettings(core_stats=("暴击",))
+        self.assertEqual(s.valid_count_range(), (2, 2))
+        self.assertEqual(s.min_valid_count, 2)
+        # 喂给判定引擎也不能炸（不夹的话会是 (1,1) → ValueError）
+        self.assertEqual(s.to_judge_config().min_valid_count, 2)
+
+    def test_five_core_plus_optional_never_exceeds_five(self):
+        core = (CRIT, CRIT_DMG, "攻击百分比", "生命百分比", "防御百分比")
+        s = EchoSettings(core_stats=core, optional_stats=("共鸣效率",), min_valid_count=5)
+        low, high = s.valid_count_range()
+        self.assertEqual((low, high), (5, 5))
+        self.assertEqual(s.min_valid_count, 5)
+        self.assertEqual(s.to_judge_config().min_valid_count, 5, "6 会撞 JudgeConfig 的 2~5 校验")
 
     def test_never_leaves_an_unreachable_count(self):
         """任何构造路径都不该留下"凑不出来"的数（引擎侧的兜底因此不会触发）。"""
@@ -249,8 +324,25 @@ class TestValidCountLinkedToCore(unittest.TestCase):
             EchoSettings.from_dict({"min_valid_count": 99}),
             EchoSettings.from_dict({"core_stats": [CRIT], "optional_stats": [], "min_valid_count": 1}),
             EchoSettings.from_judge_config(JudgeConfig(min_valid_count=5)),
+            # 核心 3 + 可选 1（非核心）→ 新规则下界 4，2 会被抬到 4
+            EchoSettings.from_dict({
+                "core_stats": [CRIT, CRIT_DMG, "攻击百分比"],
+                "optional_stats": ["共鸣效率"],
+                "min_valid_count": 2,
+            }),
         ):
             self.assertFalse(s.to_judge_config().min_valid_count_unreachable, s)
+            self.assertGreaterEqual(s.min_valid_count, 2, s)
+            self.assertLessEqual(s.min_valid_count, 5, s)
+
+    def test_from_dict_with_core_and_optional_is_lifted_to_four(self):
+        s = EchoSettings.from_dict({
+            "core_stats": [CRIT, CRIT_DMG, "攻击百分比"],
+            "optional_stats": ["共鸣效率"],
+            "min_valid_count": 2,
+        })
+        self.assertEqual(s.valid_count_range(), (4, 4))
+        self.assertEqual(s.min_valid_count, 4, "核心 3 + 勾了可选 → 下界 4，2 会被抬上来")
 
 
 if __name__ == "__main__":

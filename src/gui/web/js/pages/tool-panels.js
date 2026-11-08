@@ -5639,6 +5639,10 @@
     //: 开着时「运行」走 `runTaskWith` + `{designated:true}`
     designatedSwitch: null,
     validStepper: null,
+    //: ★ 2026-11-05 「有效词条」右侧的提示位（说明当前范围是怎么来的），
+    //: 由 ``enhanceSyncValidRange()`` 写文案。原来这页**根本没有**提示位，
+    //: 用户只看到一个孤零零的数字框，不知道自己为什么只能填 2。
+    validHint: null,
     coreSummary: null,
     optionalSummary: null,
     reportHost: null,
@@ -5957,22 +5961,36 @@
    * 「核心保留、可选摘掉」处理 —— 核心是主要求，可选是补充项。
    */
   function enhanceRefresh() {
-    //: ① 互斥 + 摘掉冲突项（以核心为准）
-    for (const stat of ENHANCE_ALL_STATS) {
-      if (stat === ENHANCE_CRIT || stat === ENHANCE_CRIT_DMG) continue;
-      const opt = ENHANCE_STATE.optionalBoxes[stat];
-      if (!opt) continue;
-      const core = ENHANCE_STATE.coreBoxes[stat];
-      const takenByCore = !!(core && core.checked);
-      if (takenByCore && opt.checked) opt.checked = false;
-      opt.disabled = takenByCore;
-    }
-    //: ② 核心侧置灰 = 被可选占了 或 已达自选上限（两条取或）
+    //: ★★★ 2026-11-05 先把核心已勾数算出来 —— 第 ①②步和「可选全禁」
+    //: 都要用它，原来第 ② 步才数、第 ① 步没法用。提到最前面算一次。
     let checked = 0;
     for (const stat of ENHANCE_ALL_STATS) {
       const cb = ENHANCE_STATE.coreBoxes[stat];
       if (cb && cb.checked) checked += 1;
     }
+    //: 核心占满（用户：「最多是5，如果核心是5，可选就无法勾选了」）。
+    //: 核心优先：可选那边**连已勾的也一起摘掉**，不留"灰着的已勾选项"
+    //: —— 灰着的勾等于一个用户点不动、又还生效的幽灵配置。
+    const coreFull = checked >= ENHANCE_MAX_CORE;
+
+    //: ① 互斥 + 摘掉冲突项（以核心为准）
+    for (const stat of ENHANCE_ALL_STATS) {
+      if (stat === ENHANCE_CRIT || stat === ENHANCE_CRIT_DMG) continue;
+      const opt = ENHANCE_STATE.optionalBoxes[stat];
+      if (!opt) continue;
+      if (coreFull) {
+        if (opt.checked) opt.checked = false;
+        opt.disabled = true;
+        opt.title = '核心属性已满 ' + ENHANCE_MAX_CORE + ' 条，可选属性不可再勾';
+        continue;
+      }
+      const core = ENHANCE_STATE.coreBoxes[stat];
+      const takenByCore = !!(core && core.checked);
+      if (takenByCore && opt.checked) opt.checked = false;
+      opt.disabled = takenByCore;
+      opt.title = takenByCore ? '已在「核心属性」里勾选，两侧互斥' : '';
+    }
+    //: ② 核心侧置灰 = 被可选占了 或 已达自选上限（两条取或）
     const custom = checked - 2;                    //: 暴击 + 爆伤 强制占 2
     const limit = ENHANCE_MAX_CORE - 2;
     for (const stat of ENHANCE_ALL_STATS) {
@@ -6002,6 +6020,17 @@
         ? '已选 ' + picked.length + ' 条：' + picked.join('、')
         : '未选');
     }
+    //: ④「有效词条」范围联动 —— ★★★ 2026-11-05 新增。
+    //:
+    //: **必须放在最后一步**：它数的是 ①②步**处理完之后**的勾选状态。
+    //: 核心勾满 5 条时，①会把可选那侧清空；同步若跑在①之前，
+    //: 就会把那些马上要被摘掉的选项算进 ``nOpt``，范围算错。
+    //:
+    //: 核心侧（``enhanceOnCoreChange``）和可选侧（``enhanceSyncOptional``）
+    //: 的 change 都汇到这个函数，所以挂这一处就全覆盖
+    //: —— 包括初始化那次和「恢复默认」（``enhanceResetSettings`` 末尾
+    //: 也调 ``enhanceOnCoreChange()``）。
+    enhanceSyncValidRange();
   }
 
   // ── 双爆下限（★ 2026-11-03 加了玻璃卡底 —— 用户圈图「这个卡片怎么没了」）──
@@ -6221,14 +6250,127 @@
     row.appendChild(P.el('span', { class: 'enh-inline-label', text: '有效词条' }));
     row.appendChild(P.el('span', { class: 'enh-inline-label', text: '至少' }));
     ENHANCE_STATE.validStepper = Panels.numberInput(ENHANCE_DEFAULT_VALID, {
-      min: 2, max: 5
+      //: ★★★ 2026-11-05 这里原来写死 ``{min: 2, max: 5}``，**完全没有联动** ——
+      //: 核心只勾 2 条也能把有效词条加到 3（用户截图就是这张），核心勾 3 条
+      //: 时有效词条却还停在 2。真正的边界由 ``enhanceSyncValidRange()``
+      //: （在 ``enhanceRefresh()`` 末尾调用）用 ``setRange()`` 决定。
+      //:
+      //: 初值取 ``ENHANCE_DEFAULT_VALID`` 是出厂默认（核心=双爆 2 条、
+      //: 可选=空 → 范围 2~2），页面初始化时 ``enhanceRefresh()`` 会立刻
+      //: 用同步算出来的真边界覆盖掉这两个占位值。
+      min: ENHANCE_DEFAULT_VALID, max: ENHANCE_DEFAULT_VALID
     });
     ENHANCE_STATE.validStepper.el.classList.add('cfg-number');
       ENHANCE_STATE.validStepper.input.classList.add('cfg-number-input');
     row.appendChild(ENHANCE_STATE.validStepper.el);
     row.appendChild(P.el('span', { class: 'enh-inline-label', text: '条' }));
+    //: ★ 2026-11-05 提示位 —— CSS 类 ``.enh-valid-hint`` 早就有了
+    //: （``pages.css:3984``，原来只有配置弹框在用），这里直接复用，
+    //: 不新增样式。文案由 ``enhanceSyncValidRange()`` 写。
+    //:
+    //: ⚠ **不要**给上面那个 input 加 ``enh-valid-number`` 类：
+    //:   ``dev/web_shell_dialog_fix_verify.py`` 靠
+    //:   ``overlay.querySelector('.enh-valid-number')`` 定位配置弹框里那个
+    //:   控件，工具页再挂一个同名类会让它抓到错的元素。
+    ENHANCE_STATE.validHint = P.el('span', {
+      class: 'enh-inline-label enh-valid-hint'
+    });
+    row.appendChild(ENHANCE_STATE.validHint);
     card.appendChild(row);
     return card;
+  }
+
+  /**
+   * 「有效词条」范围**跟着核心 / 可选属性联动** —— 工具页的唯一真源。
+   *
+   * ★★★ 2026-11-05 用户（原文）：
+   *   「这里只勾选了2条核心词条，有效词条居然能加到3，而且我核心词条勾选了3条，
+   *    有效词条还是只有2条，核心属性是必须有，因此有效词条要联动变成3（最多是5，
+   *    如果核心是5，可选就无法勾选了），同理可选属性是可选的，如果勾选了1条或
+   *    多条，那么效词条要联动+1」
+   *
+   * ## 算法（必须和后端 ``settings.valid_count_range`` 逐字一致）
+   *
+   * .. code:: python
+   *
+   *     core  = frozenset(core_stats)
+   *     extra = frozenset(optional_stats) - core     # 差集：同名项只算一次
+   *     low   = min(5, max(2, len(core) + (1 if extra else 0)))
+   *     high  = max(low, min(5, len(core) + len(extra)))
+   *
+   * 相对 2026-09 的旧版（``low = max(2, len(core))``、``high = min(5, len(core|optional))``）
+   * 改了两处，别照旧版理解：
+   *   * **可选勾了 ≥1 条 → 下界再 +1**（可选本来是可选的，勾了就说明
+   *     你愿意为它多凑一条；勾几条都只 +1）；
+   *   * ``nOpt`` 用**差集**口径 —— 和核心重名的那项不算数（两边都勾同
+   *     一个词条，声骸上还是只出现一次）。
+   *
+   * ## ``setRange()`` 不够，必须再显式夹一次当前值
+   *
+   * ``Panels.numberInput``（``_panels.js`` L684-689）的 ``setRange()``
+   * **只改闭包里的 min/max 和 DOM 属性，不动当前值**；``set()`` 也
+   * **不夹值、不派发 change**。所以「核心 3 条 → 有效词条自动变 3」这个
+   * 联动效果必须由这里显式 ``set(low)`` / ``set(high)`` 完成，只调
+   * ``setRange()`` 的话框里那个 2 会一直留着（正是用户截图里的 bug）。
+   */
+  function enhanceSyncValidRange() {
+    const stepper = ENHANCE_STATE.validStepper;
+    if (!stepper) return;
+
+    //: ① 核心侧：已勾选的都算（双爆是强制勾的，天然在内）
+    const coreSet = {};
+    let nCore = 0;
+    for (const stat of ENHANCE_ALL_STATS) {
+      const cb = ENHANCE_STATE.coreBoxes[stat];
+      if (cb && cb.checked) {
+        coreSet[stat] = true;
+        nCore += 1;
+      }
+    }
+    //: ② 可选侧：只数**不在核心集合里**的（差集口径 —— 后端用的是
+    //:    ``len(core | optional)``，同名项不重复计数）。
+    let nOpt = 0;
+    for (const stat of ENHANCE_ALL_STATS) {
+      const opt = ENHANCE_STATE.optionalBoxes[stat];
+      if (opt && opt.checked && !coreSet[stat]) nOpt += 1;
+    }
+
+    //: ③ 与后端 ``settings.valid_count_range`` 逐字一致的两行
+    //:    （``nOpt`` 已按差集口径算过，等价于后端的 ``len(core | optional)``）
+    const MINV = 2;
+    const MAXV = 5;
+    const low = Math.min(MAXV, Math.max(MINV,
+      nCore + (nOpt >= 1 ? 1 : 0)));
+    const high = Math.max(low, Math.min(MAXV, nCore + nOpt));
+
+    //: ④ 换边界 + **显式夹当前值**（``set()`` 不派发 change，所以不会
+    //:    触发存盘 —— 但这正合适：值是被动的，真正的存盘由用户那次
+    //:    checkbox 的 change 链路上随后的 ``enhanceBindSave`` 完成）。
+    stepper.setRange(low, high);
+    const cur = parseInt(String(stepper.get()), 10);
+    if (!isFinite(cur) || cur < low) {
+      stepper.set(low);
+    } else if (cur > high) {
+      stepper.set(high);
+    }
+
+    //: ⑤ 提示位文案：说清楚当前范围是怎么算出来的。
+    //:
+    //: ⚠ 这里**不用** ``.is-invalid``：工具页没有「创建」按钮，
+    //:   写不出不成立的配置（双爆永远强制占 2 条，``total`` 到不了 2 以下），
+    //:   所以红字那套只属于配置弹框。
+    const hint = ENHANCE_STATE.validHint;
+    if (hint) {
+      const optPart = nOpt ? ' + 可选 ' + nOpt + ' 条' : '';
+      if (low === high) {
+        hint.textContent = '（只能设 ' + low + ' 条：核心 ' + nCore + ' 条' +
+          optPart + '）';
+      } else {
+        hint.textContent = '（核心 ' + nCore + ' 条' + optPart +
+          '，可设 ' + low + '~' + high + ' 条）';
+      }
+      hint.classList.remove('is-invalid');
+    }
   }
 
   // ── 结果报告 ─────────────────────────────────────────────────────────
@@ -6277,7 +6419,9 @@
     //:     self._settings = EchoSettings()
     //:
     //: **关键区别**：
-    //:   * **界面**永远从出厂默认开始（核心=双爆 / 可选=空 / 有效词条=3）
+    //:   * **界面**永远从出厂默认开始（核心=双爆 / 可选=空 / 有效词条=2，
+    //:     即 ``DEFAULT_VALID_COUNT = len(DEFAULT_CORE)`` —— 原来这里写的是
+    //:     "有效词条=3"，是联动规则改之前的旧说法，已过时）
     //:   * **改动照样存盘**，任务运行读的是存盘那份
     //:
     //: 也就是说"界面显示"和"存盘值"是**故意分开的** —— 用户要的是

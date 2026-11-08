@@ -397,6 +397,16 @@ DEFAULT_CRIT_MIN = 7.5    DEFAULT_CRIT_DMG_MIN = 15.0
 MIN_VALID_COUNT = 2   MAX_VALID_COUNT = 5   DEFAULT_VALID_COUNT = 2
 ```
 
+**联动不变量**（`settings.valid_count_range(core, optional)`，四端共用同一份）：
+
+```
+n_core = 核心条数, n_opt = 可选条数（不含核心同名项）
+low  = min(5, max(2, n_core + (1 if n_opt >= 1 else 0)))
+high = max(low, min(5, n_core + n_opt))
+```
+核心 = 5 时可选属性全部禁用（孔位占满）。`DEFAULT_VALID_COUNT` 只是"默认核心双爆 2 条"的
+推论，不是独立的可调常量。
+
 ### ⚠⚠ P4 我犯的实质性错误（已修正）
 
 `tool.py` L530-535 的注释：

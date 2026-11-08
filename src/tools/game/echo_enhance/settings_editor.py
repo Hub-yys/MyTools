@@ -331,7 +331,7 @@ class EchoSettingsEditor(QWidget):
             "有效词条",
             f"至少要有多少条有效词条（核心属性 + 可选属性都算）。"
             f"若「当前有效 + 剩余孔位」都达不到这个数，就弃置。"
-            f"这个数**跟着核心属性条数走**：改核心属性时它会回到核心条数（之后仍可往上调）。",
+            f"这个数**跟着核心/可选属性走**：任一侧变动时它会回到新下界（之后仍可往上调）。",
             parent,
             header_widget=controls,
         )
@@ -375,14 +375,14 @@ class EchoSettingsEditor(QWidget):
                 f"（已取消刚才的勾选）",
                 parent=self.window(),
             )
-        # 核心条数变了 → 有效词条数跟着回到核心条数；**先**跟随再存盘，
+        # 核心条数变了 → 有效词条数跟着回到下界；**先**跟随再存盘，
         # 存下来的就是跟随后的值（否则减少核心时界面降了、盘上还是旧值）
         #
         # 联动顺序有讲究：**先**同步可选的置灰状态，再收敛有效词条数、再存盘。
         # 反过来的话 `_collect_settings()` 会把"已经进了核心、却还勾在可选里"
         # 的脏状态写进盘。
         self._sync_optional_with_core()
-        self._sync_valid_count(follow_core=True)
+        self._sync_valid_count(follow=True)
         self._notify()
         self._update_core_count()
         self._update_optional_count()
@@ -428,6 +428,11 @@ class EchoSettingsEditor(QWidget):
         checked = self._checked_optional()
         names = "、".join(checked) if checked else "尚未勾选"
         self.optional_count_label.setText(f"已勾选 {len(checked)} 条：{names}")
+        # 可选属性勾了 ≥1 条 → 有效词条数的下界 +1（用户要求："可选属性勾上了
+        # 1 条或多条，那么有效词条要联动 +1"）。在这里跟随，是因为这条路径由
+        # 可选 checkbox 的 stateChanged 进来；**必须**跟着抬到新下界，否则
+        # 钩上限涨了、当前值却还停在旧值，用户会觉得"联动没生效"。
+        self._sync_valid_count(follow=True)
         self._notify()
 
     def _sync_optional_with_core(self) -> None:
@@ -443,8 +448,22 @@ class EchoSettingsEditor(QWidget):
           用户会以为它还生效，实际已经不参与判定了。
         * 核心那边取消勾选后，这里**恢复可点但不会自动勾回来** ——
           不替用户做决定，避免"取消一下核心、可选的勾选却凭空多了"。
+
+        **核心满 5 条时可选整片禁选**（2026-11-05 用户："最多是5，如果核心是5，
+        可选就无法勾选了"）：核心已经占满 5 条有效词条，再勾可选也没有孔位了。
+        满员时一律取消勾选 —— 与逐条置灰同一套道理，别留"灰着的已勾选"。
         """
         core = set(self._checked_core())
+        core_full = len(core) >= MAX_CORE_STATS
+        if core_full:
+            for box in self._optional_boxes.values():
+                if box.isChecked():
+                    box.blockSignals(True)
+                    box.setChecked(False)
+                    box.blockSignals(False)
+                box.setEnabled(False)
+                box.setToolTip(f"核心属性已满 {MAX_CORE_STATS} 条，可选属性不可再勾")
+            return
         for name, box in self._optional_boxes.items():
             if name in core:
                 if box.isChecked():
@@ -510,16 +529,32 @@ class EchoSettingsEditor(QWidget):
         self._sync_valid_count()
         self.valid_stepper.set_value(settings.min_valid_count)
 
-    def _sync_valid_count(self, *_, follow_core: bool = False) -> None:
+    def _sync_valid_count(self, *_, follow: bool = False,
+                          follow_core: bool | None = None) -> None:
         """把「有效词条数」与核心/可选属性**联动**（用户要求）。
 
         * **不可小于核心属性条数** —— 核心属性是"必须有"，全都到齐就天然有
           ``len(core)`` 条有效词条，要求更低是自相矛盾的；
+        * **可选属性勾了 ≥1 条 → 下界再 +1** —— 可选属性是"另外也算有效词条"，
+          既然至少会有一条可选，有效词条数就不该允许低于 ``核心 + 1``
+          （2026-11-05 用户："只勾了 2 条核心，有效词条居然能加到 3" /
+          "可选属性勾上了 1 条或多条，那么有效词条要联动 +1"）；
         * **不可大于有效词条集合总条数** —— 声骸每种词条只会出现一次，集合里没有的
           种类永远凑不出来（2026-09-24「要求 ≥3 而集合只有 2 条」那类事故的根源）。
 
         两头夹住之后，"配出一个不可能满足的条件"在界面上就做不到了。
+
+        ``follow=True`` 时把当前值**跟随到新下界**（核心/可选任一侧变动都跟随）；
+        默认 ``False`` —— ``_notify()`` 会无参调到这里，那条路径**不许**改动
+        用户设好的值。
+
+        ``follow_core`` 是旧名字，只为 ``tool.py`` 里那层薄转发兼容保留
+        （它按 keyword 传 ``follow_core=``），给值就覆盖 ``follow``。
         """
+        if follow_core is not None:
+            # 旧名字（``tool.py`` 那层薄转发只认它）；给 True 才算数，
+            # 免得宿主那边默认传的 False 把调用方显式要的 follow=True 吞掉。
+            follow = follow or follow_core
         if self._syncing_valid:
             return                     # set_range 会发 changed → 别递归
         stepper = getattr(self, "valid_stepper", None)
@@ -533,14 +568,23 @@ class EchoSettingsEditor(QWidget):
             optional = self._checked_optional()
             low, high = valid_count_range(core, optional)
             stepper.set_range(low, high, emit=False)
-            if follow_core:
-                # 核心属性变了 → 有效词条数**跟着回到核心条数**（用户要求：
-                # "核心 2 条时有效词条就该是 2 条"，减少核心也要跟着降）。
+            if follow:
+                # 核心 / 可选属性变了 → 有效词条数**跟着回到下界**（用户要求：
+                # "核心 3 条时有效词条就该是 3 条"，减少核心、勾上可选也都要跟着走）。
                 # 静默设值就够了 —— _notify 在回填期间不会发信号，不会漏存也不会多存。
                 stepper.set_value(low, emit=False)
 
             total = len(set(core) | set(optional))
-            text = f"有效词条数不可小于核心词条数（{len(core)} 条）"
+            # 下界有两个来源，得分开说 —— 否则「核心 2 条」却提示"不可小于 3"，
+            # 用户当场就会问"到底谁说了只有 2 条"（2026-11-05 用户反馈）。
+            core_set = set(core)
+            n_core = len(core)
+            n_opt = len([name for name in optional if name not in core_set])
+            if n_opt == 0:
+                text = f"有效词条数不可小于核心词条数（{n_core} 条）"
+            else:
+                text = (f"有效词条数不可小于核心 {n_core} 条 + 可选属性另加 1 条 "
+                        f"= {low} 条")
             if low == high:
                 text += (f" —— 当前只能设 {low} 条：声骸每种词条只出现一次，"
                          f"在「可选属性」里多勾几条才能提高上限")

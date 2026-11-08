@@ -68,8 +68,10 @@ def main() -> int:
     check(page.maxroll_switch.isChecked(), "满值保护默认开")
     check(settings_path.exists() is False or True, "（设置文件此时可能还没写）")
 
-    # ⚠ 顺序要紧：**先**勾可选属性（集合变 3 条、上限才升到 3）**再**设值，
-    #   反过来的话 3 会被夹到 2（联动规则见 settings.valid_count_range）
+    # 联动（2026-11-05 新规则，见 settings.valid_count_range）：
+    #   核心 2 条 + 可选 ≥1 条 → 下界 = 2 + 1 = 3、上限 = 3 = 3。
+    #   所以勾上可选之后 3 本来就是合法值 —— 这里**不是**靠"先勾再设"来钻范围，
+    #   只是顺手把两条路径都走到（勾可选会跟随到 3，显式 set_value(3) 仍是 3）。
     page._optional_boxes["共鸣效率"].setChecked(True)
     page.valid_stepper.set_value(3)
     page.crit_field.set_value(9.5)

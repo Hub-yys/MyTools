@@ -2855,6 +2855,17 @@
       //: 其余 11 项**同一时间只能待在一侧** —— 核心勾了，可选这一项就
       //: 灰掉；可选勾了，核心那一项就灰掉（在 ``syncCore()`` 里）。
       //:
+      //: ## ★ 2026-11-05 核心占满 5 条 → 可选全禁
+      //:
+      //: 用户：「核心属性是必须有，因此有效词条要联动变成3（最多是5，
+      //: 如果核心是5，可选就无法勾选了）」。声骸只有 5 个孔位，
+      //: 核心占满就是一条可选词条都塞不进去 —— 此时把可选那侧
+      //: **全部禁勾**，并且（非只读态）把已勾的清掉，免得留一个
+      //: 勾着却不算数的项让有效词条范围算歪。
+      //:
+      //: 判满用 ``TP.ENHANCE_MAX_CORE``（=5，``tool-panels.js`` 导出），
+      //: **别写死 5** —— 那个常量是上下限的唯一出处。
+      //:
       //: ## 为什么要在这里兜一次 ``opt.checked = false``
       //:
       //: 后端 ``EchoSettings.from_dict`` **不过滤交集**（
@@ -2862,14 +2873,26 @@
       //: 「核心有攻击百分比、可选也有攻击百分比」的老数据。打开弹框时
       //: 以**核心属性**为准把可选那侧摘掉 —— 核心是主要求（用户先勾的
       //: 那一侧），可选是补充项。
+      const MAXCORE = TP.ENHANCE_MAX_CORE != null ? TP.ENHANCE_MAX_CORE : 5;
+      let coreN = 0;
+      for (const stat of TP.ENHANCE_ALL_STATS) {
+        const cb = local.coreBoxes[stat];
+        if (cb && cb.checked) coreN += 1;
+      }
+      const coreFull = coreN >= MAXCORE;
       for (const stat of TP.ENHANCE_ALL_STATS) {
         if (stat === TP.ENHANCE_CRIT || stat === TP.ENHANCE_CRIT_DMG) continue;
         const opt = local.optionalBoxes[stat];
         if (!opt) continue;
+        //: 只读时**不要**摘掉任何勾选 —— 那是「修正数据」，查看态
+        //: 不该改动正在看的东西（显示就得是磁盘上那份）
+        if (coreFull) {
+          if (opt.checked && !ro) opt.checked = false;
+          opt.disabled = true;
+          continue;
+        }
         const core = local.coreBoxes[stat];
         const takenByCore = !!(core && core.checked);
-        //: 只读时**不要**摘掉冲突项 —— 那是「修正数据」，查看态
-        //: 不该改动正在看的东西（显示就得是磁盘上那份）
         if (takenByCore && opt.checked && !ro) opt.checked = false;
         opt.disabled = ro ? true : takenByCore;
       }
@@ -2894,27 +2917,42 @@
     //:   「我给了三核心词条，2 条有效词条，但是有效词条至少数量设置为 3，
     //:     应该提示至少为 4」
     //:
-    //: ## 规则（后端 ``valid_count_range``）
+    //: ★★★ 2026-11-05 用户追加（同一条规则的另一半）：
+    //:   「这里只勾选了 2 条核心词条，有效词条居然能加到 3，而且我核心词条
+    //:     勾选了 3 条，有效词条还是只有 2 条……同理可选属性是可选的，如果
+    //:     勾选了 1 条或多条，那么有效词条要联动 +1」
+    //:
+    //: ## 规则（和后端 ``settings.valid_count_range`` 逐字一致）
     //:
     //: .. code:: text
     //:
-    //:     下界 = 核心属性条数     ← 「核心几条，有效词条最低就几条」
-    //:     上界 = 核心 ∪ 可选 总条数
+    //:     n_core = 已勾选核心条数
+    //:     n_opt  = 已勾选可选条数（**差集**：不含同时被核心勾中的项）
+    //:     total  = n_core + n_opt                  ← |核心 ∪ 可选|
+    //:     low    = min(5, max(2, n_core + (n_opt >= 1 ? 1 : 0)))
+    //:     high   = max(low, min(5, total))
+    //:
+    //: 为什么可选要 +1：核心是「必须有」，核心全到齐天然就有 ``n_core`` 条；
+    //: 可选只要勾了 ≥1 条，就**必须再命中至少一条**才算达标 → 下界 +1。
+    //: 反过来核心占满 5 条时孔位已用尽，可选一条也勾不了（见 ``syncOptional``）。
     //:
     //: ## 之前错在哪
     //:
-    //: 这里写死 ``{min: 2, max: 5}`` —— **没跟核心属性联动**。
+    //: 最早这里写死 ``{min: 2, max: 5}`` —— **没跟核心属性联动**。
     //: 勾了 3 个核心，有效词条还能选 3（甚至 2），界面完全不拦，
     //: 等点保存/运行才被模型按 clamp 处理，用户根本不知道。
+    //: 后来补了「下界 = 核心条数」，但漏了可选那 +1：核心 2 条 + 可选 1 条
+    //: 时下界还停在 2（应该是 3），用户看到的就是「勾了可选、有效词条没变」。
     //:
     //: ## 现在
     //:
     //: ``syncValidRange()`` 在**每次核心/可选属性变化时**重算范围：
     //:   * 加减框的 min/max 跟着变
     //:   * 当前值低于下界 → **当场**把值抬到下界，并在下面显示
-    //:     「至少 N 条（核心属性 M 条）」的提示
+    //:     「（核心 N 条 + 可选 M 条，不能少于 K）」的提示
     //:
-    //: 用户要的"应该提示至少为 4"就是这个提示。
+    //: 用户要的"应该提示至少为 4"就是这个提示。核心占满 5 条时，
+    //: ``syncOptional()`` 会把可选那侧全部禁勾（见那边的注释）。
     const validCard = P.el('div', { class: 'enh-crit-card card-glass' });
     const validRow = P.el('div', { class: 'enh-crit-row' });
     validRow.appendChild(P.el('span', { class: 'enh-inline-label', text: '有效词条' }));
@@ -2938,7 +2976,8 @@
     local.validStepper.input.classList.add('enh-valid-number');
     validRow.appendChild(local.validStepper.el);
     validRow.appendChild(P.el('span', { class: 'enh-inline-label', text: '条' }));
-    //: 提示位（值不足时显示「至少 N 条（核心属性 M 条）」）
+    //: 提示位（常态「（核心 N 条 + 可选 M 条，不能少于 K）」；核心占满时
+    //: 说明可选不可再勾；``total < 2`` 时红字说明创建会被拒绝）
     local.validHint = P.el('span', {
       class: 'enh-inline-label enh-valid-hint'
     });
@@ -2950,21 +2989,52 @@
      * 按当前核心/可选属性条数重算「有效词条数」范围并纠正当前值。
      *
      * ⚠ 算法必须和后端 ``settings.valid_count_range`` **完全一致** ——
-     * 两边算不一样就是新的 bug。所以这里照抄它的三行：
-     *   ``total = len(core | optional)`` / ``low = max(2, len(core))`` /
-     *   ``high = max(low, min(5, total))``
+     * 两边算不一样就是新的 bug。这里逐字对应它的实现
+     * （``src/tools/game/echo_enhance/settings.py:78-86``，2026-11-05 版）::
+     *
+     *     core = frozenset(core_stats or ())
+     *     extra_optional = frozenset(optional_stats or ()) - core   # 差集
+     *     n_core = len(core)
+     *     n_opt = len(extra_optional)
+     *
+     *     low = min(MAX_VALID_COUNT, max(MIN_VALID_COUNT,
+     *                                   n_core + (1 if n_opt >= 1 else 0)))
+     *     high = max(low, min(MAX_VALID_COUNT, n_core + n_opt))
+     *
+     * 翻译成 JS 就是 ``syncValidRange()`` 里那两行（``MINV=2``、``MAXV=5``）::
+     *
+     *     low = min(MAXV, max(MINV, nCore + (nOpt >= 1 ? 1 : 0)))
+     *     high = max(low, min(MAXV, nCore + nOpt))
+     *
+     * ⚠ ``nOpt`` 是**差集**（只数没被核心勾中的那侧），不是简单相加 ——
+     * 后端用的是 ``frozenset(optional_stats) - core``，同一属性两侧都填只算
+     * 一条。界面上两侧本来就互斥（勾了一边另一边就置灰），但别依赖这个隐含
+     * 前提：老数据里可能两边都存着同名项，``syncOptional()`` 只在非只读态才
+     * 把冲突项从可选摘掉。
      */
     function syncValidRange() {
+      const MINV = 2;
+      const MAXV = 5;
+      //: 「核心占满」判据取 ``TP.ENHANCE_MAX_CORE``（和 ``syncOptional()`` 同一个
+      //: 来源，别写死 5）—— 目前它恰好 == ``MAXV``，但两者含义不同：
+      //: ``MAXV`` 是「有效词条数」的上限，``ENHANCE_MAX_CORE`` 是核心勾选上限。
+      const MAXCORE = TP.ENHANCE_MAX_CORE != null ? TP.ENHANCE_MAX_CORE : 5;
       const coreN = Object.keys(local.coreBoxes).filter(function (k) {
         return local.coreBoxes[k] && local.coreBoxes[k].checked;
       }).length;
+      //: ★ 2026-11-05 差集 —— 核心已经占着的种类在可选那边**不算数**
+      //: （后端是 ``len(core | optional)``，同一种词条只出现一次）。
       const optN = Object.keys(local.optionalBoxes).filter(function (k) {
-        return local.optionalBoxes[k] && local.optionalBoxes[k].checked;
+        const opt = local.optionalBoxes[k];
+        if (!opt || !opt.checked) return false;
+        const core = local.coreBoxes[k];
+        if (core && core.checked) return false;
+        return true;
       }).length;
-      const MINV = 2;
-      const MAXV = 5;
       const total = coreN + optN;
-      const low = Math.max(MINV, coreN);
+      //: 核心是「必须有」→ 全到齐天然有 coreN 条；可选勾了 ≥1 条 →
+      //: 必须再命中至少一条 → 下界 +1。
+      const low = Math.min(MAXV, Math.max(MINV, coreN + (optN >= 1 ? 1 : 0)));
       const high = Math.max(low, Math.min(MAXV, total));
       local.validRange = { low: low, high: high, total: total, coreN: coreN, optN: optN };
 
@@ -2998,7 +3068,7 @@
         //: 怎么创建，应该提示创建失败」。
         //:
         //: 提示分两种：
-        //:   ① 常态 —— 说明下界怎么来的（核心几条，不能少于几条）
+        //:   ① 常态 —— 说明下界怎么来的（核心几条 + 可选几条，不能少于几条）
         //:   ② 核心 ∪ 可选**凑不够 2 条**（``total < MINV``）——
         //:      这时候连下界都凑不出来，是**配置本身不成立**，
         //:      要说清楚"创建会被拒绝"，而不是继续显示一句温柔的灰字。
@@ -3006,9 +3076,16 @@
           local.validHint.textContent = '（至少勾 ' + MINV +
             ' 条属性才凑得出来，现在只有 ' + total + ' 条 —— 创建会被拒绝）';
           local.validHint.classList.add('is-invalid');
+        } else if (coreN >= MAXCORE) {
+          //: ★ 2026-11-05 核心占满 5 条 —— 孔位用尽，可选那侧已被
+          //: ``syncOptional()`` 全部禁勾，这里直接说明原因。
+          local.validHint.textContent = '（核心 ' + MAXCORE + ' 条已占满，可选属性不可再勾）';
+          local.validHint.classList.remove('is-invalid');
         } else {
           local.validHint.textContent = coreN
-            ? '（核心属性 ' + coreN + ' 条，不能少于 ' + low + '）'
+            ? '（核心 ' + coreN + ' 条' +
+              (optN ? ' + 可选 ' + optN + ' 条' : '') +
+              '，不能少于 ' + low + '）'
             : '';
           local.validHint.classList.remove('is-invalid');
         }
@@ -3035,30 +3112,45 @@
     //:
     //: 直接给 checkbox **补一个独立的 change 监听** —— 不改任何已有函数，
     //: 也不依赖声明顺序。这是最稳的做法。
-    for (const stat of Object.keys(local.coreBoxes)) {
-      const cb = local.coreBoxes[stat];
-      if (cb) cb.addEventListener('change', syncValidRange);
-    }
-    for (const stat of Object.keys(local.optionalBoxes)) {
-      const cb = local.optionalBoxes[stat];
-      if (cb) cb.addEventListener('change', syncValidRange);
-    }
+    //:
+    //: ## ⚠ 注册顺序：``syncValidRange`` **必须排在最后**
+    //:
+    //: ★ 2026-11-05 补的坑：``syncOptional()`` 现在会在「核心勾满 5 条」时
+    //: 把可选那侧的勾选**清掉**并全禁。同一个 checkbox 上注册的多个
+    //: ``change`` 监听是**按注册顺序**依次调用的 —— 若 ``syncValidRange``
+    //: 排在 ``syncOptional`` 前面，勾满第 5 条核心那一拍它先跑，读到的
+    //: 可选框还是「旧的、没被清掉」的状态，``optN`` 就算大了：
+    //: 核心 5 + 可选 1（差集后 nOpt=0）会被算成 low=5/high=5 还好，
+    //: 但 total 会虚高 1 条，提示文案和校验都会读到脏数。
+    //: 所以先挂 ``syncCore`` / ``syncOptional``（它们负责**改状态**），
+    //: 最后挂 ``syncValidRange``（它负责**读状态**）。
+    //:
     //: ★★★ 2026-11-03 互斥联动（用户：「上面先选了，下面就不能选，
     //: 下面先选了，上面就不能选」）。
     //:
     //: ⚠ 这里**同样不能**靠"包装 syncCore / syncOptional"来加联动 ——
-    //: 见上面 2902 行那条教训：两个函数都是 function 声明，早就有
+    //: 见上面那条教训：两个函数都是 function 声明，早就有
     //: checkbox 把**原函数**绑进了 change 监听，给变量重新赋值不会
     //: 穿过去。所以一律**补独立监听**，每个分组各挂对方那半边的同步函数。
     for (const stat of Object.keys(local.coreBoxes)) {
       const cb = local.coreBoxes[stat];
-      //: 核心动了 → 可选那侧的同名项要跟着灰掉/放开
+      //: 核心动了 → 可选那侧的同名项要跟着灰掉/放开（勾满 5 条时还要清空）
       if (cb) cb.addEventListener('change', syncOptional);
     }
     for (const stat of Object.keys(local.optionalBoxes)) {
       const cb = local.optionalBoxes[stat];
       //: 可选动了 → 核心那侧的「已勾满」置灰规则要重算，互斥要重判
       if (cb) cb.addEventListener('change', syncCore);
+    }
+    //: ★ 2026-11-05 排在最后：此时 ``syncOptional`` / ``syncCore`` 已经
+    //: 把状态改好了，这里读到的才是最终勾选情况（见上面的顺序说明）。
+    for (const stat of Object.keys(local.coreBoxes)) {
+      const cb = local.coreBoxes[stat];
+      if (cb) cb.addEventListener('change', syncValidRange);
+    }
+    for (const stat of Object.keys(local.optionalBoxes)) {
+      const cb = local.optionalBoxes[stat];
+      if (cb) cb.addEventListener('change', syncValidRange);
     }
     //: 初次进来也算一次
     syncValidRange();
@@ -3140,9 +3232,18 @@
         const span = range.low === range.high
           ? '只有 ' + range.low + ' 条'
           : range.low + ' ~ ' + range.high + ' 条';
+        //: ★ 2026-11-05 说清楚下界**怎么来的** —— 不只是核心条数：
+        //: 核心是「必须有」（全到齐天然 n_core 条），可选若勾了 ≥1 条
+        //: 还必须再命中至少一条，所以下界会 +1。
+        const from = range.optN
+          ? '核心 ' + range.coreN + ' 条 + 可选 ' + range.optN + ' 条'
+          : '核心 ' + range.coreN + ' 条';
+        //: 上下界相等时就别说「可设 3 ~ 3 条」（同上，机器话）
+        const why = '（' + from + ' → ' + (range.low === range.high
+          ? '只能设 ' + range.low + ' 条'
+          : '可设 ' + range.low + ' ~ ' + range.high + ' 条') + '）';
         return '「有效词条」填的是 ' + cur + ' 条，但所选属性' + span +
-          '（核心 ' + range.coreN + ' 条 + 可选 ' + range.optN +
-          ' 条）—— 无法创建。';
+          why + ' —— 无法创建。';
       }
       return '';
     }

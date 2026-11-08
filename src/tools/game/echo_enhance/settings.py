@@ -52,17 +52,37 @@ _VALID_COUNT_RANGE = (MIN_VALID_COUNT, MAX_VALID_COUNT)
 def valid_count_range(core_stats, optional_stats) -> tuple[int, int]:
     """「有效词条数」能取的范围 —— **界面加减框与模型共用这一份算法**。
 
-    上界 = 有效词条集合的总条数：声骸 5 个孔位里**每种词条只会出现一次**，
-    集合里没有的种类永远凑不出来（2026-09-24：要求 ≥3 而集合只有 2 条 →
-    每个声骸都在满级那一刻被判弃置）。
+    设 ``n_core`` = 核心属性条数、``n_opt`` = **可选属性里不在核心集合中的**条数
+    （用差集算，核心与可选填了同一个属性名只算一次）::
 
-    下界 = 核心属性条数：核心属性是"必须有"，全都到齐就天然有那么多条有效词条，
-    再要求更低没有意义（用户要求：**核心几条，有效词条最低就几条**）。
+        low  = min(5, max(2, n_core + (1 if n_opt >= 1 else 0)))
+        high = max(low, min(5, n_core + n_opt))
+
+    **下界**分两段（用户 2026-11-05 要求）：
+
+    * 核心属性是"必须有"，全都到齐就天然有那么多条有效词条 → 下限至少 ``n_core``；
+    * 可选属性本身是**可选**的，但只要勾了任意 ≥1 条，就说明你愿意为它多凑一条 →
+      下限再 **+1**（勾几条都只 +1，不是按条数累加）。
+      所以核心 2 + 可选 1 是 (3,3) 而不是 (2,3) —— 用户原话：
+      「可选属性是可选的，如果勾选了 1 条或多条，那么有效词条要联动 +1」。
+
+    **上界** = 「核心 ∪ 可选」的总条数：声骸 5 个孔位里**每种词条只会出现一次**，
+    集合里没有的种类永远凑不出来（2026-09-24：要求 ≥3 而集合只有 2 条 →
+    每个声骸都在满级那一刻被判弃置）；同时最多 5 个孔位，所以上界也不超过 5。
+
+    ⚠ **两头都夹 2..5**：核心只有 1 条时（界面上双爆强制勾选，正常走不到，
+    但手改磁盘 / 直接构造能造出来）下界会是 1；核心 5 条 + 还有可选时上界会是 6
+    —— 这两个数喂给 :meth:`to_judge_config` 都会撞上 ``JudgeConfig`` 的
+    ``有效词条数需在 2~5 之间`` 而抛 ``ValueError``。
     """
     core = frozenset(core_stats or ())
-    total = len(core | frozenset(optional_stats or ()))
-    low = max(MIN_VALID_COUNT, len(core))
-    high = max(low, min(MAX_VALID_COUNT, total))
+    # 差集：核心与可选填了同名属性只算一条（声骸每种词条只出现一次）
+    extra_optional = frozenset(optional_stats or ()) - core
+    n_core = len(core)
+    n_opt = len(extra_optional)
+
+    low = min(MAX_VALID_COUNT, max(MIN_VALID_COUNT, n_core + (1 if n_opt >= 1 else 0)))
+    high = max(low, min(MAX_VALID_COUNT, n_core + n_opt))
     return low, high
 
 

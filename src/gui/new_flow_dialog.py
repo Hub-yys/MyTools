@@ -253,6 +253,12 @@ def valid_count_cap(profile) -> int:
     这跟 ``EchoSettings.valid_count_range()`` 的算法一致（那边还要夹
     ``MAX_VALID_COUNT = 5``），这里只要上界用于提示用户"做不到"。
 
+    .. note::
+       2026-11-05 起 ``valid_count_range()`` 的**下界**也变了
+       （核心条数 + 可选勾了 ≥1 条就 +1），但**上界算法没变**，
+       所以本函数（只算上界）不受影响，仍是 ``n_core + n_opt``。
+       核心勾满 5 条时可选属性在界面上已不可勾，于是这里也不会 >5。
+
     :param profile: ``EchoProfile``（读它的 ``settings`` dict）
     :return: 0 = 读不到配置；否则是最多条数
     """
