@@ -812,76 +812,21 @@
         } catch (err) { /* 极老的浏览器才没有 dataset，忽略 */ }
       };
 
-      //: ★★★ 2026-11-05 侧栏闪烁的**最终修法**：把视频的一帧冻成静态图当背景。
+      //: ★★★ 2026-11-05 侧栏**不再**用冻结帧了（用户 m03113 裁决「两侧都实时」）。
       //:
-      //: 前面试过三轮，全部实测过：
-      //:   * DOM 重写、CSS 动画、rAF 掉帧 —— 都不是（9 秒 0 次 mutation、
-      //:     p99 16.8ms、droppedVideoFrames 全 0）
-      //:   * 把侧栏模糊从 1.7px 提到 16px —— 只压掉 34%，还闪
-      //:   * 把侧栏底色缩到 86% 不透明 —— 摆幅 0.73 → 0.14 确实不闪了，
-      //:     但侧栏就基本实心，用户要的玻璃感没了
+      //: 历史：侧栏曾经把视频的一帧画成 JPEG 贴上来（``applySidebarSnap()``
+      //: → ``--we-sidebar-snap``）。它确实让侧栏一点都不闪，但带来两个问题：
       //:
-      //: 交错采样（A/B/A/B/A/B，每轮 12 帧 × 180ms）拿到了决定性数据：
-      //:     现状（backdrop-filter 实时采样）  亮度摆幅均值 1.74（各轮 0.74 / 3.18 / 1.31）
-      //:     静态帧背景 + alpha 0.45          亮度摆幅均值 0.01（各轮 0.01 / 0.01 / 0.00）
+      //:   1. 侧栏成了静止画面、右边卡片还在实时播放 —— 用户 m03056：
+      //:      「左侧边栏是静态的，右边是动态，为什么？他俩使用的不是一个？」
+      //:   2. 那张快照是 canvas 直接从 ``<video>`` 抓的，**绕过了 ``#scrim``
+      //:      那层压暗**，而卡片在 ``#scrim`` 上面 → 实测侧栏 69.89 /
+      //:      卡片 43.15（差 26.75 级），就是「一边亮一边暗」。
       //:
-      //: → 闪烁的根源就是 backdrop-filter **每帧重新采样正在播放的视频**。
-      //:   换成一张不会动的快照：视觉上还是「壁纸透上来」，但彻底不闪。
-      //:
-      //: 快照要和壁纸**对齐**：视频是 object-fit: cover 铺满整窗的，
-      //: 侧栏只盖住左边 220px —— 所以按 cover 的几何把侧栏那一列单独裁出来，
-      //: 贴到侧栏上才不会「错位」（否则左边缘会看到画面中间的内容）。
-      const applySidebarSnap = function () {
-        try {
-          if (document.body.dataset.wall !== 'video') {
-            document.documentElement.style.removeProperty('--we-sidebar-snap');
-            return;
-          }
-          if (!video.videoWidth || !video.videoHeight) return;
-          const vr = video.getBoundingClientRect();
-          const side = document.getElementById('sidebar');
-          if (!side || !vr.width || !vr.height) return;
-          const sr = side.getBoundingClientRect();
-          if (!sr.width || !sr.height) return;
-          // object-fit: cover 的映射：把视频内容按比例放大到盖满元素，再居中裁
-          const scale = Math.max(vr.width / video.videoWidth,
-                                 vr.height / video.videoHeight);
-          const contentW = video.videoWidth * scale;
-          const contentH = video.videoHeight * scale;
-          const contentLeft = vr.left + (vr.width - contentW) / 2;
-          const contentTop = vr.top + (vr.height - contentH) / 2;
-          const sx = (sr.left - contentLeft) / scale;
-          const sy = (sr.top - contentTop) / scale;
-          const sw = sr.width / scale;
-          const sh = sr.height / scale;
-          if (!(sw > 0 && sh > 0)) return;
-          // 输出用 1.5 倍分辨率，220px 宽的侧栏够清晰了
-          const outW = Math.max(2, Math.round(sr.width * 1.5));
-          const outH = Math.max(2, Math.round(sr.height * 1.5));
-          const canvas = document.createElement('canvas');
-          canvas.width = outW;
-          canvas.height = outH;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) return;
-          ctx.drawImage(video, sx, sy, sw, sh, 0, 0, outW, outH);
-          let url;
-          try {
-            url = canvas.toDataURL('image/jpeg', 0.72);
-          } catch (err) {
-            // 跨域污染时会抛 —— 壁纸走本地 HTTP 同源，正常不会走到这里
-            console.warn('[app] 侧栏快照失败（画布被污染）:', err && err.message);
-            return;
-          }
-          document.documentElement.style.setProperty(
-            '--we-sidebar-snap', 'url("' + url + '")');
-          console.info('[app] 侧栏快照已冻结:', outW + 'x' + outH,
-                       '源区域', [sx, sy, sw, sh].map(function (n) {
-                         return Math.round(n);
-                       }));
-        } catch (err) {
-          console.warn('[app] 侧栏快照异常:', err && err.message);
-        }
-      };
+      //: 现在侧栏和卡片都交给 CSS 的 ``backdrop-filter`` 实时采样视频
+      //: （见 ``glass.css`` 的 ``body[data-wall="video"] .glass-sidebar``，
+      //: 配方与 ``.card-glass`` 逐字相同）。代价是侧栏会重新跟着视频轻微
+      //: 抖动 —— 和卡片一样，这正是用户要的「统一」。
 
       if (!wp.url) {
         //: 没有可播的壁纸 → 显示渐变兜底
@@ -911,8 +856,6 @@
 
       const onReady = function () {
         video.classList.add('is-playing');
-        //: 视频出第一帧之后才能 drawImage —— 冻结成侧栏背景
-        applySidebarSnap();
       };
       video.addEventListener('loadeddata', onReady, {once: true});
       video.addEventListener('error', function (ev) {
@@ -920,16 +863,6 @@
         video.classList.remove('is-playing');
         if (fallback) fallback.classList.remove('hidden');
       }, {once: true});
-
-      //: 影片循环回到第 0 帧时再冻一次 —— 快照会随时间「停在某一帧」，
-      //: 多冻几次反而会跳，所以只在**换壁纸**时冻（loop 不重新触发）。
-      //: 补一次延时兜底：有些片子 loadeddata 时首帧还是黑的，等 1.2 秒再冻。
-      window.setTimeout(function () {
-        if (document.body.dataset.wall === 'video'
-            && video.classList.contains('is-playing')) {
-          applySidebarSnap();
-        }
-      }, 1200);
 
       const p = video.play();
       if (p && typeof p.catch === 'function') {

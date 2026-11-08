@@ -173,38 +173,45 @@
     2px 0 24px rgba(0, 0, 0, 0.14);
 }
 
-/*: ★★★ 2026-11-05 视频壁纸时，侧栏改用「冻住的那一帧」当背景。
+/*: ★★★ 2026-11-05 视频壁纸时，侧栏与卡片**走同一套配方**。
  *
- * 为什么不用 backdrop-filter 了：
- *   模糊只会把运动画面糊开，**不会让它停下来**。实测（整屏抓像素，交错采样）：
- *     现状 blur16 + 29.4% 不透明  → 亮度摆幅 1.74，逐像素差 0.79
- *     静态帧 + 45% 不透明、无模糊 → 亮度摆幅 **0.01**，逐像素差 0.002
- *   其它排除过的方向：DOM 重写（9 秒 0 次 mutation）、rAF 掉帧
- *   （p99 16.8ms、droppedVideoFrames 0）、CSS 动画（getAnimations() 0 个）、
- *   加大模糊（blur48 反而让摆幅升到 1.66）、把底色加到 86% 不透明
- *   （确实不闪了，但侧栏基本实心，用户要的玻璃感没了）。
+ * 旧做法是把视频的一帧冻成静态图贴在侧栏上（``applySidebarSnap()`` +
+ * ``--we-sidebar-snap``）。它确实让侧栏一点都不闪，但代价是：
  *
- * 快照由 ``app.js`` 的 ``applySidebarSnap()`` 生成（按 object-fit: cover
- * 的几何裁出侧栏那一列，所以画面位置和壁纸对得上），写进 ``--we-sidebar-snap``。
+ *   1. 侧栏成了**静止画面**，而右边卡片背后还在实时播放 ——
+ *      用户 m03056：「左侧边栏是静态的，右边是动态，为什么？他俩
+ *      使用的不是一个？」**确实不是同一个**，两条渲染路径完全不同。
+ *   2. 那张快照是 canvas 直接从 ``<video>`` 抓的，**绕过了 ``#scrim``
+ *      那层压暗**；卡片是自己半透明、``#scrim`` 在它下面一起被压暗。
+ *      实测侧栏 69.89 / 卡片 43.15（亮度差 26.75 级）—— 这才是
+ *      「一边亮、一边暗」的真正机制。``--sidebar-snap-bg`` 那点底色
+ *      还被 ``background-image`` 盖住，从头到尾没生效过。
  *
- * 静态壁纸（``data-wall="image"``）保持原样 —— 画面本来就不动，不需要冻。
+ * 按用户 m03113 的裁决：**两侧都实时**。代价是侧栏会重新跟着视频轻微
+ * 抖动（和卡片一样），换来两侧的渲染路径、亮度、观感完全一致。
+ *
+ * ⚠ 这里刻意抄 ``--we-fill-card`` / ``--we-blur``，而不是继续用侧栏自己的
+ * ``--we-fill-sidebar`` / ``--we-blur-sidebar`` —— 要让两侧长得一样，
+ * 就必须是**同一组**输入。实测同配方下亮度差 +26.75 → +0.85。
+ *
+ * 静态壁纸（``data-wall="image"``）不受影响，仍走上面的 ``.glass-sidebar``。
  */
 body[data-wall="video"] .glass-sidebar {
-  background-image:
-    var(--we-sidebar-snap, none),
-    linear-gradient(
-      180deg,
-      rgba(255, 255, 255, 0.075) 0%,
-      rgba(255, 255, 255, 0.022) 22%,
-      rgba(255, 255, 255, 0.00) 60%
-    );
-  background-size: cover, auto;
-  background-position: center center, 0 0;
-  background-repeat: no-repeat, repeat;
-  /*: 快照已经自带壁纸的颜色，再叠一层底色把它压到和卡片同一档次 */
-  background-color: var(--sidebar-snap-bg);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  background-color: rgba(
+    13, 21, 36,
+    calc(var(--we-readability-floor) * var(--we-fill-card))
+  );
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.09) 0%,
+    rgba(255, 255, 255, 0.03) 100%
+  );
+  backdrop-filter: blur(var(--we-blur))
+                   saturate(var(--we-saturate))
+                   brightness(calc(var(--we-glass-brightness) * var(--we-glass-dim)));
+  -webkit-backdrop-filter: blur(var(--we-blur))
+                           saturate(var(--we-saturate))
+                           brightness(calc(var(--we-glass-brightness) * var(--we-glass-dim)));
 }
 
 
