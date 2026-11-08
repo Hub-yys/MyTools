@@ -58,10 +58,16 @@ vendor/okww/assets/echo_model/
 # 占位图可以用 tools/make_placeholders.py 重新生成。
 assets/game/
 
-# 安装包自带的壁纸（7 段转好的 VP9 webm，共约 78 MB）
-#   同 assets/game/ 的理由：第三方画面衍生物，版权不归我们，不进仓库。
-#   打包前跑 tools/prepare_bundled_wallpapers.py 生成（幂等，已存在的会跳过）。
-assets/wallpapers/
+# 安装包自带的壁纸（9 段转好的 VP9 webm，共约 105 MB）
+#   ⚠ 2026-11-08 用户决定：**进仓库**，但走 Git LFS（见 .gitattributes 的 *.webm 规则）。
+#   之前这里是 `assets/wallpapers/`（整体忽略）—— 那样每台机器都要重跑转码，
+#   而转码依赖 Wallpaper Engine 创意工坊的源视频，没订阅的人根本生不出来。
+#   现在改成 LFS：仓库里只存 133 字节的指针，真实字节放在 LFS 存储。
+#   克隆/拉取需要装 git-lfs（https://git-lfs.com），否则拿到的是指针文件。
+#   打包前仍可跑 tools/prepare_bundled_wallpapers.py（幂等，已存在的会跳过）。
+#
+# 注：`data/wallpaper_webm/`（运行时转码缓存）依旧由上面的 `/data/*` 忽略 ——
+#     里面 9 个文件与 assets/wallpapers/ 内容完全相同，没必要重复进仓库。
 
 # 离线依赖缓存与测试截图（本地有用，不进仓库）
 wheels/

@@ -24,7 +24,12 @@ QtWebEngine 不带 H.264 解码器（详见 ``packaging/mytools.spec`` 里 ffmpe
   :func:`src.core.wallpaper_engine.resolve_scene_video` 从 ``scene.pkg`` 抠出来
 
 打包时由 ``package.ps1`` 在 PyInstaller **之前**调一次（见那边的说明）。
-产物 ``assets/wallpapers/`` 不进 git（第三方素材，同 ``assets/game/`` 的理由）。
+产物 ``assets/wallpapers/`` **进 git**，但走 Git LFS（见 ``.gitattributes`` 里的
+``assets/wallpapers/*.webm filter=lfs``）。2026-11-08 之前这里是整体忽略的 ——
+那样每台机器都得重跑转码，而转码依赖 Wallpaper Engine 创意工坊的源视频，
+没订阅的人根本生不出来。改成 LFS 后仓库里只存指针，克隆需要装 git-lfs。
+
+本脚本仍然有用：**新增**主题壁纸时要跑一次（幂等，已存在的会跳过）。
 """
 
 from __future__ import annotations
