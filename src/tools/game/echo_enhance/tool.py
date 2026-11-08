@@ -49,7 +49,10 @@ from ....core.categories import ToolCategory
 from ....core.echo_profile import KIND as ECHO_PROFILE_KIND
 from ....core.loadout import KIND as LOADOUT_KIND
 from ....core.registry import logger, registry
-from ....core.tasks import SET_BONUS_PLANS  #: 成套声骸结构（和新建任务对话框共用）
+from ....core.tasks import (  #: 成套声骸结构（和新建任务对话框共用）
+    format_set_plan,
+    parse_set_plan,
+)
 from ....core.tool_base import BaseTool
 from ..auto_combat.okww_boot import get_host
 from .settings_editor import EchoSettingsEditor
@@ -427,10 +430,14 @@ def _picks_by_cost(loadout) -> dict:
 
 
 def _set_plan_of_flow(flow_name: str) -> str:
-    """从流程名里读套装结构（``43311`` / ``44111``）。
+    """从流程名里读套装结构（``43311`` / ``44111`` / ``4311`` …）。
 
     ``绯雪-声骸自动强化（小毕业 43311）`` → ``'43311'``
+    ``绯雪-声骸自动强化（小毕业 4311）`` → ``'4311'``
     ``绯雪-声骸自动强化（小毕业）``       → ``''``（不成套）
+
+    ★ 2026-11-07：结构可自由输入，这里只负责"取出那串数字"，
+    合法性交给 :func:`core.tasks.parse_set_plan` 判。
     """
     if not flow_name:
         return ""
@@ -1708,16 +1715,24 @@ class EchoEnhanceTool(BaseTool):
 
         #: ★ 2026-10-29 从**流程名**读套装结构
         #: （``绯雪-声骸自动强化（小毕业 43311）`` 里的 43311）
+        #:
+        #: ★ 2026-11-07 用户：结构可自由输入（如 ``4311`` = 4C×1 + 3C×1 + 1C×2），
+        #: 所以不再查 ``SET_BONUS_PLANS`` 这张表，直接现解析。
+        #: 解析不合法才退回不成套 —— 正常情况新建任务时就已经校验过了，
+        #: 能走到这里说明是手改过的老流程名。
         try:
             plan_name = _set_plan_of_flow(options.get("flow_name") or "")
             if plan_name:
-                set_plan = dict(SET_BONUS_PLANS.get(plan_name) or {})
+                try:
+                    set_plan = parse_set_plan(plan_name)
+                except ValueError as exc:
+                    set_plan = {}
+                    log(f"⚠ 认不出套装结构「{plan_name}」（{exc}）→ 按不成套处理")
                 if set_plan:
-                    log(f"成套声骸 {plan_name} → " + "、".join(
-                        f"{c}C 需要 {n} 种" for c, n in
-                        sorted(set_plan.items(), reverse=True)))
-                else:
-                    log(f"⚠ 认不出套装结构「{plan_name}」→ 按不成套处理")
+                    log(f"成套声骸 {plan_name} = {format_set_plan(set_plan)}"
+                        " → " + "、".join(
+                            f"{c}C 需要 {n} 种" for c, n in
+                            sorted(set_plan.items(), reverse=True)))
         except Exception:  # noqa: BLE001
             logger.warning("读套装结构失败", exc_info=True)
 

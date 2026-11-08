@@ -2576,12 +2576,18 @@ class WebBridge(QObject):
 
         :returns: ``{"ok": true, "taskTypes": [{"name","key"}],
                    "attrLevels": [{"name","count"}], "defaultLevel": "大毕业",
-                   "setChoices": ["不成套","成套"], "setPlans": ["43311","44111"],
+                   "setChoices": ["不成套","成套"],
+                   "setPlans": ["43311","44111"], "defaultSetPlan": "43311",
+                   "setPlanLimits": {"maxLength": 5, "maxCost": 12},
                    "defaultSetBonus": "不成套",
                    "characters": [{"name","avatarUrl","pinyin",
                                    "loadoutId","profileId","levelCap",
                                    "ready": bool, "missing": [..],
                                    "levelOk": {"大毕业": true, ...}}]}``
+
+        ★ 2026-11-07 用户：``setPlan`` 从"二选一"改成**自由输入**
+        （如 ``4311`` = 4C×1 + 3C×1 + 1C×2），所以 ``setPlans`` 只是
+        预设/例子，``setPlanLimits`` 给页面拿来做即时提示。
         """
         try:
             from ..core import game_data  # noqa: PLC0415
@@ -2589,7 +2595,8 @@ class WebBridge(QObject):
             from ..core.loadout import LoadoutStore  # noqa: PLC0415
             from ..gui import new_flow_dialog as nf  # noqa: PLC0415
             from ..core.tasks import (  # noqa: PLC0415
-                DEFAULT_SET_BONUS, SET_BONUS_CHOICES, SET_BONUS_PLANS,
+                DEFAULT_SET_BONUS, DEFAULT_SET_PLAN, SET_BONUS_CHOICES,
+                SET_PLAN_MAX_COST, SET_PLAN_MAX_LEN, SET_PLAN_PRESETS,
             )
 
             #: 两类配置按角色名索引（缺一个就没法自动生成流程）
@@ -2659,7 +2666,15 @@ class WebBridge(QObject):
                                for k, v in nf.ATTR_LEVELS.items()],
                 "defaultLevel": nf.DEFAULT_ATTR_LEVEL,
                 "setChoices": list(SET_BONUS_CHOICES),
-                "setPlans": list(SET_BONUS_PLANS),
+                #: ★ 2026-11-07 用户：结构改成**自由输入**，这两项只是
+                #: 输入框的预设/例子（页面上做成「一键填入」或占位提示），
+                #: 不再是只能二选一的白名单。
+                "setPlans": list(SET_PLAN_PRESETS),
+                "defaultSetPlan": DEFAULT_SET_PLAN,
+                "setPlanLimits": {
+                    "maxLength": SET_PLAN_MAX_LEN,
+                    "maxCost": SET_PLAN_MAX_COST,
+                },
                 "defaultSetBonus": DEFAULT_SET_BONUS,
                 "characters": characters,
             })
@@ -2682,7 +2697,12 @@ class WebBridge(QObject):
         ``payload`` = JSON::
 
             {"character": "绯雪", "taskType": "声骸强化",
-             "level": "大毕业", "setBonus": "成套", "setPlan": "43311"}
+             "level": "大毕业", "setBonus": "成套", "setPlan": "4311"}
+
+        ``setPlan`` 是**自由输入**的套装结构（★ 2026-11-07 用户）：
+        几位 = 一共几个声骸，每位 = 那个声骸的 COST，如 ``43311`` /
+        ``44111`` / ``4311``。校验 = 最多 5 位、各位数字之和 ≤ 12、
+        每位只能是 4/3/1（游戏里没有 2C）—— 见 ``core.tasks.set_plan_error``。
 
         ## 三条硬规矩（都来自 main，别放宽）
 
@@ -2695,7 +2715,8 @@ class WebBridge(QObject):
         :returns: ``{"ok": true, "id", "name", "stepCount"}`` /
                   ``{"ok": false, "reason": "busy"|"bad_payload"|
                   "bad_character"|"missing_config"|"bad_type"|"bad_level"|
-                  "level_too_high"|"duplicate"|"error", "message": ...}``
+                  "bad_plan"|"level_too_high"|"duplicate"|"error",
+                  "message": ...}``
         """
         if self._running:
             return _json({
@@ -2715,14 +2736,18 @@ class WebBridge(QObject):
         try:
             from ..core import game_data  # noqa: PLC0415
             from ..core.echo_profile import EchoProfileStore  # noqa: PLC0415
-            from ..core.tasks import TaskStore  # noqa: PLC0415
+            from ..core.tasks import (  # noqa: PLC0415
+                TaskStore, normalize_set_plan, set_plan_error,
+            )
             from ..gui import new_flow_dialog as nf  # noqa: PLC0415
 
             who = str(data.get("character") or "").strip()
             task_type = str(data.get("taskType") or "").strip()
             level = str(data.get("level") or "").strip()
             set_bonus = str(data.get("setBonus") or "").strip()
-            set_plan = str(data.get("setPlan") or "").strip()
+            #: ★ 2026-11-07：结构可自由输入 —— 先规整（去空白 / 全角转半角），
+            #: 后面统一用规整后的值，避免「流程名里存的和解析出来的不一致」。
+            set_plan = normalize_set_plan(data.get("setPlan"))
 
             #: ① 角色必须是数据集里的（不能自由输入 —— 和配置页同一条规则）
             if not who:
@@ -2744,7 +2769,31 @@ class WebBridge(QObject):
             if not task_type:
                 task_type = next(iter(nf.TASK_TYPES))
 
-            #: ③ 两类配置都得有
+            #: ③ 套装结构（★ 2026-11-07 用户：可自由输入，但有校验）
+            #:
+            #: > 成套可以自由输入成套时的数字比如，现在现有44111，43311，
+            #: > 我可以输入4311，这时强化好1个4C，1个3C就跳过，其他4C、3C，
+            #: > 但是这个输入有校验，数字长度最多为5，数字加起来不能超过12
+            #:
+            #: 只有「成套」时才校验（不成套时前端那个框是隐藏的，
+            #: 里面留着什么都没关系）。规则本体在 ``core.tasks.set_plan_error``，
+            #: 界面两端都调它 —— **别在这里另写一套**。
+            #:
+            #: ★ 2026-11-08 用户逐条定了五句提示语（「声骸数量超过5个」
+            #: 「Cost数超过12」「只能输入4、3、1」「自定义时不能输入为空」），
+            #: 所以这里**直接**用 ``problem`` 本身，不再加「套装结构不对：」
+            #: 这种前缀 —— 加上去就和界面里那句不一样了。
+            if set_bonus == "成套":
+                problem = set_plan_error(set_plan)
+                if problem:
+                    return _json({
+                        "ok": False, "reason": "bad_plan",
+                        "message": problem,
+                    })
+            else:
+                set_plan = ""
+
+            #: ④ 两类配置都得有
             try:
                 loadouts = nf.compatible_characters()
             except Exception:  # noqa: BLE001
@@ -2779,7 +2828,7 @@ class WebBridge(QObject):
                 })
             _char, loadout_id, profile_id = pair
 
-            #: ④ 级别：必须认识，且不能超过这条强化配置的上界
+            #: ⑤ 级别：必须认识，且不能超过这条强化配置的上界
             level_count = nf.ATTR_LEVELS.get(level)
             if level and level_count is None:
                 return _json({
@@ -2808,7 +2857,7 @@ class WebBridge(QObject):
                                    "或换低一级",
                     })
 
-            #: ⑤ 同角色 + 同级别只能一条
+            #: ⑥ 同角色 + 同级别只能一条
             dup = nf.existing_flow_for(who, level)
             if dup is not None:
                 return _json({
@@ -2818,7 +2867,7 @@ class WebBridge(QObject):
                                "同一角色同一级别只能有一条任务",
                 })
 
-            #: ⑥ 把级别写回强化配置（任务跑的时候读的是配置里那份）
+            #: ⑦ 把级别写回强化配置（任务跑的时候读的是配置里那份）
             if level and profile is not None:
                 if not nf.apply_attr_level(profile, level):
                     return _json({
@@ -2826,7 +2875,7 @@ class WebBridge(QObject):
                         "message": "写回「有效词条」数量失败，详见日志",
                     })
 
-            #: ⑦ 生成并保存
+            #: ⑧ 生成并保存
             flow = nf.build_echo_enhance_flow(
                 who, loadout_id, profile_id,
                 level=level,

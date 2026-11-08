@@ -71,6 +71,64 @@ WEB_DIR = Path(__file__).resolve().parent / "web"
 #: 环境变量开关
 ENV_KEY = "MYTOOLS_WEB_SHELL"
 
+#: Chromium 的启动开关（★ 2026-11-08 实测：不加这个渲染进程 100% 崩溃）
+CHROMIUM_FLAGS_ENV = "QTWEBENGINE_CHROMIUM_FLAGS"
+
+#: 本机必须带的 Chromium 开关
+CHROMIUM_FLAGS = "--no-sandbox"
+
+
+def apply_chromium_flags() -> str:
+    """把 :data:`CHROMIUM_FLAGS` 并进 ``QTWEBENGINE_CHROMIUM_FLAGS``。
+
+    ## 为什么必须带 ``--no-sandbox``（★ 2026-11-08 实测定论）
+
+    日志症状是一串刷屏：
+
+    .. code:: text
+
+        web_shell：渲染进程退出了 status=AbnormalTerminationStatus code=18
+        web_shell：页面加载失败 http://127.0.0.1:<port>/web/index.html?t=...
+        web_shell：加载失败，200ms 后第 1 次重试
+        ...
+        web_shell：重试 2 次仍失败，放弃
+
+    ``code=18`` 是 Chromium 的 ``RESULT_CODE_SANDBOX_FAILURE`` ——
+    **渲染进程的沙箱起不来**，跟页面、跟代码都没关系。Windows 上常见的
+    触发条件：进程已提权（管理员运行）、安全软件拦截子进程、或
+    ``%TEMP%`` 上缺写权限。
+
+    ## 实测对照（同一台机器，每次只改开关）
+
+    ======================  ==================================  ==========
+    开关                    页面结果                            code=18
+    ======================  ==================================  ==========
+    （不加）                白屏，桥接断                       6 次
+    ``--no-sandbox``        ``qw=function`` / 标题正常         0 次
+    ``--disable-gpu``       白屏，桥接断                       6 次
+    ``--no-sandbox`` +      ``qw=function`` / 标题正常         0 次
+    ``--disable-gpu``
+    ``--disable-gpu-sandbox``  白屏，桥接断                    6 次
+    ``--in-process-gpu``    白屏，桥接断                       6 次
+    ======================  ==================================  ==========
+
+    即：**只有 ``--no-sandbox`` 起作用**，GPU 完全无关。
+
+    ## 为什么不干脆在 Qt 里改配置
+
+    ``QWebEngineSettings`` 没有对应的开关，Chromium 的 sandbox 只能靠
+    命令行旗标关闭。而且这个变量**必须在 QApplication 创建 QWebEngine
+    相关对象之前**设好，所以调用点在 :func:`create_shell` 最开头。
+
+    :return: 合并后的旗标串（便于日志/测试断言）
+    """
+    current = str(os.environ.get(CHROMIUM_FLAGS_ENV) or "").strip()
+    if CHROMIUM_FLAGS in current:
+        return current
+    merged = f"{current} {CHROMIUM_FLAGS}".strip() if current else CHROMIUM_FLAGS
+    os.environ[CHROMIUM_FLAGS_ENV] = merged
+    return merged
+
 #: config.json 里的开关路径（``config.json`` 是 qfluentwidgets 的配置文件）
 CONFIG_SECTION = "UI"
 CONFIG_KEY = "WebShell"
@@ -224,6 +282,83 @@ def prepare_assets() -> list[str]:
     return copied
 
 
+#: Qt 资源里 qwebchannel.js 的路径（由 QtWebChannel 模块注册进 qrc）
+QWECHANNEL_QRC = ":/qtwebchannel/qwebchannel.js"
+
+#: 前端要的副本位置 —— 和 index.html 同目录树下，走 /web/ 挂载**同源**提供
+QWECHANNEL_JS = WEB_DIR / "js" / "qwebchannel.js"
+
+
+def prepare_qwebchannel() -> bool:
+    """把 Qt qrc 里的 ``qwebchannel.js`` 复制到 ``src/gui/web/js/``。
+
+    ## 为什么必须复制（★ 2026-11-08 实测，这是 Web 界面跑不起来的真凶）
+
+    ``index.html`` 原来写的是
+
+    .. code:: html
+
+        <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+
+    而页面是从 ``http://127.0.0.1:<port>/web/`` 加载的（**必须**，见
+    :func:`web_base_url` 的说明：页面和壁纸视频要同源）。http 页面下
+    Chromium **拒绝**加载 ``qrc:`` 资源：
+
+    .. code:: text
+
+        js: Not allowed to load local resource: qrc:///qtwebchannel/qwebchannel.js
+
+    于是 ``typeof QWebChannel === 'undefined'`` → ``bridge.js`` 的
+    ``boot()`` 轮询 50ms × 8s 后超时 → 页面显示「桥接断开 / 无法连接到
+    Python 后端」，看起来像后端没起来，其实是前端脚本没加载。
+
+    ## 做法
+
+    启动时（``web_base_url()`` 里）从 qrc 读出字节，写成
+    ``js/qwebchannel.js``，index.html 改成相对路径引用 —— 和 index.html
+    同一个挂载点出，**同源**，没有跨协议加载问题。
+
+    ## 幂等 / 跟随升级
+
+    每次启动都比对内容，**不同才写**（16510 字节的小文件，读一下很便宜）。
+    这样 Qt 升级后 qwebchannel.js 自动跟上，不会留一份陈旧副本。
+    写失败不致命（返回 False，调用方继续跑，页面会退化成「桥接断开」；
+    打包版装到 Program Files 时目录可能只读，用的是打包进去的那份）。
+
+    :return: 文件已就位（新写或原本就一致）返回 True
+    """
+    try:
+        #: ⚠ 这个 import 顺带把 qrc 资源注册进来 —— 不 import 的话
+        #: ``QFile(":/qtwebchannel/qwebchannel.js").exists()`` 是 False
+        #: （实测：延迟注册，不是磁盘上真有这个文件）。
+        from PySide6.QtCore import QFile, QIODevice  # noqa: PLC0415
+        import PySide6.QtWebChannel  # noqa: F401, PLC0415 - 注册 qrc
+
+        src = QFile(QWECHANNEL_QRC)
+        if not src.exists():
+            logger.warning("web_shell：Qt 资源里没有 %s，Web 界面桥接会失败",
+                           QWECHANNEL_QRC)
+            return False
+        if not src.open(QIODevice.OpenModeFlag.ReadOnly):
+            logger.warning("web_shell：打不开 %s", QWECHANNEL_QRC)
+            return False
+        try:
+            data = bytes(src.readAll().data())
+        finally:
+            src.close()
+
+        dst = QWECHANNEL_JS
+        if dst.is_file() and dst.read_bytes() == data:
+            return True
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(data)
+        logger.info("web_shell：已刷新 %s（%d 字节）", dst.name, len(data))
+        return True
+    except Exception:  # noqa: BLE001
+        logger.warning("web_shell：准备 qwebchannel.js 失败", exc_info=True)
+        return False
+
+
 def web_base_url(*, start_media: bool = True) -> str:
     """起 HTTP 服务并返回前端 base URL（如 ``http://127.0.0.1:12345/web/``）。
 
@@ -247,6 +382,10 @@ def web_base_url(*, start_media: bool = True) -> str:
             return ""
 
         prepare_assets()
+
+        #: ★ 桥接脚本也得是同源的真实文件 —— 见 prepare_qwebchannel 的说明。
+        #: 失败不致命：页面能开，只是 bridge 连不上（日志里会有明确一行）。
+        prepare_qwebchannel()
 
         #: 转码缓存目录 —— 壁纸视频从这里出
         cache = webm_transcode.cache_dir()
@@ -1919,6 +2058,11 @@ def create_shell(*, base_url: str = "", window_icon: QIcon | None = None
 
     失败时调用方应退回旧的 ``MainWindow`` —— **新外壳起不来不能挡住启动**。
     """
+    #: ★ 必须在这里（建任何 QWebEngine 对象之前）设好 Chromium 开关，
+    #: 否则渲染进程会以 code=18（sandbox 失败）崩溃、页面永远白屏。
+    #: 详见 :func:`apply_chromium_flags` 的实测对照表。
+    apply_chromium_flags()
+
     if window_icon is None:
         try:
             from .compat import app_icon  # noqa: PLC0415
@@ -1936,9 +2080,12 @@ def create_shell(*, base_url: str = "", window_icon: QIcon | None = None
 
 __all__ = [
     "WEB_DIR",
+    "CHROMIUM_FLAGS",
     "WebShell",
+    "apply_chromium_flags",
     "create_shell",
     "is_enabled",
     "prepare_assets",
+    "prepare_qwebchannel",
     "web_base_url",
 ]

@@ -34,6 +34,35 @@ pywin32>=311
 PySide6-Fluent-Widgets>=1.11.3
 pypinyin>=0.55.0
 
+# ---- Web 界面外壳（默认开启，缺了会静默退回旧 Qt 界面）----
+# ★ 2026-11-08 补：这两个包以前**从来没列过**，于是新环境里每次启动都是
+#
+#     ERROR src.gui.web_shell | web_shell：构建失败，退回旧界面
+#     WARNING __main__ | Web 外壳起不来，退回旧界面
+#
+# 用户看到的是「网页版怎么没有了」，但日志里只有一句「构建失败」，
+# 真因是 ``src/gui/web_shell.py::build()`` 第一步就
+# ``from PySide6.QtWebChannel import ...`` 抛 ModuleNotFoundError。
+#
+# 【为什么是这两个包，不是一个】
+#   Essentials（上面那行）只带 QtWidgets/QtGui/QtCore/QtSvg/QtNetwork。
+#   QtWebChannel 在 **Addons** 里；而 QtWebEngineCore / QtWebEngineWidgets
+#   连 Addons 都没有 —— 它们是 **WebEngine** 这个独立包（版本号是四段的
+#   ``6.12.0.140``，跟着 Qt 小版本走，别和 Addons 的三段号搞混）。
+#   三个包版本必须对齐，否则 shiboken 会报二进制不兼容。
+#
+# ⚠ 装/卸这两个包时别用 ``pip uninstall`` 半途打断：Addons 和 Essentials
+#   共用一个 ``PySide6/`` 目录，卸载中断会把 Essentials 的 RECORD 弄残缺
+#   （表现是 ``ImportError: DLL load failed while importing QtCore``），
+#   救回来很麻烦 —— 要先用 ``Get-CimInstance Win32_Process`` 找锁着
+#   ``plugins/imageformats/qico.dll`` 的僵尸 python 进程杀掉，
+#   再用 ``--no-index --find-links`` 离线 wheel 强制重装 Essentials。
+#
+# ⚠ 打包版（packaging/mytools.spec）早就把这三个模块写进 hiddenimports 了，
+#   只是开发依赖清单漏了 —— 现在补上。
+PySide6-Addons>=6.12.0
+PySide6-WebEngine>=6.12.0.140
+
 # ---- 声骸自动强化用到的（OCR 识别 + 截屏）----
 numpy>=2.0
 # ⚠ 别指望换 opencv-python-headless 来瘦身：**OpenCV 5.x 的 headless 和完整版几乎一样大**

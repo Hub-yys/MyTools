@@ -106,9 +106,26 @@ class TestHostConfig(unittest.TestCase):
         self.assertEqual(scene[0], "okww.scene.WWScene",
                          "scene 没改名：%s" % scene)
 
-    def test_ocr_uses_onnxruntime_backend(self):
+    def test_ocr_backend_matches_installed_openvino(self):
+        """OCR 后端必须和「本机到底装没装 openvino」一致。
+
+        ★ 2026-11-08：之前这条写的是 ``assertIs(use_openvino, False, "本机没装 openvino")``
+        —— 只在本机恰好没装 openvino 时才成立，属于**把环境写进断言**。
+        2026-10-27 那次改成写死 ``True`` 之后它就一直是红的，而且没人发现
+        真机上 OCR 是彻底初始化失败的（``predict_base.py`` 裸 ``import openvino``，
+        没有兜底，见 ``okww_boot._openvino_available`` 的 docstring）。
+
+        现在断言的是**不变量**：配置里的开关 = 本机探测结果。装了 openvino 就
+        必须用（与 ok-ww 一致），没装就必须关（否则崩溃）。
+        """
+        import importlib.util
+
         params = self.config["ocr"]["params"]
-        self.assertIs(params["use_openvino"], False, "本机没装 openvino")
+        installed = importlib.util.find_spec("openvino") is not None
+        self.assertIs(params["use_openvino"], installed,
+                      "use_openvino 应该跟随本机是否装了 openvino（装没装=%s）" % installed)
+        self.assertIs(params["use_npu"], installed,
+                      "use_npu 跟着 openvino 走（NPU 也是 OpenVINO 的路径）")
         self.assertEqual(self.config["ocr"]["lib"], "onnxocr")
 
     def test_tasks_exposed_to_page(self):

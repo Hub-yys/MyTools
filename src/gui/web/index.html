@@ -90,8 +90,21 @@
 </div>
 
 <!-- ══════════════ 脚本 ══════════════ -->
-<!-- QWebChannel 的 JS 端由 Qt 从 qrc: 提供（file/http 页面都能加载） -->
-<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<!-- QWebChannel 的 JS 端：**不能用 qrc:**
+
+  ★ 2026-11-08 实测：页面走 http://（见 ``web_shell.web_base_url`` 的注释，
+  页面和壁纸视频必须同源），这时 Chromium 会拒绝加载 ``qrc://`` 资源：
+
+      Not allowed to load local resource: qrc:///qtwebchannel/qwebchannel.js
+
+  后果是 ``QWebChannel`` 一直是 undefined → bridge.js 轮询 8 秒后超时 →
+  「桥接断开 / 无法连接到 Python 后端」，整个页面是死的。
+  （``file://`` 页面下 qrc 能加载，但页面不能改回 file —— 视频会跨源。）
+
+  所以改成**同源**提供：``js/qwebchannel.js`` 是 Qt qrc 里那个文件的副本
+  （16510 字节，由 ``src/gui/web_shell.py::prepare_qwebchannel()`` 在启动时
+  幂等刷新，Qt 升级后会自动跟上），和 index.html 一样从 /web/ 出。 -->
+<script src="js/qwebchannel.js"></script>
 
 <!--
   ★ 加载顺序是硬要求：app.js **必须在页面模块之前**。

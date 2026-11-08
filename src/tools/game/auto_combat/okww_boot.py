@@ -90,6 +90,33 @@ def _install_no_system_notifier() -> None:
     _notification_patched = True
 
 
+def _openvino_available() -> bool:
+    """本机有没有装 openvino（决定 OCR / YOLO 走 OpenVINO 还是纯 onnxruntime）。
+
+    ★ 2026-11-08：这里以前是写死 ``True``，注释还写着「没装 openvino 时 onnxocr
+    会自动回退到 onnxruntime，不会崩」。**实测那句话是错的**：
+
+    * ``onnxocr/predict_base.py`` 在 ``if self.is_openvino:`` 分支里直接
+      ``import openvino as ov``，**裸 import，没有 try/except**；
+    * ``onnxocr/onnx_paddleocr.py`` 的 except 只把 ``params.use_npu`` 改成 False
+      再试一次，**从不动 ``use_openvino``** → 重试照样 ModuleNotFoundError；
+    * ``ok`` 的 ``TaskExecutor._init_default_ocr`` 捕获后只打一行
+      ``init default ocr error``，OCR 就此**彻底不可用**（声骸强化全靠它读词条）；
+    * 连带 ``vendor/okww/okww/globals.py`` 的 ``yolo_model`` 也会走
+      ``OpenVinoYolo8Detect`` 而 import 失败。
+
+    所以这里改成**运行时探测**：装了就开（性能与 ok-ww 一致），没装就老老实实
+    关掉（用户日志里 ``ModuleNotFoundError: No module named 'openvino'`` 就是这么来的）。
+    ``openvino`` 不在 requirements.txt 里，它属于可选加速件。
+    """
+    import importlib.util  # noqa: PLC0415
+
+    try:
+        return importlib.util.find_spec("openvino") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _load_vendor_config_module():
     """加载 vendor 根目录的 ok-ww ``config.py``（它不在 okww 包内，按文件路径加载）。"""
     import importlib.util  # noqa: PLC0415
@@ -120,35 +147,33 @@ def build_config() -> dict:
         # ok-ww 原配置是 gui qt；宿主是无 GUI 的（resolve_ui_config(None) → headless）
         "config_folder": str(user_dir / "configs"),
         "global_configs": [key_config_option, char_config_option, monthly_card_config_option],
-        # ★★★ 2026-10-27：与 ok-ww **完全对齐** —— use_openvino=True, use_npu=True。
+        # ★★★ OCR 后端：能上 OpenVINO 就上，装不上就退回 onnxruntime。
         #
-        # ## 为什么（用户：角色反复死亡，代码/配置全部逐字一致）
+        # ## 历史
         #
-        # 之前这里是 ``False, False``，理由是「本机没装 openvino」。
-        # 但 ok-ww 的 requirements.txt 里明确写着::
+        # 2026-10-27 这里从 ``False, False`` 改成写死的 ``True, True``，理由是
+        # ok-ww 的 requirements.txt 写着 ``openvino==2026.3.0``、config.py 也是
+        # ``use_openvino: True``，而 OCR 在 4C 刷本里不只是「读几个字」——
+        # 每轮战斗都要识别 Boss 名字 / 拾取文字 / 等级血量；CPU OCR 慢会拖住主循环
+        # → 战斗响应迟钝 → 角色站桩挨打。
         #
-        #     openvino==2026.3.0
-        #     openvino-telemetry==2025.2.0
+        # ## 为什么改成探测（2026-11-08）
         #
-        # 而 ok-ww 的 config.py 也是 ``use_openvino: True, use_npu: True``。
-        # 也就是说 **ok-ww 一直用 OpenVINO/NPU 跑 OCR，我们一直用纯 CPU**。
+        # 那段注释还声称「没装 openvino 时 onnxocr 会自动回退，不会崩」——
+        # **实测证伪**，详见 ``_openvino_available()`` 的 docstring：
+        # ``predict_base.py`` 是裸 ``import openvino``，没有兜底，结果就是
+        # 用户日志里那串 ``init default ocr error ... ModuleNotFoundError``，
+        # OCR 全程不可用。
         #
-        # OCR 在 4C 刷本里并不只是「读几个字」—— 每轮战斗都要:
-        #   * 识别 Boss 名字（日志里的 ``boss_string is []``）
-        #   * 识别拾取文字（"吸收"/"Absorb"）
-        #   * 识别等级/血量数字
-        #
-        # CPU OCR 慢 → 主循环被拖住 → 战斗响应迟钝 → 角色站桩挨打。
-        # 这和「主循环每秒动作比 ok-ww 少」「匹配耗时是 ok-ww 的 8~10 倍」
-        # 全部吻合。
-        #
-        # 现已安装 openvino==2026.3.0 + openvino-telemetry==2025.2.0（与 ok-ww 同版本）。
-        # 若某台机器没装 openvino，onnxocr 会自动回退到 onnxruntime（见
-        # ``onnxocr/predict_base.py`` 的 ``is_openvino`` 判断），不会崩。
+        # 现在按本机实际情况填：装了 openvino → 与 ok-ww 完全一致；
+        # 没装 → 退回 onnxruntime（慢但能用，且不会再打错误栈）。
         "ocr": {
             "lib": "onnxocr",
             "auto_simplify": True,
-            "params": {"use_openvino": True, "use_npu": True},
+            "params": {
+                "use_openvino": _openvino_available(),
+                "use_npu": _openvino_available(),
+            },
         },
         "my_app": ["okww.globals", "Globals"],
         "start_timeout": 120,

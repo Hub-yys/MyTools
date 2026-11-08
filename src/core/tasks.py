@@ -50,12 +50,25 @@ DEFAULT_STORE_PATH = paths.user_data_dir() / "tasks.json"
 #:
 #: ## 数字怎么读
 #:
-#: 五位数依次是各档的件数（4 / 3 / 3 / 1 / 1）：
+#: 每一位 = 一个声骸孔位的 Cost，从左到右按 Cost 从大到小写：
 #:
 #: ======  ==========================================
 #: 43311   4C×1 + 3C×2 + 1C×2     （共 5 件）
 #: 44111   4C×2 + 1C×3            （共 5 件，没有 3C）
+#: 4311    4C×1 + 3C×1 + 1C×2     （共 4 件，少上一个 3C）
 #: ======  ==========================================
+#:
+#: 所以「位数」= 这套声骸一共几件（最多 5 件 = 5 个孔位），
+#: 「各位数字之和」= 这套声骸占的 COST 总量（游戏上限 12）。
+#:
+#: ## ★ 2026-11-07 用户：结构要能**自由输入**
+#:
+#: > 成套可以自由输入成套时的数字比如，现在现有44111，43311，
+#: > 我可以输入4311，这时强化好1个4C，1个3C就跳过，其他4C、3C，
+#: > 但是这个输入有校验，数字长度最多为5，数字加起来不能超过12
+#:
+#: 故这里不再写死表，而是用 :func:`parse_set_plan` 从字符串现算；
+#: ``SET_BONUS_PLANS`` 只留作**预设候选**（界面上那两项一键可选）。
 #:
 #: ⚠ **按「种类」计数，不是按件数**（用户 2026-10-29 确认）：
 #: 43311 的 ``1C×2`` 意思是"凑齐 2 种**不同名字**的 1C"，
@@ -65,16 +78,206 @@ DEFAULT_STORE_PATH = paths.user_data_dir() / "tasks.json"
 #:
 #: 放在 ``core`` 里而不是某个 GUI 文件：界面（新建任务）和任务运行
 #: 两侧都要用，GUI 不该被 import 到引擎线程里。
+
+#: 界面上一键可选的预设结构（用户"现在现有44111，43311"）
+SET_PLAN_PRESETS: tuple[str, ...] = ("43311", "44111")
+
+#: 下拉里的「自定义」项。
+#:
+#: ## ★ 2026-11-08 用户
+#:
+#: > 这里应该是下拉列表选择43311 44111 自定义，自定义时就是自由输入
+#:
+#: 也就是**先选再填**：下拉选到预设就直接用它，只有选「自定义」时才
+#: 露出自由输入框。不能只有一个光秃秃的输入框 —— 用户看不出来"这两个
+#: 是现成的、还能自己写"。
+SET_PLAN_CUSTOM = "自定义"
+
+#: 「套装结构」下拉的全部选项：两个预设 + 自定义
+SET_PLAN_CHOICES: tuple[str, ...] = (*SET_PLAN_PRESETS, SET_PLAN_CUSTOM)
+
+#: 套装结构最多几位 —— 5 个声骸孔位
+SET_PLAN_MAX_LEN = 5
+
+#: 各位数字之和的上限 —— 5 个孔位的 COST 总容量
+SET_PLAN_MAX_COST = 12
+
+#: 游戏里真实存在的声骸 Cost 档位（``core/game_data.py`` 只有 4/3/1，没有 2C）
+SET_PLAN_COSTS = (4, 3, 1)
+
+#: 套装结构里允许出现的**字符**（每位只能是这些 Cost 数字）
+SET_PLAN_DIGITS = "".join(str(c) for c in SET_PLAN_COSTS)
+
+
+#: 全角数字 → 半角：中文输入法下很容易打出 ``４３１１``，
+#: 直接判非法太苛刻，规整一下更省事（存进流程名的永远只有半角）。
+_FULLWIDTH_DIGITS = {ord("０") + i: ord("0") + i for i in range(10)}
+
+
+def normalize_set_plan(text) -> str:
+    """把用户输入的套装结构规整成纯字符串。
+
+    去掉**所有空白**（含全角空格 —— 有人爱打成 ``4 3 1 1``），
+    再把全角数字转半角。
+
+    >>> normalize_set_plan(" 4311 ")
+    '4311'
+    >>> normalize_set_plan("4 3 1 1")
+    '4311'
+    >>> normalize_set_plan("４３１１")
+    '4311'
+    """
+    raw = str(text or "").translate(_FULLWIDTH_DIGITS)
+    #: ``str.split()`` 会按所有 unicode 空白切，比 ``replace(" ", "")`` 全
+    return "".join(raw.split())
+
+
+def set_plan_error(text) -> str:
+    """校验套装结构；**合法返回空串**，不合法返回中文原因。
+
+    规则（用户 2026-11-07 定）：
+
+    * 不能为空
+    * 只能是数字（全角数字会先被 :func:`normalize_set_plan` 转成半角，再校验）
+    * 长度 ≤ :data:`SET_PLAN_MAX_LEN`（5 位 = 5 个孔位）
+    * 每位只能是 4 / 3 / 1（游戏里没有 2C，写了也不会生效 → 提前拦下）
+    * 各位数字之和 ≤ :data:`SET_PLAN_MAX_COST`（12 = COST 总容量）
+
+    ## 提示语（★ 2026-11-08 用户逐条指定）
+
+    > 如果超过5位保存时应该报错提示声骸数量超过5个，数字之和超过12提示
+    > Cost数超过12，数字不是4、3、1提示只能输入4、3、1，
+    > 输入空或未输入提示自定义时不能输入为空
+
+    所以文案按用户的原话走，别自己发挥。前端 ``tasks.js`` 的
+    ``parsePlan`` 是这里的逐字镜像，改一边必须改另一边。
+
+    >>> set_plan_error("4311")
+    ''
+    >>> set_plan_error("43311")
+    ''
+    >>> set_plan_error("")
+    '自定义时不能输入为空'
+    >>> set_plan_error("431111")
+    '声骸数量超过 5 个（现在是 6 个）'
+    >>> set_plan_error("44444")
+    'Cost 数超过 12（现在是 20）'
+    >>> set_plan_error("43211")
+    '只能输入 4、3、1（游戏里没有 2C 声骸）'
+    """
+    plan = normalize_set_plan(text)
+    if not plan:
+        return "自定义时不能输入为空"
+    #: ``str.isdigit()`` 对全角数字也返回 True，所以先卡 ASCII
+    if not (plan.isascii() and plan.isdigit()):
+        return "只能输入数字（0-9）"
+    if len(plan) > SET_PLAN_MAX_LEN:
+        return (f"声骸数量超过 {SET_PLAN_MAX_LEN} 个"
+                f"（现在是 {len(plan)} 个）")
+    bad = [ch for ch in plan if ch not in SET_PLAN_DIGITS]
+    if bad:
+        allowed = "、".join(SET_PLAN_DIGITS)
+        return f"只能输入 {allowed}（游戏里没有 {bad[0]}C 声骸）"
+    total = sum(int(ch) for ch in plan)
+    if total > SET_PLAN_MAX_COST:
+        return f"Cost 数超过 {SET_PLAN_MAX_COST}（现在是 {total}）"
+    return ""
+
+
+def parse_set_plan(text) -> dict[int, int]:
+    """套装结构字符串 → ``{Cost: 需要几种不同名字的声骸}``。
+
+    **和书写顺序无关**，只看每个数字出现几次（``4311`` 和 ``1341`` 等价）。
+
+    >>> parse_set_plan("43311") == {4: 1, 3: 2, 1: 2}
+    True
+    >>> parse_set_plan("44111") == {4: 2, 1: 3}
+    True
+    >>> parse_set_plan("4311") == {4: 1, 3: 1, 1: 2}
+    True
+
+    :raises ValueError: 输入不合法，异常信息就是 :func:`set_plan_error`
+        给出的中文原因（调用方可以直接显示给用户）。
+    """
+    plan = normalize_set_plan(text)
+    problem = set_plan_error(plan)
+    if problem:
+        raise ValueError(problem)
+    counts: dict[int, int] = {}
+    for ch in plan:
+        cost = int(ch)
+        counts[cost] = counts.get(cost, 0) + 1
+    return counts
+
+
+def format_set_plan(plan) -> str:
+    """``{Cost: 几种}`` → 给人看的一行：``4C×1 + 3C×1 + 1C×2``。
+
+    空 / 非字典返回空串（调用方据此走"不成套"的文案）。
+    """
+    if not isinstance(plan, dict) or not plan:
+        return ""
+    parts = []
+    for cost in sorted(plan, key=lambda c: (-int(c), str(c))):
+        try:
+            need = int(plan[cost])
+        except (TypeError, ValueError):
+            continue
+        if need > 0:
+            parts.append(f"{int(cost)}C×{need}")
+    return " + ".join(parts)
+
+
+#: 预设结构 → 各自需要的种类数（向后兼容：老代码 ``SET_BONUS_PLANS.get(name)``）
 SET_BONUS_PLANS: dict[str, dict[int, int]] = {
-    "43311": {4: 1, 3: 2, 1: 2},
-    "44111": {4: 2, 1: 3},
+    name: parse_set_plan(name) for name in SET_PLAN_PRESETS
 }
+
+
+def choice_of_set_plan(text) -> str:
+    """套装结构 → 下拉里该显示哪一项（两个预设之一，或 :data:`SET_PLAN_CUSTOM`）。
+
+    规则：规整后的串**正好**等于某个预设就用那一项，否则一律算自定义
+    （包括空串 —— 空串让用户看到"自定义"再自己填，比默默显示 43311 诚实）。
+
+    >>> choice_of_set_plan("43311")
+    '43311'
+    >>> choice_of_set_plan(" 4 3 1 1 ")
+    '自定义'
+    >>> choice_of_set_plan("")
+    '自定义'
+    """
+    plan = normalize_set_plan(text)
+    return plan if plan in SET_PLAN_PRESETS else SET_PLAN_CUSTOM
+
+
+def resolve_set_plan(choice, custom="") -> str:
+    """下拉项 + 自定义输入 → 真正要用的套装结构串（**不校验**）。
+
+    选的是预设就返回预设（忽略 ``custom``）；选的是
+    :data:`SET_PLAN_CUSTOM` 才去看 ``custom`` —— 返回规整后的输入，
+    空的话是空串，交给 :func:`set_plan_error` 报「请填套装结构」。
+
+    >>> resolve_set_plan("43311", "4311")
+    '43311'
+    >>> resolve_set_plan("自定义", " 4 3 1 1 ")
+    '4311'
+    >>> resolve_set_plan("自定义", "")
+    ''
+    """
+    picked = str(choice or "").strip()
+    if picked in SET_PLAN_PRESETS:
+        return picked
+    return normalize_set_plan(custom)
 
 #: 「是否成套声骸」的选项
 SET_BONUS_CHOICES = ("不成套", "成套")
 
 #: 默认选项（= 现有行为不变）
 DEFAULT_SET_BONUS = "不成套"
+
+#: 新建任务时套装结构输入框的默认值
+DEFAULT_SET_PLAN = SET_PLAN_PRESETS[0]
 
 
 @dataclass

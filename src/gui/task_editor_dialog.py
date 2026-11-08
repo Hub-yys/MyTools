@@ -58,7 +58,9 @@ from .config_names import (
     TYPE_LOADOUT,
     config_display_name,
     flow_character_of,
-    flow_name_for,
+    flow_level_of,
+    flow_name_with_level,
+    flow_set_plan_of,
     is_flow_name_of_character,
     live_config_avatar,
     live_config_name,
@@ -931,7 +933,18 @@ class TaskEditorDialog(MessageBoxBase):
     def _collect(self) -> None:
         # 名字 = 角色 + 固定后缀（用户 2026-09-28："保存时自动加后缀声骸自动强化"）。
         # flow_name_for 对"已经带后缀"的输入是幂等的 —— 编辑时不会补出两个后缀。
-        self.flow.name = flow_name_for(self.character_box.text())
+        #
+        # ★ 2026-11-07：**级别和套装结构藏在名字末尾的括号里**
+        # （``绯雪-声骸自动强化（小毕业 4311）``），而这个弹框只让人选角色。
+        # 以前这里直接 ``flow_name_for(角色)`` 拼名，等于把括号整段抹掉 ——
+        # 用「修改」编辑一条成套流程，套装结构就被静默清空，跑起来变成
+        # 「不成套」。所以先把老名字里的级别/结构取出来再拼回去
+        # （新流程没有后缀，取出来是空串，行为和以前一致）。
+        self.flow.name = flow_name_with_level(
+            self.character_box.text(),
+            flow_level_of(self.flow.name),
+            flow_set_plan_of(self.flow.name),
+        )
         # ⚠ 任务类型**不再收集** —— 已经改成从步骤推导（`TaskFlow.derived_type()`）。
         #   原来这里是 `self.flow.type_key = self._current_type_key()`。
         self.flow.steps = self._collect_steps()

@@ -112,8 +112,13 @@
   const STEP_START = 'start';
   const STEP_END = 'end';
 
-  /** 名字末尾的级别括号（「（小毕业 43311）」这种），剥角色名时要先去掉 */
-  const LEVEL_RE = /（(?:小毕业|大毕业|完美毕业)(?:\s*(?:43311|44111))?）\s*$/;
+  /** 名字末尾的级别括号（「（小毕业 43311）」这种），剥角色名时要先去掉。
+   *
+   *  ★ 2026-11-07：成套结构从「只能是 43311 / 44111」改成**自由输入**，
+   *  所以这里从白名单放宽到「1~5 位数字」—— 只放宽下限的判断，具体合不合法
+   *  由 ``src/core/tasks.py`` 的 ``set_plan_error`` 说了算（后端会拦），
+   *  这里剥名字时多认几种写法不会有副作用。 */
+  const LEVEL_RE = /（(?:小毕业|大毕业|完美毕业)(?:\s*[0-9]{1,5})?）\s*$/;
 
   //: ★ 2026-11-04 用户圈图：「任务完成后自动关机」整块**删了**。
   //: 后端那套（``TASK_SHUTDOWN_KEY`` / ``_arm_task_shutdown`` / ``QTimer`` 轮询 …）
@@ -1318,14 +1323,61 @@
       options.defaultSetBonus || '不成套'
     );
     setSel.el.classList.add('task-select');
+    //: ⚠ 另给一个窄宽度 —— 「是否成套」只要放下两个词，240px 会把右边的
+    //:   套装结构控件挤到下一行（2026-11-08 实测）。
+    setSel.el.classList.add('task-select-set');
     setRow.appendChild(setSel.el);
 
-    const planSel = localSelect(options.setPlans || ['43311', '44111'], '43311');
-    //: ⚠ classList.add 不接受带空格的字符串（会抛 DOMException 把整段渲染打断），
-    //: 两个类必须分开加
-    planSel.el.classList.add('task-select');
-    planSel.el.classList.add('task-select-plan');
-    setRow.appendChild(planSel.el);
+    //: ★ 2026-11-07 用户：成套结构要**能自己填**（如 4311）。
+    //: ★ 2026-11-08 用户圈图纠正：**先下拉选，再自定义**
+    //:   「这里应该是下拉列表选择43311 44111 自定义，自定义时就是自由输入」
+    //: 所以是「下拉 + 条件出现的输入框」：下拉里放两个预设 + 自定义，
+    //: 只有选到「自定义」才露出输入框。规则仍只由后端 set_plan_error 判
+    //: （这里只做即时提示，免得两处规则各说各话）。
+    const planPresets = (options.setPlans || ['43311', '44111']).map(String);
+    const planLimits = options.setPlanLimits || {};
+    const PLAN_CUSTOM = '自定义';
+    const planChoices = planPresets.concat([PLAN_CUSTOM]);
+
+    const planChoiceSel = localSelect(planChoices, options.defaultSetPlan || planPresets[0] || '43311');
+    planChoiceSel.el.classList.add('task-select');
+    planChoiceSel.el.classList.add('task-select-plan');
+    setRow.appendChild(planChoiceSel.el);
+
+    const planInput = P.el('input', {
+      class: 'input task-select task-select-plan',
+      type: 'text',
+      value: '',
+      placeholder: '如 4311',
+      //: ⚠ 故意**不**设 ``maxlength``：用户可能粘「4 3 1 1」这种带空格的
+      //: 写法，HTML 会按字符数硬截成「4 3 1」—— 静默给出一个错的套装结构。
+      //: 长度超限交给下面 parsePlan 报错（和后端 set_plan_error 同一句话）。
+      inputmode: 'numeric',
+      autocomplete: 'off',
+      spellcheck: 'false'
+    });
+    planInput.style.display = 'none';   // 默认是预设，输入框藏着
+    const planSel = {
+      el: planInput,
+      choice: planChoiceSel,
+      isCustom: function () { return String(planChoiceSel.get() || '') === PLAN_CUSTOM; },
+      /** 下拉项 + 自定义输入 → 真正要用的结构串（和 core.tasks.resolve_set_plan 同规则）。 */
+      get: function () {
+        if (!this.isCustom()) return String(planChoiceSel.get() || '');
+        return String(planInput.value || '');
+      },
+      set: function (text) {
+        const picked = String(text || '');
+        if (planChoices.indexOf(picked) >= 0) {
+          planChoiceSel.el.value = picked;
+        } else {
+          planChoiceSel.el.value = PLAN_CUSTOM;
+          planInput.value = picked;
+        }
+        syncSetVisibility();
+      }
+    };
+    setRow.appendChild(planInput);
     body.appendChild(setRow);
 
     const setHint = P.el('div', { class: 'task-suffix-hint task-set-hint' });
@@ -1355,14 +1407,96 @@
       return pool.find(function (c) { return c.name === who; }) || null;
     }
 
+    /** 把套装结构拆成「各档要几种」—— 和 ``src/core/tasks.py`` 的
+     *  ``parse_set_plan`` 同一套规则（每位只能 4/3/1、最多 5 位、和 ≤12）。
+     *  返回 ``{ok: true, counts: {4:n, 3:n, 1:n}, text: '4C×1 + 3C×2'}
+     *  或 {ok: false, message: '…'}``。
+     *
+     *  ⚠ 下面五句提示语是 ``core.tasks.set_plan_error`` 的**逐字镜像**
+     *  （★ 2026-11-08 用户逐条指定了措辞），改一边必须改另一边。 */
+    function parsePlan(raw) {
+      //: 全角数字转半角、去掉所有空白 —— 跟后端 normalize_set_plan 对齐
+      const text = String(raw || '')
+        .replace(/[０-９]/g, function (ch) {
+          return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0);
+        })
+        .replace(/\s+/g, '');
+      if (!text) return { ok: false, message: '自定义时不能输入为空' };
+      if (!/^[0-9]+$/.test(text)) {
+        return { ok: false, message: '只能输入数字（0-9）' };
+      }
+      const maxLen = Number(planLimits.maxLength || 5);
+      if (text.length > maxLen) {
+        return {
+          ok: false,
+          message: '声骸数量超过 ' + maxLen + ' 个（现在是 ' + text.length + ' 个）'
+        };
+      }
+      const maxCost = Number(planLimits.maxCost || 12);
+      const counts = { 4: 0, 3: 0, 1: 0 };
+      let total = 0;
+      for (const ch of text) {
+        const cost = Number(ch);
+        if (cost !== 4 && cost !== 3 && cost !== 1) {
+          return {
+            ok: false,
+            message: '只能输入 4、3、1（游戏里没有 ' + cost + 'C 声骸）'
+          };
+        }
+        counts[cost] += 1;
+        total += cost;
+      }
+      if (total > maxCost) {
+        return {
+          ok: false,
+          message: 'Cost 数超过 ' + maxCost + '（现在是 ' + total + '）'
+        };
+      }
+      const parts = [4, 3, 1]
+        .filter(function (c) { return counts[c] > 0; })
+        .map(function (c) { return c + 'C×' + counts[c]; });
+      return {
+        ok: true,
+        digits: text,
+        counts: counts,
+        total: text.length,
+        text: parts.join(' + ')
+      };
+    }
+
     function syncSetVisibility() {
       const isSet = String(setSel.get() || '') === '成套';
-      planSel.el.style.display = isSet ? '' : 'none';
-      setHint.textContent = isSet
-        ? (String(planSel.get() || '43311') === '44111'
-          ? '44111 = 4C×2 + 1C×3（两种声骸）'
-          : '43311 = 4C×1 + 3C×2 + 1C×2（三种声骸）')
-        : '不成套 = 按配置里勾选的所有声骸逐个强化';
+      //: 成套时先看下拉；只有「自定义」才露出输入框
+      planChoiceSel.el.style.display = isSet ? '' : 'none';
+      planInput.style.display = (isSet && planSel.isCustom()) ? '' : 'none';
+      setHint.classList.remove('is-bad');
+      if (!isSet) {
+        setHint.textContent = '不成套 = 按配置里勾选的所有声骸逐个强化';
+        return;
+      }
+      const isCustom = planSel.isCustom();
+      const rawPlan = planSel.get();
+      if (isCustom && !String(rawPlan || '').trim()) {
+        setHint.textContent = '自定义：几位 = 一共几个声骸，每位 = 那个声骸的 COST。' +
+          '例如 ' + planPresets.join('、') + '，也可以自己写 4311';
+        return;
+      }
+      const plan = parsePlan(rawPlan);
+      if (!plan.ok) {
+        //: ⚠ 红字，但不拦输入 —— 边打字边报错，保存时后端还会再拦一次
+        setHint.textContent = '⚠ ' + plan.message;
+        setHint.classList.add('is-bad');
+        return;
+      }
+      const detail = [4, 3, 1]
+        .filter(function (c) { return plan.counts[c] > 0; })
+        .map(function (c) {
+          return c + 'C 凑齐 ' + plan.counts[c] + ' 种不同名字的';
+        })
+        .join('、');
+      setHint.textContent = plan.digits + ' = ' +
+        plan.text + '（共 ' + plan.total + ' 个声骸）。强化好这些种类数后，' +
+        '该档剩余的同类型声骸**全部跳过**（' + detail + '）。';
     }
 
     function syncLevelAvailability() {
@@ -1409,7 +1543,10 @@
 
     levelSel.el.addEventListener('change', syncLevelAvailability);
     setSel.el.addEventListener('change', syncSetVisibility);
-    planSel.el.addEventListener('change', syncSetVisibility);
+    //: 下拉换了要立刻显示/隐藏输入框；输入框没有 ``change`` 的即时性
+    //: （失焦才触发），所以走 ``input``
+    planChoiceSel.el.addEventListener('change', syncSetVisibility);
+    planInput.addEventListener('input', syncSetVisibility);
 
     syncSetVisibility();
     syncLevelAvailability();

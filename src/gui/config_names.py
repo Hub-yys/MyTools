@@ -41,6 +41,9 @@ CONFIG_TYPES = (TYPE_LOADOUT, TYPE_ECHO_PROFILE, TYPE_BATTLE_PROFILE)
 from ..core.battle_profile import KIND as KIND_BATTLE_PROFILE  # noqa: E402
 from ..core.echo_profile import KIND as KIND_ECHO_PROFILE  # noqa: E402
 from ..core.loadout import KIND as KIND_LOADOUT  # noqa: E402
+#: ★ 2026-11-07 套装结构现在可以自由输入，规整规则**只有核心层一份**
+#: （``core/tasks.py``），界面这边直接复用，别写第二套。
+from ..core.tasks import normalize_set_plan  # noqa: E402
 
 #: 类型名 → 步骤里的标记（反向见 :func:`kind_type_name`）
 _KIND_BY_TYPE = {
@@ -205,9 +208,14 @@ FLOW_NAME_SUFFIX = "-声骸自动强化"
 #:
 #: ⚠ 套装结构是**可选**的（"不成套"时不写）—— 现有老流程名不带它，
 #: 解析时不写就当不成套。
+#:
+#: ★ 2026-11-07 用户：结构要能自由输入（如 ``4311``）——
+#: 所以这里**不能**再写死 ``43311|44111``，只按"一串数字"捕获，
+#: 合法性交给 ``core.tasks.set_plan_error`` / ``parse_set_plan`` 判。
+#: 只要求数字、且不超过 5 位；多了 5 位以上说明这名字不是我们生成的。
 _FLOW_LEVEL_PATTERN = re.compile(
     r"\s*[（(]\s*(小毕业|大毕业|完美毕业)"
-    r"(?:\s+(43311|44111))?\s*[）)]\s*$")
+    r"(?:\s+([0-9]{1,5}))?\s*[）)]\s*$")
 
 #: 老流程名可能**不带连字符** —— 存量数据里就是「绯雪声骸自动强化」这种
 #: （用户手打的名字，见 ``data/tasks.json``）。读取时要认出来，否则打开「修改」
@@ -234,10 +242,15 @@ def flow_level_of(name: str) -> str:
 
 
 def flow_set_plan_of(name: str) -> str:
-    """从流程名里取出**套装结构**（``43311`` / ``44111``）；没有就空串。
+    """从流程名里取出**套装结构**（``43311`` / ``44111`` / ``4311`` …）；没有就空串。
+
+    ★ 2026-11-07 用户：结构可自由输入，所以这里不限定具体那两组，
+    只要括号里有那串数字就原样返回（合法性由 ``core.tasks`` 那边判）。
 
     >>> flow_set_plan_of("绯雪-声骸自动强化（小毕业 43311）")
     '43311'
+    >>> flow_set_plan_of("绯雪-声骸自动强化（小毕业 4311）")
+    '4311'
     >>> flow_set_plan_of("绯雪-声骸自动强化（小毕业）")
     ''
     """
@@ -254,8 +267,11 @@ def flow_name_with_level(character: str, level: str,
     '绯雪-声骸自动强化（小毕业）'
     >>> flow_name_with_level("绯雪", "小毕业", "43311")
     '绯雪-声骸自动强化（小毕业 43311）'
+    >>> flow_name_with_level("绯雪", "小毕业", "4311")
+    '绯雪-声骸自动强化（小毕业 4311）'
 
     级别为空时等价于 :func:`flow_name_for`（老流程不带级别）。
+    套装结构为空 = 不成套。
     """
     base = flow_name_for(character)
     lv = str(level or "").strip()
@@ -263,7 +279,9 @@ def flow_name_with_level(character: str, level: str,
         return base
     #: 先剥掉可能已经带的级别，避免「（小毕业）（大毕业）」
     stripped = _FLOW_LEVEL_PATTERN.sub("", base).strip()
-    plan = str(set_plan or "").strip()
+    #: ★ 2026-11-07：结构走和 ``core.tasks`` 同一套规整
+    #: （去空白 / 全角转半角），否则存进名字里的东西和解析出来的不一致。
+    plan = normalize_set_plan(set_plan)
     tail = f"{lv} {plan}" if plan else lv
     return f"{stripped}（{tail}）"
 

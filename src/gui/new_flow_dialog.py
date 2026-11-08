@@ -50,6 +50,7 @@ from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     CaptionLabel,
     ComboBox,
+    LineEdit,
     MessageBoxBase,
     StrongBodyLabel,
     SubtitleLabel,
@@ -59,8 +60,15 @@ from ..core import game_data
 from ..core import tasks as tasks_mod
 from ..core.tasks import (  #: 成套声骸结构（界面和任务运行两侧共用一份）
     DEFAULT_SET_BONUS,
+    DEFAULT_SET_PLAN,
     SET_BONUS_CHOICES,
-    SET_BONUS_PLANS,
+    SET_PLAN_CHOICES,
+    SET_PLAN_CUSTOM,
+    SET_PLAN_PRESETS,
+    format_set_plan,
+    parse_set_plan,
+    resolve_set_plan,
+    set_plan_error,
 )
 from .config_names import (
     flow_character_of,
@@ -95,6 +103,16 @@ TASK_TYPES: dict[str, str] = {
 
 #: 对话框宽度（和「修改」那个对齐）
 DIALOG_WIDTH = 520
+
+#: 套装结构输入框的宽度（5 位数字 + 左右内边距）
+PLAN_BOX_WIDTH = 110
+
+#: 套装结构「下拉」的宽度 —— 要放得下「自定义」三个字
+PLAN_CHOICE_WIDTH = 120
+
+#: 套装结构输入框的占位提示。
+#: ⚠ 别写长 —— 110px 里只放得下约 7 个汉字，写多了会被截成带省略号的半句。
+PLAN_BOX_HINT = "如 4311"
 
 #: 声骸属性级别 → 有效词条数。
 #:
@@ -141,9 +159,11 @@ def build_echo_enhance_flow(character: str, loadout_id: str,
         会写进流程名 ``绯雪-声骸自动强化（小毕业）`` ——
         用于"同角色同级别只能一条"的查重（见 :func:`existing_flow_for`）。
         传空串 = 不带级别（老格式）。
-    :param set_plan: 套装结构（``43311`` / ``44111``）或空串（不成套）。
+    :param set_plan: 套装结构（1~5 位，每位只能是 4/3/1、各位之和 ≤12），
+        如 ``43311`` / ``44111`` / ``4311``；空串 = 不成套。
         也会写进流程名 ``绯雪-声骸自动强化（小毕业 43311）``，
-        任务跑的时候从名字里读出来（见 ``config_names.flow_set_plan_of``）。
+        任务跑的时候从名字里读出来（见 ``config_names.flow_set_plan_of``，
+        解析成 ``{Cost: 需要几种}`` 见 ``core.tasks.parse_set_plan``）。
 
     结构（和用户现有的两条流程完全一致）::
 
@@ -457,10 +477,43 @@ class NewFlowDialog(MessageBoxBase):
         row4.addWidget(self.set_box)
 
         #: 套装结构（只有「成套」时才显示出来）
-        self.plan_box = ComboBox(set_row)
-        self.plan_box.setFixedWidth(110)
-        for name in SET_BONUS_PLANS:
-            self.plan_box.addItem(name)
+        #:
+        #: ★ 2026-11-07 用户：结构要能**自由输入**
+        #:
+        #: > 成套可以自由输入成套时的数字比如，现在现有44111，43311，
+        #: > 我可以输入4311，这时强化好1个4C，1个3C就跳过，其他4C、3C，
+        #: > 但是这个输入有校验，数字长度最多为5，数字加起来不能超过12
+        #:
+        #: 所以从 ``ComboBox``（只能在那两个预设里选）换成可输入的单行框：
+        #: 预设只是占位提示里的例子，用户想填什么填什么，合法性由
+        #: :func:`core.tasks.set_plan_error` 统一判（前端不另写一套规则）。
+        #:
+        #: ★ 2026-11-08 用户（圈图纠正）：
+        #:
+        #: > 这里应该是下拉列表选择43311 44111 自定义，自定义时就是自由输入
+        #:
+        #: 所以是**下拉 + 可选输入框**的组合，不是光秃秃一个输入框：
+        #: ``plan_choice_box`` 里放两个预设和「自定义」，只有选到
+        #: 「自定义」时才把 ``plan_box`` 显示出来。
+        self.plan_choice_box = ComboBox(set_row)
+        self.plan_choice_box.setFixedWidth(PLAN_CHOICE_WIDTH)
+        for name in SET_PLAN_CHOICES:
+            self.plan_choice_box.addItem(name)
+        #: 默认选第一个预设（= DEFAULT_SET_PLAN，老行为不变）
+        if DEFAULT_SET_PLAN in SET_PLAN_CHOICES:
+            self.plan_choice_box.setCurrentIndex(
+                SET_PLAN_CHOICES.index(DEFAULT_SET_PLAN))
+        row4.addWidget(self.plan_choice_box)
+
+        self.plan_box = LineEdit(set_row)
+        self.plan_box.setFixedWidth(PLAN_BOX_WIDTH)
+        self.plan_box.setText("")
+        #: ⚠ 不设 ``setMaxLength(5)``：全角数字 / 带空格的 ``4 3 1 1``
+        #: 会被硬截断成半截数字，反而更难看出哪里错。
+        #: 长度和位数之和都交给保存时校验提示。
+        self.plan_box.setPlaceholderText(PLAN_BOX_HINT)
+        #: 只有选「自定义」才露出来（初始是预设 → 先藏起来）
+        self.plan_box.setVisible(False)
         row4.addWidget(self.plan_box)
         row4.addStretch(1)
         self.viewLayout.addWidget(set_row)
@@ -490,8 +543,12 @@ class NewFlowDialog(MessageBoxBase):
             lambda _i: self._refresh_level_hint())
         self.set_box.currentIndexChanged.connect(
             lambda _i: self._refresh_set_hint())
-        self.plan_box.currentIndexChanged.connect(
+        #: ★ 2026-11-08：plan_box 是「自定义」时才露出的输入框，
+        #: 下拉选到预设时它藏着 —— 两个信号都要接（换下拉要立刻显示/隐藏）。
+        self.plan_choice_box.currentIndexChanged.connect(
             lambda _i: self._refresh_set_hint())
+        self.plan_box.textChanged.connect(
+            lambda _t: self._refresh_set_hint())
         self._refresh_hint()
 
     # ---------------------------------------------------------------- 数据
@@ -508,6 +565,12 @@ class NewFlowDialog(MessageBoxBase):
 
     def _refresh_hint(self) -> None:
         """按当前选中的角色更新提示（**说清楚缺哪个配置**）。"""
+        #: ⚠ 先同步「套装结构」的显隐，**和角色选没选无关**。
+        #: ★ 2026-11-08 用户圈图："不成套" 旁边还露着 43311 下拉 ——
+        #: 因为这个方法在"没选角色"时提前 return 了，从没调过
+        #: :meth:`_refresh_set_hint`，那两个控件就一直保持着
+        #: 构造时的默认可见状态。
+        self._sync_set_visibility()
         who = self.character()
         if not who:
             self.char_hint.setText("请选一个角色（点一下下拉可打拼音筛选）")
@@ -533,14 +596,38 @@ class NewFlowDialog(MessageBoxBase):
         """选的是「成套」吗。"""
         return str(self.set_box.currentText() or "").strip() == "成套"
 
+    def is_set_plan_custom(self) -> bool:
+        """套装结构选的是「自定义」吗（只有这时候才看输入框）。"""
+        picked = str(self.plan_choice_box.currentText() or "").strip()
+        return picked == SET_PLAN_CUSTOM
+
+    def _sync_set_visibility(self) -> None:
+        """只做显隐：成套才露下拉，选「自定义」才露输入框。
+
+        单独抽出来，是因为它必须**在没选角色时也执行** ——
+        :meth:`_refresh_hint` 在角色为空时会提前 return（提示语要说
+        "请选一个角色"），但显隐不能跟着跳过，否则「不成套」旁边会
+        一直挂着一个 43311 下拉（★ 2026-11-08 用户圈出来的那个）。
+        """
+        is_set = self.is_set_bonus()
+        self.plan_choice_box.setVisible(is_set)
+        self.plan_box.setVisible(is_set and self.is_set_plan_custom())
+
     def set_plan(self) -> str:
-        """选的套装结构（``43311`` / ``44111``）；不成套时返回空串。"""
+        """填的套装结构（``43311`` / ``44111`` / ``4311`` …）；不成套时返回空串。
+
+        选的是预设就直接返回预设，选「自定义」才去读输入框
+        （见 :func:`core.tasks.resolve_set_plan`）。
+        返回的是**规整过**的纯数字串（去空白、全角转半角），
+        所以 ``4 3 1 1`` 和 ``４３１１`` 都会变成 ``4311``。
+        """
         if not self.is_set_bonus():
             return ""
-        return str(self.plan_box.currentText() or "").strip()
+        return resolve_set_plan(
+            self.plan_choice_box.currentText(), self.plan_box.text())
 
     def _refresh_set_hint(self) -> None:
-        """「是否成套」的提示 + 显示/隐藏套装结构下拉。
+        """「是否成套」的提示 + 显示/隐藏套装结构输入框。
 
         ## 用户 2026-10-29
 
@@ -548,27 +635,58 @@ class NewFlowDialog(MessageBoxBase):
         > 根据这个判断，如果强化好了声骸类型，就不再强化该类型，
         > 比如强化好了2个1C的，如果还有别的1C那也不再强化了，也就是跳过
 
+        ## 用户 2026-11-07（结构改成自由输入）
+
+        > 成套可以自由输入成套时的数字比如，现在现有44111，43311，
+        > 我可以输入4311，这时强化好1个4C，1个3C就跳过，其他4C、3C，
+        > 但是这个输入有校验，数字长度最多为5，数字加起来不能超过12
+
+        ## 用户 2026-11-08（一个光秃秃的输入框他不认）
+
+        > 这里应该是下拉列表选择43311 44111 自定义，自定义时就是自由输入
+
+        所以他圈出来的是「下拉 + 条件出现的输入框」：
+        ``plan_choice_box`` 里放两个预设 + 「自定义」，只有选「自定义」
+        才露出 ``plan_box``。自由输入的校验规则一点没变。
+
+        所以提示文字必须**现算**：填什么就把什么换算成 ``4C×1 + 3C×1 + 1C×2``，
+        填错了当场说清楚错在哪（不是等点保存才报）。
+
         计数规则（用户确认）：**按种类算，不按件数**。
         43311 的 ``1C×2`` = 凑齐 2 种**不同名字**的 1C。
         """
-        who = self.character()
-        #: 只有「成套」时才显示套装结构下拉
-        self.plan_box.setVisible(self.is_set_bonus())
-        if not self.is_set_bonus():
+        #: 只有「成套」时才显示下拉；选到「自定义」才显示输入框
+        self._sync_set_visibility()
+        is_set = self.is_set_bonus()
+        if not is_set:
             self.set_hint.setText(
-                "不成套：按配置里勾选的所有声骸逐个强化，不按 43311 结构计数")
+                "不成套：按配置里勾选的所有声骸逐个强化，"
+                f"不按 {' / '.join(SET_PLAN_PRESETS)} 这类结构计数")
             return
-        plan = self.set_plan()
-        counts = SET_BONUS_PLANS.get(plan) or {}
-        if not counts:
-            self.set_hint.setText("")
+        plan = resolve_set_plan(
+            self.plan_choice_box.currentText(), self.plan_box.text())
+        if not plan:
+            #: 只有「自定义」+ 没填才会走到这（预设本身一定合法）
+            self.set_hint.setText(
+                "自定义：几位 = 一共几个声骸，每位 = 那个声骸的 COST。"
+                f"例如 {'、'.join(SET_PLAN_PRESETS)}，也可以自己写 4311")
             return
-        parts = " + ".join(f"{cost}C×{n}" for cost, n in sorted(counts.items(),
-                                                              reverse=True))
+        problem = set_plan_error(plan)
+        if problem:
+            #: 直接说清楚哪里不合法，别让用户猜
+            self.set_hint.setText(f"⚠ {problem}")
+            return
+        try:
+            counts = parse_set_plan(plan)
+        except ValueError as exc:      # 理论上上面已经拦过
+            self.set_hint.setText(f"⚠ {exc}")
+            return
+        parts = format_set_plan(counts)
         detail = "、".join(f"{cost}C 凑齐 {n} 种**不同名字**的"
                           for cost, n in sorted(counts.items(), reverse=True))
+        total = sum(counts.values())
         self.set_hint.setText(
-            f"{plan} = {parts}。强化好 {plan} 要求的种类数后，"
+            f"{plan} = {parts}（共 {total} 个声骸）。强化好这些种类数后，"
             f"该档剩余的同类型声骸**全部跳过**（{detail}）")
 
     def _refresh_level_hint(self) -> None:
@@ -687,6 +805,15 @@ class NewFlowDialog(MessageBoxBase):
         if not self.attr_level_count():
             self.level_hint.setText("⚠ 请先选声骸属性级别")
             return False
+        #: ★ 2026-11-07 用户：结构可自由输入，但「数字长度最多为5，
+        #: 数字加起来不能超过12」—— 校验只有 ``core.tasks.set_plan_error``
+        #: 一份，界面和网页两端都调它，别各写一套。
+        if self.is_set_bonus():
+            problem = set_plan_error(self.set_plan())
+            if problem:
+                self._refresh_set_hint()
+                self.set_hint.setText(f"⚠ {problem}")
+                return False
         #: 级别超过这条配置能凑出的条数 → 不许保存
         #: （否则要么被默默夹小、要么每个声骸都判不过全被弃置）
         profile = self._profile_of(who)
